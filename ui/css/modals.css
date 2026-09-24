@@ -430,34 +430,48 @@
 .modal-text-input {
   width: 100%;
   padding: 8px 12px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--bg-primary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: #fff;
+  border-radius: 3px;
+  color: var(--text-main);
   font-family: var(--font-mono);
   font-size: 12.5px;
   outline: none;
+  transition: border-color var(--transition-fast);
 }
 
 .modal-text-input:focus {
   border-color: var(--accent-blue);
 }
 
+/* The parameter fields are instruction sources, so they are the surface a directive
+   would be written in rather than a rounded chat box: monospace, sharp corners, the
+   editor background, a gutter edge, and a focus ring that marks the active pane. */
 .modal-textarea-input {
   width: 100%;
-  padding: 8px 12px;
-  background: rgba(0, 0, 0, 0.3);
+  min-height: 76px;
+  padding: 9px 12px;
+  background: var(--bg-primary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: #fff;
-  font-family: var(--font-ui);
-  font-size: 13px;
+  border-left: 2px solid var(--border-glass);
+  border-radius: 3px;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  tab-size: 2;
   resize: vertical;
   outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.modal-textarea-input::placeholder {
+  color: var(--text-dim);
 }
 
 .modal-textarea-input:focus {
   border-color: var(--accent-blue);
+  border-left-color: var(--accent-blue);
 }
 
 /* Prompt Editor */

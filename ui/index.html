@@ -863,21 +863,16 @@ body {
   z-index: 15;
 }
 
+/* The panel is flush with the dock now: the card's radius, border, shadow and blur
+   were the floating-island shell. Only what the dock does not already supply is
+   left, plus position:relative for the lock overlay it contains. */
 .action-dock-card {
   width: 100%;
-  max-width: 780px;
-  background: rgba(37, 37, 38, 0.92);
-  backdrop-filter: blur(28px);
-  -webkit-backdrop-filter: blur(28px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 20px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65), inset 0 1px 1px rgba(255, 255, 255, 0.08);
   display: flex;
   flex-direction: column;
-  padding: 10px 12px 8px 12px;
+  padding: 0;
   gap: 8px;
   position: relative;
-  transition: all var(--transition-smooth);
 }
 
 /* Strict Plan Lock Overlay */
@@ -887,7 +882,7 @@ body {
   left: 0;
   width: 100%;
   height: 100%;
-  border-radius: 20px;
+  border-radius: 4px;
   background: rgba(30, 30, 30, 0.85);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
@@ -957,48 +952,74 @@ body {
   transform: translateY(-1px);
 }
 
-/* Action Buttons Grid */
+/* Action Buttons Grid
+The dock is a toolbar, so the six actions read as one strip of controls: equal
+cells, no lift, no gradient, no glow. */
 .action-buttons-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
   width: 100%;
 }
 
 .action-btn {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--radius-md);
-  padding: 8px 6px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 6px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 3px;
+  min-width: 0;
+  min-height: 54px;
   cursor: pointer;
-  transition: all var(--transition-fast);
-  color: #ffffff;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
   outline: none;
-  min-height: 58px;
 }
 
 .action-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  transform: translateY(-1.5px);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-glass);
+  color: var(--text-main);
 }
 
 .action-btn:active {
-  transform: translateY(0);
+  background: rgba(255, 255, 255, 0.1);
 }
 
+.action-btn:focus-visible {
+  border-color: var(--accent-blue);
+}
+
+.action-btn:disabled {
+  cursor: not-allowed;
+}
+
+/* The primary action is the only control that stays highlighted at rest. */
+.action-btn.primary-action {
+  background: rgba(14, 165, 233, 0.07);
+  border-color: rgba(14, 165, 233, 0.3);
+  color: var(--accent-blue-hover);
+}
+
+.action-btn.primary-action:hover {
+  background: rgba(14, 165, 233, 0.14);
+  border-color: var(--accent-blue);
+}
+
+/* Monochrome icons: the glyph inherits the button colour, so the only colour on the
+   strip is the highlight under the pointer (or on the primary action). */
 .action-btn-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
+  width: 18px;
+  height: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all var(--transition-fast);
+  color: inherit;
 }
 
 .action-btn-text {
@@ -1007,88 +1028,57 @@ body {
   align-items: center;
   text-align: center;
   line-height: 1.2;
+  width: 100%;
+  min-width: 0;
 }
 
 .action-btn-title {
-  font-size: 11px;
+  max-width: 100%;
+  font-size: 10.5px;
   font-weight: 600;
   letter-spacing: 0.1px;
   white-space: nowrap;
-}
-
-.action-btn-sub {
-  font-size: 9px;
-  color: var(--text-dim);
-  white-space: nowrap;
-  max-width: 95px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Action Specific Variants */
-.action-fix-bug .bug-icon {
-  background: rgba(239, 68, 68, 0.14);
-  color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.25);
-}
-.action-fix-bug:hover {
-  border-color: rgba(239, 68, 68, 0.45);
-  box-shadow: 0 0 16px rgba(239, 68, 68, 0.25);
-}
-
-.action-next-step {
-  background: rgba(14, 165, 233, 0.1);
-  border-color: rgba(14, 165, 233, 0.35);
-}
-.action-next-step .lightning-icon {
-  background: rgba(14, 165, 233, 0.2);
-  color: #38bdf8;
-  border: 1px solid rgba(14, 165, 233, 0.4);
-}
-.action-next-step:hover {
-  background: rgba(14, 165, 233, 0.18);
-  border-color: rgba(56, 189, 248, 0.6);
-  box-shadow: 0 0 20px rgba(14, 165, 233, 0.35);
+/* Technical data, so monospace: the target task name of the next step. */
+.action-btn-sub {
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.action-update-plan .edit-icon {
-  background: rgba(16, 185, 129, 0.14);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.25);
-}
-.action-update-plan:hover {
-  border-color: rgba(16, 185, 129, 0.45);
-  box-shadow: 0 0 16px rgba(16, 185, 129, 0.25);
-}
+/* Every action was tinted (red bug, green edit, sky lightning) with a matching hover
+   glow. The tints carried no meaning the label did not already carry, so the icons
+   are monochrome now and the toolbar's only colour is the active-state highlight
+   declared above. The per-action classes stay in the markup as hooks. */
 
-.action-analyze .search-icon {
-  background: rgba(148, 163, 184, 0.14);
-  color: #cbd5e1;
-  border: 1px solid rgba(148, 163, 184, 0.25);
-}
-.action-analyze:hover {
-  border-color: rgba(148, 163, 184, 0.45);
-  box-shadow: 0 0 16px rgba(148, 163, 184, 0.25);
-}
+/* Six equal cells cannot hold a label like "Execute Next Step" once a cell drops under
+   ~107px, which is where the default 1340px window lands the strip when the window is
+   narrowed to its floor. Rather than ellipsise five of the six labels, the strip drops
+   to its icon row there: an IDE toolbar narrows to icons, and every button already
+   carries a `title` tooltip with its full label. The labels stay in the DOM -- actions.js
+   still writes the next-step target into #lblNextStepTarget -- so this is purely visual.
+   The query reads the dock's width via the container on .bottom-dock in dock.css. */
+@container (max-width: 700px) {
+  .action-btn {
+    min-height: 0;
+    padding: 8px 6px;
+    gap: 0;
+  }
 
-.action-recommend .lightbulb-icon {
-  background: rgba(148, 163, 184, 0.14);
-  color: #cbd5e1;
-  border: 1px solid rgba(148, 163, 184, 0.25);
-}
-.action-recommend:hover {
-  border-color: rgba(148, 163, 184, 0.45);
-  box-shadow: 0 0 16px rgba(148, 163, 184, 0.25);
-}
+  .action-btn-text {
+    display: none;
+  }
 
-.action-custom .command-icon {
-  background: rgba(148, 163, 184, 0.14);
-  color: #cbd5e1;
-  border: 1px solid rgba(148, 163, 184, 0.25);
-}
-.action-custom:hover {
-  border-color: rgba(148, 163, 184, 0.45);
-  box-shadow: 0 0 16px rgba(148, 163, 184, 0.25);
+  .action-buttons-grid {
+    gap: 4px;
+  }
 }
 
 /* Action Dock Bottom Row */
@@ -1159,15 +1149,15 @@ body {
 /* The plan tree's inline task actions (execute, rollback, stop) and its domain pills are
    styled with the task card itself, in plan-tree.css. */
 
-/* Action Parameter Modal Styling */
+/* Action Parameter Modal Styling
+The dialog is squared off and opaque like the rest of the studio chrome; its inputs
+carry the editor surface (see .modal-textarea-input in modals.css). */
 .action-param-card {
   width: 100%;
   max-width: 580px;
-  background: rgba(37, 37, 38, 0.96);
-  backdrop-filter: blur(28px);
-  -webkit-backdrop-filter: blur(28px);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: var(--radius-lg);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
   display: flex;
   flex-direction: column;
@@ -2205,34 +2195,48 @@ body {
 .modal-text-input {
   width: 100%;
   padding: 8px 12px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--bg-primary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: #fff;
+  border-radius: 3px;
+  color: var(--text-main);
   font-family: var(--font-mono);
   font-size: 12.5px;
   outline: none;
+  transition: border-color var(--transition-fast);
 }
 
 .modal-text-input:focus {
   border-color: var(--accent-blue);
 }
 
+/* The parameter fields are instruction sources, so they are the surface a directive
+   would be written in rather than a rounded chat box: monospace, sharp corners, the
+   editor background, a gutter edge, and a focus ring that marks the active pane. */
 .modal-textarea-input {
   width: 100%;
-  padding: 8px 12px;
-  background: rgba(0, 0, 0, 0.3);
+  min-height: 76px;
+  padding: 9px 12px;
+  background: var(--bg-primary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  color: #fff;
-  font-family: var(--font-ui);
-  font-size: 13px;
+  border-left: 2px solid var(--border-glass);
+  border-radius: 3px;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  tab-size: 2;
   resize: vertical;
   outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.modal-textarea-input::placeholder {
+  color: var(--text-dim);
 }
 
 .modal-textarea-input:focus {
   border-color: var(--accent-blue);
+  border-left-color: var(--accent-blue);
 }
 
 /* Prompt Editor */
@@ -3045,6 +3049,11 @@ body {
   background: var(--bg-primary);
   border-top: 1px solid var(--border-subtle);
   overflow: hidden;
+  /* The dock's width tracks the centre stage, which the sidebars shrink -- not the
+     viewport. Marking it a query container lets ui/css/actions.css collapse the
+     toolbar at a width the toolbar actually has, even when a sidebar is collapsed
+     and the window itself has not changed size. */
+  container-type: inline-size;
 }
 
 /* Drag target for the resize behaviour in ui/js/dock.js. The handle is taller

@@ -18,6 +18,11 @@
   background: var(--bg-primary);
   border-top: 1px solid var(--border-subtle);
   overflow: hidden;
+  /* The dock's width tracks the centre stage, which the sidebars shrink -- not the
+     viewport. Marking it a query container lets ui/css/actions.css collapse the
+     toolbar at a width the toolbar actually has, even when a sidebar is collapsed
+     and the window itself has not changed size. */
+  container-type: inline-size;
 }
 
 /* Drag target for the resize behaviour in ui/js/dock.js. The handle is taller
