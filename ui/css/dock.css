@@ -41,23 +41,10 @@
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.16);
   transform: translateX(-50%);
-  transition: background var(--transition-fast);
 }
 
-.dock-resize-handle:hover::before,
-.bottom-dock.resizing .dock-resize-handle::before {
-  background: var(--accent-cyan);
-}
-
-/* Light the pane border itself up while the seam is grabbed, so the boundary
-   being dragged is never ambiguous. */
-.dock-resize-handle:hover,
-.bottom-dock.resizing .dock-resize-handle {
-  box-shadow: inset 0 1px 0 var(--accent-cyan);
-}
-
-/* Live agent output area. Collapses to nothing until the dock is given a height,
-   so the dock hugs the toolbar instead of reserving an empty box. */
+/* Live agent output area. It is the dock's flexible remainder: the toolbar above it
+   is fixed, so growing the dock opens this space and slides the toolbar up. */
 .dock-logs {
   flex: 1;
   min-height: 0;
@@ -66,9 +53,10 @@
   overflow: hidden;
 }
 
-/* The action panel is the dock's footer now, not a floating island. It keeps
-   position:relative because the strict-plan lock overlay inside it is absolutely
-   positioned against this box. */
+/* The action panel is the dock's head, not a floating island: it sits directly under
+   the seam so resizing the dock carries the buttons with it, exactly like the panel
+   toolbar of an IDE. It keeps position:relative because the strict-plan lock overlay
+   inside it is absolutely positioned against this box. */
 .bottom-dock > .action-control-panel-container {
   position: relative;
   flex: none;

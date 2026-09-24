@@ -6,10 +6,10 @@ function initDockResize() {
   const handle = DOM.dockResizeHandle;
   if (!dock || !handle) return;
 
-  // The toolbar at the dock's foot is ~137px tall, so 160 is the floor that keeps
-  // it fully visible. The ceiling is a share of the pane the dock shares with the
-  // centre stage rather than of the window, which also counts the 48px top bar, so
-  // the workbench always keeps a visible share of the box being divided.
+  // The action toolbar at the dock's head is ~146px tall, so 160 is the floor that
+  // keeps it fully visible. The ceiling is a share of the pane the dock shares with
+  // the centre stage rather than of the window, which also counts the 48px top bar,
+  // so the workbench always keeps a visible share of the box being divided.
   const MIN_HEIGHT = 160;
   const maxHeight = () => {
     const pane = dock.parentElement;
