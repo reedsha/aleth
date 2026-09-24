@@ -1,4 +1,4 @@
-// ui/js/visuals.js — Toast notifications, orb animation, and offline workflow simulator.
+// ui/js/visuals.js — Toast notifications and the offline workflow simulator.
 function showToast(message, type = "info") {
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
@@ -9,113 +9,6 @@ function showToast(message, type = "info") {
     toast.style.transform = "translateX(20px)";
     setTimeout(() => toast.remove(), 300);
   }, 3200);
-}
-
-function initOrbAnimation() {
-  const canvas = document.getElementById("orbCanvas");
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  // Decoration only: a backend that refuses to hand out a 2d context must never
-  // propagate a throw into the bootstrap that wires up the rest of the UI.
-  if (!ctx) {
-    console.warn("[DeepAgents UI] orb animation unavailable: no 2d canvas context");
-    return;
-  }
-  const w = canvas.width;
-  const h = canvas.height;
-  const cx = w / 2;
-  const cy = h / 2;
-  const radius = 88;
-
-  let angle = 0;
-
-  function render() {
-    angle += 0.012;
-    ctx.clearRect(0, 0, w, h);
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.clip();
-
-    ctx.fillStyle = "#030408";
-    ctx.fill();
-
-    const grad1 = ctx.createLinearGradient(
-      cx + Math.cos(angle) * 70,
-      cy + Math.sin(angle) * 70,
-      cx - Math.cos(angle) * 70,
-      cy - Math.sin(angle) * 70
-    );
-    grad1.addColorStop(0, "rgba(56, 189, 248, 0.95)");
-    grad1.addColorStop(0.25, "rgba(147, 51, 234, 0.9)");
-    grad1.addColorStop(0.5, "rgba(236, 72, 153, 0.95)");
-    grad1.addColorStop(0.75, "rgba(249, 115, 22, 0.85)");
-    grad1.addColorStop(1, "rgba(37, 99, 235, 0.9)");
-
-    ctx.fillStyle = grad1;
-    ctx.beginPath();
-    ctx.ellipse(
-      cx + Math.sin(angle * 1.5) * 14,
-      cy + Math.cos(angle * 1.2) * 14,
-      radius * 0.95,
-      radius * 0.75,
-      angle * 0.8,
-      0,
-      Math.PI * 2
-    );
-    ctx.fill();
-
-    const grad2 = ctx.createRadialGradient(
-      cx + Math.cos(angle * 0.7) * 35,
-      cy + Math.sin(angle * 0.7) * 35,
-      8,
-      cx,
-      cy,
-      radius
-    );
-    grad2.addColorStop(0, "rgba(255, 255, 255, 0.85)");
-    grad2.addColorStop(0.2, "rgba(96, 165, 250, 0.8)");
-    grad2.addColorStop(0.55, "rgba(10, 15, 30, 0.92)");
-    grad2.addColorStop(0.85, "rgba(192, 132, 252, 0.75)");
-    grad2.addColorStop(1, "rgba(6, 182, 212, 0.4)");
-
-    ctx.fillStyle = grad2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius * 0.92, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.moveTo(cx - 50, cy + 30);
-    ctx.bezierCurveTo(
-      cx - 20 + Math.sin(angle * 2) * 20,
-      cy - 60 + Math.cos(angle) * 20,
-      cx + 40 + Math.cos(angle * 1.8) * 20,
-      cy - 10 + Math.sin(angle) * 15,
-      cx + 60,
-      cy + 40
-    );
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
-    ctx.lineWidth = 14;
-    ctx.lineCap = "round";
-    ctx.filter = "blur(6px)";
-    ctx.stroke();
-    ctx.filter = "none";
-
-    ctx.restore();
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.restore();
-
-    requestAnimationFrame(render);
-  }
-
-  render();
 }
 
 function simulateWorkflow(prompt) {

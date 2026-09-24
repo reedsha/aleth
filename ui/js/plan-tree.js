@@ -14,10 +14,20 @@ function applyPlanData(planData) {
   if (DOM.txtBottomActivePlan) DOM.txtBottomActivePlan.textContent = state.activePlan;
 
   const hasTasks = state.planTree && state.planTree.length > 0;
-  updateStrictPlanLock(!hasTasks || !planData.exists);
+  // `exists` is only carried by the load path (get_active_plan). Every plan_updated
+  // event and every save/sync return omits it, so treating an absent flag as "missing"
+  // used to lock the action panel after any save, switch or sync. Only an explicit
+  // false counts as missing; an absent flag leaves the decision to the task count.
+  const planMissing = planData.exists === false;
+  updateStrictPlanLock(!hasTasks || planMissing);
 
   renderPlanTree();
   updateNextStepButtonPreview();
+
+  // The workbench renders the plan's own markdown, so it is fed from this same funnel:
+  // every plan load, switch, save and sync arrives here.
+  refreshWorkbenchChrome();
+  renderPlanDocument(planData.content);
 }
 
 function updateStrictPlanLock(isLocked) {

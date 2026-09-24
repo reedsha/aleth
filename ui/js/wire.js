@@ -51,14 +51,15 @@ function on(element, event, handler) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Interactivity is wired before anything decorative. The orb animation used to run
-  // second, so a single canvas/GPU hiccup (getContext("2d") returning null) threw
-  // before every listener below it was registered, leaving the whole UI inert.
+  // Interactivity is wired before anything that renders content. The workbench renders
+  // the whole active plan, so a plan the parser chokes on used to be able to throw here
+  // before the listeners below were registered -- leaving the window rendered but inert.
+  // Each step is isolated, so the workbench failing costs nothing but the workbench.
   runStartupStep("DOM lookup", initDOMElements);
   runStartupStep("Event wiring", initEventListeners);
   runStartupStep("Auto-scroll wiring", initAutoScrollListeners);
   runStartupStep("Dock resize", initDockResize);
-  runStartupStep("Orb animation", initOrbAnimation);
+  runStartupStep("Plan workbench", initWorkbench);
 
   // PyWebView Bridge initialization
   if (window.pywebview) {
@@ -264,6 +265,13 @@ function initEventListeners() {
     });
   }
   if (DOM.btnConfirmRollbackAction) DOM.btnConfirmRollbackAction.addEventListener("click", handleConfirmRollback);
+
+  // ── Plan Workbench: the active plan as a read/write document ──
+  on(DOM.btnWorkbenchEdit, "click", handleWorkbenchEdit);
+  on(DOM.btnWorkbenchSave, "click", handleWorkbenchSave);
+  on(DOM.btnWorkbenchDiscard, "click", handleWorkbenchDiscard);
+  on(DOM.planEditorInput, "input", handleWorkbenchInput);
+  on(DOM.planEditorInput, "scroll", syncWorkbenchGutterScroll);
 }
 
 function checkAllCardsClosed() {

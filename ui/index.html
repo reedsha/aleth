@@ -60,7 +60,7 @@
       function verifyModulesLoaded() {
         var required = [
           "initDOMElements", "initEventListeners", "initAutoScrollListeners", "initDockResize",
-          "renderPlanTree", "openActionParamModal", "openRollbackModal",
+          "initWorkbench", "renderPlanTree", "openActionParamModal", "openRollbackModal",
           "handleConfirmRollback", "showToast", "handleAgentEvent"
         ];
         var missing = required.filter(function (name) {
@@ -519,66 +519,6 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding-top: 50px;
-  text-align: center;
-  transition: opacity var(--transition-smooth), transform var(--transition-smooth);
-}
-
-.empty-state.hidden {
-  opacity: 0;
-  transform: translateY(-20px);
-  pointer-events: none;
-}
-
-.orb-container {
-  position: relative;
-  width: 200px;
-  height: 200px;
-  margin-bottom: 26px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-#orbCanvas {
-  width: 190px;
-  height: 190px;
-  border-radius: 50%;
-  filter: drop-shadow(0 0 25px rgba(56, 189, 248, 0.45));
-}
-
-.orb-specular {
-  position: absolute;
-  top: 15px;
-  left: 30px;
-  width: 45px;
-  height: 20px;
-  border-radius: 50%;
-  background: radial-gradient(ellipse at center, rgba(255, 255, 255, 0.4) 0%, transparent 80%);
-  transform: rotate(-35deg);
-  pointer-events: none;
-}
-
-.hero-title {
-  font-size: 38px;
-  font-weight: 700;
-  color: #ffffff;
-  letter-spacing: -0.8px;
-  margin-bottom: 10px;
-}
-
-.hero-subtitle {
-  font-size: 14.5px;
-  color: var(--text-dim);
-  max-width: 480px;
 }
 
 /* Execution Stage (50/50 Split Grid) */
@@ -2985,15 +2925,21 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: var(--bg-secondary);
-  border-top: 1px solid #333333;
+  /* The dock takes the editor surface colour, not the chrome colour, so it does
+     not merge with the .workbench-status footer directly above it. Both used to
+     be --bg-secondary, which made the pane boundary between the plan and the
+     console invisible: dragging the seam appeared to move nothing. */
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-subtle);
   overflow: hidden;
 }
 
-/* Drag target for the resize behaviour in ui/js/dock.js. */
+/* Drag target for the resize behaviour in ui/js/dock.js. The handle is taller
+   than the grip pill it draws, so the whole strip above the console logs is a
+   grab area; the pill stays 2px below the pane border. */
 .dock-resize-handle {
   flex: none;
-  height: 7px;
+  height: 10px;
   cursor: ns-resize;
   position: relative;
   background: transparent;
@@ -3015,6 +2961,13 @@ body {
 .dock-resize-handle:hover::before,
 .bottom-dock.resizing .dock-resize-handle::before {
   background: var(--accent-cyan);
+}
+
+/* Light the pane border itself up while the seam is grabbed, so the boundary
+   being dragged is never ambiguous. */
+.dock-resize-handle:hover,
+.bottom-dock.resizing .dock-resize-handle {
+  box-shadow: inset 0 1px 0 var(--accent-cyan);
 }
 
 /* Live agent output area. Collapses to nothing until the dock is given a height,
@@ -3040,6 +2993,300 @@ body {
 
 .bottom-dock .action-dock-card {
   max-width: none;
+}
+  </style>
+  <style>
+/* --------------------------------------------------------------------------
+   PLAN WORKBENCH — the active plan, rendered as a read/write document.
+   This fills the centre stage whenever no agent card is open. It replaces the
+   glowing-orb hero, which occupied the same idle slot and showed nothing about
+   the project. Read mode tints the markdown source; edit mode swaps the same
+   surface for a textarea sharing the gutter, so the two views line up exactly.
+
+   Line numbers are rendered per source line in read mode rather than as a
+   separately scrolled gutter, so the number column cannot drift away from the
+   code. Edit mode needs a virtual gutter, which is why it wraps in `pre`.
+   -------------------------------------------------------------------------- */
+.plan-workbench {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  overflow: hidden;
+  transition: opacity var(--transition-smooth), transform var(--transition-smooth);
+}
+
+.plan-workbench.hidden {
+  opacity: 0;
+  transform: translateY(-12px);
+  pointer-events: none;
+}
+
+/* Breadcrumb + tools, mirroring the editor-group header of an IDE. */
+.workbench-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 38px;
+  padding: 0 14px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.workbench-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.workbench-breadcrumbs .crumb {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb-sep {
+  color: var(--text-dim);
+}
+
+.crumb-file {
+  color: var(--text-main);
+}
+
+/* Unsaved edits are a warning state, so this is amber rather than decorative. */
+.crumb-dirty {
+  color: #fbbf24;
+  font-size: 10px;
+}
+
+.workbench-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workbench-stat {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.wb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border-glass);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.wb-btn:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-main);
+}
+
+.wb-btn.primary {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue-hover);
+}
+
+.wb-btn.primary:hover {
+  background: rgba(14, 165, 233, 0.14);
+}
+
+.wb-btn[hidden] {
+  display: none;
+}
+
+/* Read-only mode: the Edit button is present but inert, so it is dimmed rather than
+   hidden -- hiding it made the toolbar look like the workbench had no edit flow. */
+.wb-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.wb-btn:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.workbench-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Shared metrics for the source surface, the gutter and the edit textarea: the
+   three only stay aligned while their font and line box are identical. */
+.workbench-doc,
+.workbench-gutter,
+.workbench-input {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.workbench-doc {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 10px 0 24px 0;
+  /* body sets user-select: none; the plan is text the user needs to copy. */
+  user-select: text;
+}
+
+.wb-line {
+  display: flex;
+  padding-right: 16px;
+}
+
+.wb-line:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.wb-ln {
+  flex: none;
+  width: 52px;
+  padding-right: 14px;
+  text-align: right;
+  color: var(--text-dim);
+  opacity: 0.65;
+  user-select: none;
+}
+
+.wb-src {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+}
+
+.wb-line.wb-heading .wb-src {
+  color: var(--text-main);
+}
+
+.wb-line.wb-fence .wb-src,
+.wb-line.wb-blank .wb-src {
+  color: var(--text-dim);
+}
+
+/* Markdown syntax characters are dimmed so the prose reads as the content and
+   the punctuation reads as structure. */
+.wb-md {
+  color: var(--text-dim);
+  opacity: 0.75;
+}
+
+.wb-md-heading {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.wb-md-check {
+  display: inline-block;
+  min-width: 1.35em;
+  opacity: 1;
+}
+
+.wb-md-check.task {
+  color: var(--text-dim);
+}
+
+/* A ticked checkbox is a completed state, so it takes the same green the plan
+   tree uses for completed steps. */
+.wb-md-check.task-done {
+  color: #10b981;
+}
+
+.wb-src-text.done {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
+.workbench-empty {
+  padding: 4px 16px 4px 52px;
+  color: var(--text-dim);
+}
+
+/* Edit mode: the gutter scrolls with the textarea (synced in ui/js/workbench.js)
+   and wrapping is disabled so one source line stays one visual row. */
+.workbench-gutter {
+  flex: none;
+  width: 52px;
+  padding: 10px 14px 24px 0;
+  overflow: hidden;
+  text-align: right;
+  white-space: pre;
+  color: var(--text-dim);
+  opacity: 0.65;
+  user-select: none;
+  display: none;
+}
+
+.workbench-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 16px 24px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-muted);
+  resize: none;
+  white-space: pre;
+  overflow: auto;
+  caret-color: var(--accent-blue-hover);
+  display: none;
+  user-select: text;
+}
+
+.plan-workbench.editing .workbench-gutter,
+.plan-workbench.editing .workbench-input {
+  display: block;
+}
+
+.plan-workbench.editing .workbench-doc {
+  display: none;
+}
+
+.workbench-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 26px;
+  padding: 0 14px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.workbench-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
   </style>
   <!-- END STYLE BUNDLE -->
@@ -3132,15 +3379,45 @@ body {
 
         <!-- CENTER STAGE: idle workbench / live execution -->
         <div class="stage-center">
-        
-        <!-- HERO EMPTY STATE: Clean "How can I help today?" -->
-        <div class="empty-state" id="emptyStateContainer">
-          <div class="orb-container">
-            <canvas id="orbCanvas" width="200" height="200"></canvas>
-            <div class="orb-specular"></div>
+
+        <!-- PLAN WORKBENCH: the active plan, rendered as a read/write document -->
+        <div class="plan-workbench" id="emptyStateContainer">
+          <div class="workbench-bar">
+            <nav class="workbench-breadcrumbs" aria-label="Active plan">
+              <span class="crumb crumb-workspace" id="crumbWorkspace">workspace</span>
+              <span class="crumb-sep">›</span>
+              <span class="crumb crumb-file" id="crumbPlanFile">PLAN.md</span>
+              <span class="crumb-dirty" id="crumbDirty" hidden>● unsaved</span>
+            </nav>
+            <div class="workbench-tools">
+              <span class="workbench-stat" id="txtWorkbenchStat">0/0 tasks</span>
+              <button class="wb-btn" id="btnWorkbenchEdit" title="Edit the plan source">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 20h9"/>
+                  <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                </svg>
+                <span>Edit</span>
+              </button>
+              <button class="wb-btn primary" id="btnWorkbenchSave" hidden title="Save the plan and re-sync plan.json">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/>
+                  <polyline points="17 21 17 13 7 13 7 21"/>
+                  <polyline points="7 3 7 8 15 8"/>
+                </svg>
+                <span>Save</span>
+              </button>
+              <button class="wb-btn" id="btnWorkbenchDiscard" hidden title="Discard unsaved edits">Discard</button>
+            </div>
           </div>
-          <h1 class="hero-title">How can I help today?</h1>
-          <p class="hero-subtitle">State-anchored execution against the dynamic plan file.</p>
+          <div class="workbench-body">
+            <div class="workbench-gutter" id="planEditorGutter" aria-hidden="true"></div>
+            <div class="workbench-doc" id="planDoc"></div>
+            <textarea class="workbench-input" id="planEditorInput" spellcheck="false" aria-label="Plan source"></textarea>
+          </div>
+          <div class="workbench-status">
+            <span id="txtWorkbenchPath">PLAN.md</span>
+            <span id="txtWorkbenchMeta"></span>
+          </div>
         </div>
 
         <!-- EXECUTION STAGE: AGENT ACTIVITY CARDS (50/50 Split Grid) -->
@@ -4081,6 +4358,20 @@ function initDOMElements() {
   DOM.bottomDock = document.getElementById("bottomDock");
   DOM.dockResizeHandle = document.getElementById("dockResizeHandle");
 
+  // Plan Workbench (centre stage: the active plan as a read/write document)
+  DOM.crumbWorkspace = document.getElementById("crumbWorkspace");
+  DOM.crumbPlanFile = document.getElementById("crumbPlanFile");
+  DOM.crumbDirty = document.getElementById("crumbDirty");
+  DOM.txtWorkbenchStat = document.getElementById("txtWorkbenchStat");
+  DOM.btnWorkbenchEdit = document.getElementById("btnWorkbenchEdit");
+  DOM.btnWorkbenchSave = document.getElementById("btnWorkbenchSave");
+  DOM.btnWorkbenchDiscard = document.getElementById("btnWorkbenchDiscard");
+  DOM.planEditorGutter = document.getElementById("planEditorGutter");
+  DOM.planDoc = document.getElementById("planDoc");
+  DOM.planEditorInput = document.getElementById("planEditorInput");
+  DOM.txtWorkbenchPath = document.getElementById("txtWorkbenchPath");
+  DOM.txtWorkbenchMeta = document.getElementById("txtWorkbenchMeta");
+
   DOM.systemStatusDot = document.getElementById("systemStatusDot");
   DOM.systemStatusLabel = document.getElementById("systemStatusLabel");
   DOM.toastContainer = document.getElementById("toastContainer");
@@ -4291,6 +4582,9 @@ function updateWorkspaceUI(dirPath) {
   const folderName = parts[parts.length - 1] || dirPath;
   DOM.txtWorkspacePath.textContent = folderName;
   DOM.txtWorkspacePath.title = dirPath;
+  // The workbench breadcrumb names the same folder, and a workspace_changed event
+  // arrives without a plan reload to refresh it.
+  if (typeof refreshWorkbenchChrome === "function") refreshWorkbenchChrome();
 }
   </script>
   <script>
@@ -4310,10 +4604,20 @@ function applyPlanData(planData) {
   if (DOM.txtBottomActivePlan) DOM.txtBottomActivePlan.textContent = state.activePlan;
 
   const hasTasks = state.planTree && state.planTree.length > 0;
-  updateStrictPlanLock(!hasTasks || !planData.exists);
+  // `exists` is only carried by the load path (get_active_plan). Every plan_updated
+  // event and every save/sync return omits it, so treating an absent flag as "missing"
+  // used to lock the action panel after any save, switch or sync. Only an explicit
+  // false counts as missing; an absent flag leaves the decision to the task count.
+  const planMissing = planData.exists === false;
+  updateStrictPlanLock(!hasTasks || planMissing);
 
   renderPlanTree();
   updateNextStepButtonPreview();
+
+  // The workbench renders the plan's own markdown, so it is fed from this same funnel:
+  // every plan load, switch, save and sync arrives here.
+  refreshWorkbenchChrome();
+  renderPlanDocument(planData.content);
 }
 
 function updateStrictPlanLock(isLocked) {
@@ -5604,7 +5908,7 @@ function renderErrorBadge(agentId, errorMsg, canRetry) {
 }
   </script>
   <script>
-// ui/js/visuals.js — Toast notifications, orb animation, and offline workflow simulator.
+// ui/js/visuals.js — Toast notifications and the offline workflow simulator.
 function showToast(message, type = "info") {
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
@@ -5615,113 +5919,6 @@ function showToast(message, type = "info") {
     toast.style.transform = "translateX(20px)";
     setTimeout(() => toast.remove(), 300);
   }, 3200);
-}
-
-function initOrbAnimation() {
-  const canvas = document.getElementById("orbCanvas");
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  // Decoration only: a backend that refuses to hand out a 2d context must never
-  // propagate a throw into the bootstrap that wires up the rest of the UI.
-  if (!ctx) {
-    console.warn("[DeepAgents UI] orb animation unavailable: no 2d canvas context");
-    return;
-  }
-  const w = canvas.width;
-  const h = canvas.height;
-  const cx = w / 2;
-  const cy = h / 2;
-  const radius = 88;
-
-  let angle = 0;
-
-  function render() {
-    angle += 0.012;
-    ctx.clearRect(0, 0, w, h);
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.clip();
-
-    ctx.fillStyle = "#030408";
-    ctx.fill();
-
-    const grad1 = ctx.createLinearGradient(
-      cx + Math.cos(angle) * 70,
-      cy + Math.sin(angle) * 70,
-      cx - Math.cos(angle) * 70,
-      cy - Math.sin(angle) * 70
-    );
-    grad1.addColorStop(0, "rgba(56, 189, 248, 0.95)");
-    grad1.addColorStop(0.25, "rgba(147, 51, 234, 0.9)");
-    grad1.addColorStop(0.5, "rgba(236, 72, 153, 0.95)");
-    grad1.addColorStop(0.75, "rgba(249, 115, 22, 0.85)");
-    grad1.addColorStop(1, "rgba(37, 99, 235, 0.9)");
-
-    ctx.fillStyle = grad1;
-    ctx.beginPath();
-    ctx.ellipse(
-      cx + Math.sin(angle * 1.5) * 14,
-      cy + Math.cos(angle * 1.2) * 14,
-      radius * 0.95,
-      radius * 0.75,
-      angle * 0.8,
-      0,
-      Math.PI * 2
-    );
-    ctx.fill();
-
-    const grad2 = ctx.createRadialGradient(
-      cx + Math.cos(angle * 0.7) * 35,
-      cy + Math.sin(angle * 0.7) * 35,
-      8,
-      cx,
-      cy,
-      radius
-    );
-    grad2.addColorStop(0, "rgba(255, 255, 255, 0.85)");
-    grad2.addColorStop(0.2, "rgba(96, 165, 250, 0.8)");
-    grad2.addColorStop(0.55, "rgba(10, 15, 30, 0.92)");
-    grad2.addColorStop(0.85, "rgba(192, 132, 252, 0.75)");
-    grad2.addColorStop(1, "rgba(6, 182, 212, 0.4)");
-
-    ctx.fillStyle = grad2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius * 0.92, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.moveTo(cx - 50, cy + 30);
-    ctx.bezierCurveTo(
-      cx - 20 + Math.sin(angle * 2) * 20,
-      cy - 60 + Math.cos(angle) * 20,
-      cx + 40 + Math.cos(angle * 1.8) * 20,
-      cy - 10 + Math.sin(angle) * 15,
-      cx + 60,
-      cy + 40
-    );
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
-    ctx.lineWidth = 14;
-    ctx.lineCap = "round";
-    ctx.filter = "blur(6px)";
-    ctx.stroke();
-    ctx.filter = "none";
-
-    ctx.restore();
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.restore();
-
-    requestAnimationFrame(render);
-  }
-
-  render();
 }
 
 function simulateWorkflow(prompt) {
@@ -5764,9 +5961,15 @@ function initDockResize() {
   if (!dock || !handle) return;
 
   // The toolbar at the dock's foot is ~137px tall, so 160 is the floor that keeps
-  // it fully visible; the ceiling leaves the center stage usable on short windows.
+  // it fully visible. The ceiling is a share of the pane the dock shares with the
+  // centre stage rather than of the window, which also counts the 48px top bar, so
+  // the workbench always keeps a visible share of the box being divided.
   const MIN_HEIGHT = 160;
-  const maxHeight = () => Math.max(MIN_HEIGHT, Math.round(window.innerHeight * 0.7));
+  const maxHeight = () => {
+    const pane = dock.parentElement;
+    const available = pane ? pane.clientHeight : window.innerHeight;
+    return Math.max(MIN_HEIGHT, Math.round(available * 0.6));
+  };
 
   let startY = 0;
   let startHeight = 0;
@@ -5797,6 +6000,289 @@ function initDockResize() {
     window.addEventListener("pointerup", stopDragging);
     event.preventDefault();
   });
+}
+  </script>
+  <script>
+// ui/js/workbench.js — The Plan Workbench: the active plan rendered in the centre stage.
+//
+// The plan file is not a description of the work, it *is* the work: it is what the
+// agents read and rewrite, and what plan.json is compiled from. So the centre stage
+// shows the plan's own markdown rather than a rendered summary, with the syntax marks
+// dimmed instead of hidden -- the document stays readable while remaining
+// character-for-character what a save would write.
+//
+// Read mode renders one row per source line, so the line numbers are produced by the
+// same loop that produces the text and cannot drift apart from it. Edit mode swaps in a
+// textarea with a virtual gutter (one number per newline) synced to its scroll offset.
+//
+// Wiring deliberately lives in initEventListeners (ui/js/wire.js) with every other
+// control, so a throw in this module cannot cost any interactivity.
+
+let workbenchRendered = null; // the content currently on screen; null before the first load
+let workbenchSaved = "";      // the content the editor was opened with, i.e. last known disk state
+let workbenchBusy = false;    // re-entrancy guard around the async save
+let workbenchGutterLines = 0; // line count currently painted in the gutter
+
+// --- Markdown source rendering ---------------------------------------------
+// Escaping happens first and every pattern is single-line, so no markdown run can span
+// a newline. That keeps the whole document escaped by construction: the only angle
+// brackets in the output are the spans built below.
+const WORKBENCH_INLINE_RE = /(`[^`\n]*`)|(\*\*[^*\n]*\*\*)|(__[^_\n]*__)/g;
+const WORKBENCH_FENCE_RE = /^\s*(```|~~~)/;
+const WORKBENCH_HEADING_RE = /^(\s*)(#{1,6})(\s+)(.*)$/;
+const WORKBENCH_CHECK_RE = /^(\s*)([-*+])(\s+)\[([ xX])\]\s*(.*)$/;
+const WORKBENCH_BULLET_RE = /^(\s*)([-*+])(\s+)(.*)$/;
+const WORKBENCH_NUMBER_RE = /^(\s*)(\d+[.)])(\s+)(.*)$/;
+
+// Dims the delimiters of inline code, bold and underline runs. Done in one pass so an
+// inserted span can never be rescanned and re-wrapped by the next pattern.
+function workbenchInline(text) {
+  return text.replace(WORKBENCH_INLINE_RE, (match, code, strong) => {
+    const marker = code ? "`" : (strong ? "**" : "__");
+    const width = marker.length;
+    const inner = match.slice(width, -width);
+    return `<span class="wb-md">${marker}</span>${inner}<span class="wb-md">${marker}</span>`;
+  });
+}
+
+function workbenchRenderLine(line) {
+  const escaped = escapeHtml(line);
+
+  const check = escaped.match(WORKBENCH_CHECK_RE);
+  if (check) {
+    const done = check[4].toLowerCase() === "x";
+    return check[1] +
+      `<span class="wb-md">${check[2]}</span>${check[3]}` +
+      `<span class="wb-md-check task${done ? " task-done" : ""}">${done ? "✓" : "○"}</span> ` +
+      `<span class="wb-src-text${done ? " done" : ""}">${workbenchInline(check[5])}</span>`;
+  }
+
+  const heading = escaped.match(WORKBENCH_HEADING_RE);
+  if (heading) {
+    return heading[1] +
+      `<span class="wb-md wb-md-heading">${heading[2]}</span>${heading[3]}` +
+      workbenchInline(heading[4]);
+  }
+
+  const bullet = escaped.match(WORKBENCH_BULLET_RE);
+  if (bullet) {
+    return bullet[1] +
+      `<span class="wb-md">${bullet[2]}</span>${bullet[3]}` +
+      workbenchInline(bullet[4]);
+  }
+
+  const numbered = escaped.match(WORKBENCH_NUMBER_RE);
+  if (numbered) {
+    return numbered[1] +
+      `<span class="wb-md">${numbered[2]}</span>${numbered[3]}` +
+      workbenchInline(numbered[4]);
+  }
+
+  return workbenchInline(escaped);
+}
+
+function workbenchEmptyMessage() {
+  if (!state.activePlan) {
+    return "No active plan selected. Create or select a plan to render it here.";
+  }
+  return `${state.activePlan} has no content yet.`;
+}
+
+// The single entry point for plan text. Fed from applyPlanData, the funnel every plan
+// load, switch, save and sync already flows through.
+function renderPlanDocument(content) {
+  if (!DOM.planDoc) return;
+  const text = typeof content === "string" ? content : "";
+  if (text === workbenchRendered) return; // identical content: no DOM churn, keeps the scroll position
+  workbenchRendered = text;
+
+  if (!text.trim()) {
+    DOM.planDoc.innerHTML = `<div class="workbench-empty">${escapeHtml(workbenchEmptyMessage())}</div>`;
+    updateWorkbenchMeta();
+    return;
+  }
+
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  const rows = [];
+  let inFence = false;
+
+  lines.forEach((line, index) => {
+    const isFenceDelimiter = WORKBENCH_FENCE_RE.test(line);
+    let lineClass = "";
+    let source;
+
+    if (isFenceDelimiter || inFence) {
+      // Inside a fence the text is code, so markdown marks in it stay literal.
+      source = escapeHtml(line);
+      lineClass = isFenceDelimiter ? "wb-fence" : "";
+      if (isFenceDelimiter) inFence = !inFence;
+    } else if (!line.trim()) {
+      lineClass = "wb-blank";
+      source = "";
+    } else {
+      if (WORKBENCH_HEADING_RE.test(line)) lineClass = "wb-heading";
+      source = workbenchRenderLine(line);
+    }
+
+    rows.push(
+      `<div class="wb-line${lineClass ? " " + lineClass : ""}">` +
+        `<span class="wb-ln">${index + 1}</span>` +
+        `<span class="wb-src">${source}</span>` +
+      `</div>`
+    );
+  });
+
+  DOM.planDoc.innerHTML = rows.join("");
+  DOM.planDoc.scrollTop = 0;
+  updateWorkbenchMeta();
+}
+
+// --- Chrome: breadcrumb, task counter, status bar --------------------------
+function refreshWorkbenchChrome() {
+  const dir = state.workspaceDir || "";
+  const segments = dir.split(/[/\\]/).filter(Boolean);
+  if (DOM.crumbWorkspace) {
+    DOM.crumbWorkspace.textContent = segments.length ? segments[segments.length - 1] : "workspace";
+    DOM.crumbWorkspace.title = dir;
+  }
+
+  const planFile = state.activePlan || "PLAN.md";
+  if (DOM.crumbPlanFile) DOM.crumbPlanFile.textContent = planFile;
+  if (DOM.txtWorkbenchPath) DOM.txtWorkbenchPath.textContent = planFile;
+
+  const tasks = state.planTree || [];
+  const completed = tasks.filter((task) => task.status === "completed").length;
+  if (DOM.txtWorkbenchStat) DOM.txtWorkbenchStat.textContent = `${completed}/${tasks.length} tasks`;
+
+  // Editing needs the bridge: without one a save has nowhere to go, and pretending
+  // otherwise would be the same disguise initFallbackMode refuses to make. The bridge
+  // is injected after these modules run, so the flag is read here rather than at init.
+  const hasBridge = !!(window.pywebview && window.pywebview.api);
+  if (DOM.btnWorkbenchEdit) {
+    DOM.btnWorkbenchEdit.disabled = !hasBridge;
+    DOM.btnWorkbenchEdit.title = hasBridge
+      ? "Edit the plan source"
+      : "Read-only: the desktop bridge is unavailable";
+  }
+  updateWorkbenchMeta();
+}
+
+function workbenchIsEditing() {
+  return !!(DOM.emptyStateContainer && DOM.emptyStateContainer.classList.contains("editing"));
+}
+
+function updateWorkbenchMeta() {
+  if (!DOM.txtWorkbenchMeta) return;
+  const source = workbenchIsEditing() && DOM.planEditorInput
+    ? DOM.planEditorInput.value
+    : (workbenchRendered || "");
+  const lines = source ? source.split("\n").length : 0;
+  const mode = (window.pywebview && window.pywebview.api) ? "editable" : "read-only preview";
+  DOM.txtWorkbenchMeta.textContent = `${lines} line${lines === 1 ? "" : "s"} · ${mode}`;
+}
+
+function updateWorkbenchDirty() {
+  const dirty = !!DOM.planEditorInput && DOM.planEditorInput.value !== workbenchSaved;
+  if (DOM.crumbDirty) DOM.crumbDirty.hidden = !dirty;
+}
+
+// --- Read/write mode ------------------------------------------------------
+function setWorkbenchEditing(editing) {
+  if (!DOM.emptyStateContainer || !DOM.planEditorInput) return;
+  DOM.emptyStateContainer.classList.toggle("editing", editing);
+  if (DOM.btnWorkbenchEdit) DOM.btnWorkbenchEdit.hidden = editing;
+  if (DOM.btnWorkbenchSave) DOM.btnWorkbenchSave.hidden = !editing;
+  if (DOM.btnWorkbenchDiscard) DOM.btnWorkbenchDiscard.hidden = !editing;
+
+  if (editing) {
+    DOM.planEditorInput.value = workbenchRendered || "";
+    workbenchSaved = DOM.planEditorInput.value;
+    renderWorkbenchGutter();
+    if (DOM.planEditorInput.focus) DOM.planEditorInput.focus();
+  }
+
+  updateWorkbenchDirty();
+  updateWorkbenchMeta();
+}
+
+// The gutter is virtual: it numbers the draft's lines, which is all a textarea can be
+// counted on for. It is scrolled in lockstep with the textarea by syncWorkbenchGutterScroll.
+function renderWorkbenchGutter() {
+  if (!DOM.planEditorGutter || !DOM.planEditorInput) return;
+  const count = DOM.planEditorInput.value.split("\n").length;
+  if (count === workbenchGutterLines) return; // typing within a line leaves the numbers alone
+  workbenchGutterLines = count;
+  const numbers = [];
+  for (let line = 1; line <= count; line++) numbers.push(String(line));
+  DOM.planEditorGutter.textContent = numbers.join("\n");
+}
+
+function syncWorkbenchGutterScroll() {
+  if (DOM.planEditorGutter && DOM.planEditorInput) {
+    DOM.planEditorGutter.scrollTop = DOM.planEditorInput.scrollTop;
+  }
+}
+
+function handleWorkbenchInput() {
+  renderWorkbenchGutter();
+  updateWorkbenchDirty();
+  updateWorkbenchMeta();
+}
+
+function handleWorkbenchEdit() {
+  if (workbenchBusy) return;
+  if (!window.pywebview || !window.pywebview.api) {
+    showToast("Editing the plan needs the desktop app; this view is read-only.", "info");
+    return;
+  }
+  setWorkbenchEditing(true);
+}
+
+function handleWorkbenchDiscard() {
+  if (workbenchBusy || !DOM.planEditorInput) return;
+  DOM.planEditorInput.value = workbenchSaved;
+  setWorkbenchEditing(false);
+  showToast("Discarded unsaved plan edits", "info");
+}
+
+async function handleWorkbenchSave() {
+  if (workbenchBusy || !DOM.planEditorInput) return;
+  if (!window.pywebview || !window.pywebview.api) {
+    showToast("Saving the plan needs the desktop app; this view is read-only.", "info");
+    return;
+  }
+
+  const filename = state.activePlan || "PLAN.md";
+  const content = DOM.planEditorInput.value;
+  workbenchBusy = true;
+  if (DOM.btnWorkbenchSave) DOM.btnWorkbenchSave.disabled = true;
+
+  try {
+    const res = await window.pywebview.api.save_plan_content(filename, content);
+    if (res && res.success === false) {
+      // Stay in edit mode: the draft is the only copy of the user's work.
+      showToast(`Save failed: ${res.error || "unknown error"}`, "error");
+      return;
+    }
+    workbenchSaved = content;
+    setWorkbenchEditing(false);
+    // The backend re-parses the markdown and re-compiles plan.json, so its return value
+    // -- not the editor's text -- is the new truth for both the tree and this document.
+    applyPlanData(res);
+    showToast(`Saved ${filename} and re-synced plan.json`, "success");
+  } catch (err) {
+    showToast(`Save error: ${(err && err.message) || err}`, "error");
+  } finally {
+    workbenchBusy = false;
+    if (DOM.btnWorkbenchSave) DOM.btnWorkbenchSave.disabled = false;
+  }
+}
+
+function initWorkbench() {
+  // The first plan load renders the document itself; this settles only the chrome that
+  // does not depend on plan content.
+  refreshWorkbenchChrome();
+  updateWorkbenchDirty();
 }
   </script>
   <script>
@@ -5853,14 +6339,15 @@ function on(element, event, handler) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Interactivity is wired before anything decorative. The orb animation used to run
-  // second, so a single canvas/GPU hiccup (getContext("2d") returning null) threw
-  // before every listener below it was registered, leaving the whole UI inert.
+  // Interactivity is wired before anything that renders content. The workbench renders
+  // the whole active plan, so a plan the parser chokes on used to be able to throw here
+  // before the listeners below were registered -- leaving the window rendered but inert.
+  // Each step is isolated, so the workbench failing costs nothing but the workbench.
   runStartupStep("DOM lookup", initDOMElements);
   runStartupStep("Event wiring", initEventListeners);
   runStartupStep("Auto-scroll wiring", initAutoScrollListeners);
   runStartupStep("Dock resize", initDockResize);
-  runStartupStep("Orb animation", initOrbAnimation);
+  runStartupStep("Plan workbench", initWorkbench);
 
   // PyWebView Bridge initialization
   if (window.pywebview) {
@@ -6066,6 +6553,13 @@ function initEventListeners() {
     });
   }
   if (DOM.btnConfirmRollbackAction) DOM.btnConfirmRollbackAction.addEventListener("click", handleConfirmRollback);
+
+  // ── Plan Workbench: the active plan as a read/write document ──
+  on(DOM.btnWorkbenchEdit, "click", handleWorkbenchEdit);
+  on(DOM.btnWorkbenchSave, "click", handleWorkbenchSave);
+  on(DOM.btnWorkbenchDiscard, "click", handleWorkbenchDiscard);
+  on(DOM.planEditorInput, "input", handleWorkbenchInput);
+  on(DOM.planEditorInput, "scroll", syncWorkbenchGutterScroll);
 }
 
 function checkAllCardsClosed() {

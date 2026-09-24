@@ -7,9 +7,15 @@ function initDockResize() {
   if (!dock || !handle) return;
 
   // The toolbar at the dock's foot is ~137px tall, so 160 is the floor that keeps
-  // it fully visible; the ceiling leaves the center stage usable on short windows.
+  // it fully visible. The ceiling is a share of the pane the dock shares with the
+  // centre stage rather than of the window, which also counts the 48px top bar, so
+  // the workbench always keeps a visible share of the box being divided.
   const MIN_HEIGHT = 160;
-  const maxHeight = () => Math.max(MIN_HEIGHT, Math.round(window.innerHeight * 0.7));
+  const maxHeight = () => {
+    const pane = dock.parentElement;
+    const available = pane ? pane.clientHeight : window.innerHeight;
+    return Math.max(MIN_HEIGHT, Math.round(available * 0.6));
+  };
 
   let startY = 0;
   let startHeight = 0;

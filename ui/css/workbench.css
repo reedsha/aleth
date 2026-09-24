@@ -1,0 +1,292 @@
+/* --------------------------------------------------------------------------
+   PLAN WORKBENCH — the active plan, rendered as a read/write document.
+   This fills the centre stage whenever no agent card is open. It replaces the
+   glowing-orb hero, which occupied the same idle slot and showed nothing about
+   the project. Read mode tints the markdown source; edit mode swaps the same
+   surface for a textarea sharing the gutter, so the two views line up exactly.
+
+   Line numbers are rendered per source line in read mode rather than as a
+   separately scrolled gutter, so the number column cannot drift away from the
+   code. Edit mode needs a virtual gutter, which is why it wraps in `pre`.
+   -------------------------------------------------------------------------- */
+.plan-workbench {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  overflow: hidden;
+  transition: opacity var(--transition-smooth), transform var(--transition-smooth);
+}
+
+.plan-workbench.hidden {
+  opacity: 0;
+  transform: translateY(-12px);
+  pointer-events: none;
+}
+
+/* Breadcrumb + tools, mirroring the editor-group header of an IDE. */
+.workbench-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 38px;
+  padding: 0 14px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.workbench-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.workbench-breadcrumbs .crumb {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crumb-sep {
+  color: var(--text-dim);
+}
+
+.crumb-file {
+  color: var(--text-main);
+}
+
+/* Unsaved edits are a warning state, so this is amber rather than decorative. */
+.crumb-dirty {
+  color: #fbbf24;
+  font-size: 10px;
+}
+
+.workbench-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.workbench-stat {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.wb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border-glass);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.wb-btn:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-main);
+}
+
+.wb-btn.primary {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue-hover);
+}
+
+.wb-btn.primary:hover {
+  background: rgba(14, 165, 233, 0.14);
+}
+
+.wb-btn[hidden] {
+  display: none;
+}
+
+/* Read-only mode: the Edit button is present but inert, so it is dimmed rather than
+   hidden -- hiding it made the toolbar look like the workbench had no edit flow. */
+.wb-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.wb-btn:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.workbench-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Shared metrics for the source surface, the gutter and the edit textarea: the
+   three only stay aligned while their font and line box are identical. */
+.workbench-doc,
+.workbench-gutter,
+.workbench-input {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.workbench-doc {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 10px 0 24px 0;
+  /* body sets user-select: none; the plan is text the user needs to copy. */
+  user-select: text;
+}
+
+.wb-line {
+  display: flex;
+  padding-right: 16px;
+}
+
+.wb-line:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.wb-ln {
+  flex: none;
+  width: 52px;
+  padding-right: 14px;
+  text-align: right;
+  color: var(--text-dim);
+  opacity: 0.65;
+  user-select: none;
+}
+
+.wb-src {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+}
+
+.wb-line.wb-heading .wb-src {
+  color: var(--text-main);
+}
+
+.wb-line.wb-fence .wb-src,
+.wb-line.wb-blank .wb-src {
+  color: var(--text-dim);
+}
+
+/* Markdown syntax characters are dimmed so the prose reads as the content and
+   the punctuation reads as structure. */
+.wb-md {
+  color: var(--text-dim);
+  opacity: 0.75;
+}
+
+.wb-md-heading {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.wb-md-check {
+  display: inline-block;
+  min-width: 1.35em;
+  opacity: 1;
+}
+
+.wb-md-check.task {
+  color: var(--text-dim);
+}
+
+/* A ticked checkbox is a completed state, so it takes the same green the plan
+   tree uses for completed steps. */
+.wb-md-check.task-done {
+  color: #10b981;
+}
+
+.wb-src-text.done {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
+.workbench-empty {
+  padding: 4px 16px 4px 52px;
+  color: var(--text-dim);
+}
+
+/* Edit mode: the gutter scrolls with the textarea (synced in ui/js/workbench.js)
+   and wrapping is disabled so one source line stays one visual row. */
+.workbench-gutter {
+  flex: none;
+  width: 52px;
+  padding: 10px 14px 24px 0;
+  overflow: hidden;
+  text-align: right;
+  white-space: pre;
+  color: var(--text-dim);
+  opacity: 0.65;
+  user-select: none;
+  display: none;
+}
+
+.workbench-input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 16px 24px 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-muted);
+  resize: none;
+  white-space: pre;
+  overflow: auto;
+  caret-color: var(--accent-blue-hover);
+  display: none;
+  user-select: text;
+}
+
+.plan-workbench.editing .workbench-gutter,
+.plan-workbench.editing .workbench-input {
+  display: block;
+}
+
+.plan-workbench.editing .workbench-doc {
+  display: none;
+}
+
+.workbench-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 26px;
+  padding: 0 14px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.workbench-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

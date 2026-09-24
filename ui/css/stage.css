@@ -118,66 +118,6 @@
   overflow: hidden;
 }
 
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding-top: 50px;
-  text-align: center;
-  transition: opacity var(--transition-smooth), transform var(--transition-smooth);
-}
-
-.empty-state.hidden {
-  opacity: 0;
-  transform: translateY(-20px);
-  pointer-events: none;
-}
-
-.orb-container {
-  position: relative;
-  width: 200px;
-  height: 200px;
-  margin-bottom: 26px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-#orbCanvas {
-  width: 190px;
-  height: 190px;
-  border-radius: 50%;
-  filter: drop-shadow(0 0 25px rgba(56, 189, 248, 0.45));
-}
-
-.orb-specular {
-  position: absolute;
-  top: 15px;
-  left: 30px;
-  width: 45px;
-  height: 20px;
-  border-radius: 50%;
-  background: radial-gradient(ellipse at center, rgba(255, 255, 255, 0.4) 0%, transparent 80%);
-  transform: rotate(-35deg);
-  pointer-events: none;
-}
-
-.hero-title {
-  font-size: 38px;
-  font-weight: 700;
-  color: #ffffff;
-  letter-spacing: -0.8px;
-  margin-bottom: 10px;
-}
-
-.hero-subtitle {
-  font-size: 14.5px;
-  color: var(--text-dim);
-  max-width: 480px;
-}
-
 /* Execution Stage (50/50 Split Grid) */
 .execution-stage {
   flex: 1;

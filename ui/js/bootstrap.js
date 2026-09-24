@@ -192,4 +192,7 @@ function updateWorkspaceUI(dirPath) {
   const folderName = parts[parts.length - 1] || dirPath;
   DOM.txtWorkspacePath.textContent = folderName;
   DOM.txtWorkspacePath.title = dirPath;
+  // The workbench breadcrumb names the same folder, and a workspace_changed event
+  // arrives without a plan reload to refresh it.
+  if (typeof refreshWorkbenchChrome === "function") refreshWorkbenchChrome();
 }

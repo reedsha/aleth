@@ -1,9 +1,11 @@
-// Frontend startup contract: proves a decorative failure cannot disable the UI.
+// Frontend startup contract: proves a failing startup step cannot disable the UI.
 //
 // The app used to render normally but ignore every click when one startup step threw
 // before the event wiring ran -- most plausibly canvas.getContext("2d") returning null
-// on a GPU/WebView2 hiccup. That failure is not reproducible on demand, so it is
-// simulated here. Run from the repo root with no dependencies:
+// on a GPU/WebView2 hiccup. The orb canvas is gone, but the shape of the failure it
+// exposed is not: the step that renders the active plan can still throw on a plan the
+// parser chokes on. That is not reproducible on demand either, so it is simulated here.
+// Run from the repo root with no dependencies:
 //
 //   node tests/ui_startup_contract.js
 //
@@ -17,7 +19,7 @@ const vm = require("vm");
 const MODULES = [
   "state.js", "dom.js", "bootstrap.js", "plan-tree.js", "actions.js",
   "plan-modals.js", "agents.js", "workspace.js", "agent-events.js",
-  "visuals.js", "dock.js", "wire.js",
+  "visuals.js", "dock.js", "workbench.js", "wire.js",
 ];
 
 // Mirrors tools/build_ui_bundle.py. A stylesheet that fails to load only costs
@@ -26,7 +28,7 @@ const MODULES = [
 const STYLESHEETS = [
   "base.css", "sidebar.css", "stage.css", "actions.css", "plan-tree.css",
   "modals.css", "tiered-prompt-editor.css", "ui-vision.css", "audit-modal.css",
-  "rollback-modal.css", "dock.css",
+  "rollback-modal.css", "dock.css", "workbench.css",
 ];
 
 function makeElement(id, ctxFactory) {
@@ -132,6 +134,9 @@ function countWiredListeners(elements) {
   return total;
 }
 
+// A stand-in for the sandbox's fake 2d context. No startup step draws to a canvas any
+// more, so getContext is never reached in practice; the factory is kept so the
+// harness's element scaffolding stays uniform.
 function workingContext() {
   const gradient = { addColorStop() {} };
   return new Proxy({}, {
@@ -273,25 +278,43 @@ function check(label, ok, detail) {
   check("healthy 2d context wires the UI", wired > 0, `${wired} listeners`);
 }
 
-// --- 2. Broken canvas: the orb must not take the UI down with it. -----------
+// --- 2. The plan workbench controls must be wired, even if one is missing. ----
+// The workbench is the centre stage the redesign introduced: it renders the active
+// plan and hosts the edit flow. A workbench that renders but ignores every click is
+// the exact failure this contract exists to catch, and because its controls are wired
+// from initEventListeners, one missing element must not cost the others.
 {
+  const wired = (run, id, type) =>
+    ((run.elements.get(id) || { listeners: {} }).listeners[type] || []).length;
+
   const healthyRun = load(workingContext);
   healthyRun.fire();
-  const healthy = countWiredListeners(healthyRun.elements);
+  check("the plan workbench controls are wired",
+    wired(healthyRun, "btnWorkbenchEdit", "click") === 1 &&
+    wired(healthyRun, "btnWorkbenchSave", "click") === 1 &&
+    wired(healthyRun, "btnWorkbenchDiscard", "click") === 1 &&
+    wired(healthyRun, "planEditorInput", "input") === 1 &&
+    wired(healthyRun, "planEditorInput", "scroll") === 1,
+    `edit=${wired(healthyRun, "btnWorkbenchEdit", "click")}` +
+    ` save=${wired(healthyRun, "btnWorkbenchSave", "click")}` +
+    ` discard=${wired(healthyRun, "btnWorkbenchDiscard", "click")}` +
+    ` input=${wired(healthyRun, "planEditorInput", "input")}` +
+    ` scroll=${wired(healthyRun, "planEditorInput", "scroll")}`);
 
-  const brokenRun = load(() => null);
-  brokenRun.fire();
-  const broken = countWiredListeners(brokenRun.elements);
-
-  check("null 2d context still wires the UI", broken > 0, `${broken} listeners`);
-  check("degraded canvas wires exactly as many listeners as a healthy one", broken === healthy,
-    `healthy=${healthy} broken=${broken}`);
+  const degradedRun = load(workingContext, new Set(["btnWorkbenchDiscard"]));
+  degradedRun.fire();
+  check("a missing workbench control does not cost the others",
+    wired(degradedRun, "btnWorkbenchEdit", "click") === 1 &&
+    wired(degradedRun, "planEditorInput", "input") === 1,
+    `edit=${wired(degradedRun, "btnWorkbenchEdit", "click")}` +
+    ` input=${wired(degradedRun, "planEditorInput", "input")}`);
 }
 
-// --- 3. A throwing decorative step must not cost any wiring. ---------------
-// The orb guard handles a null 2d context, but decoration must be harmless even
-// when it fails for a reason nobody anticipated (e.g. visuals.js never loaded, so
-// initOrbAnimation is undefined). That is what the ordering + isolation buys.
+// --- 3. A throwing startup step must not cost any wiring. -------------------
+// initWorkbench renders the whole plan, so it is the step most likely to throw on a
+// plan the parser chokes on. The workbench's own controls are wired by
+// initEventListeners, which runs before it, so a throw here must cost nothing at all --
+// that is what the ordering plus runStartupStep's isolation buys.
 const healthyWiring = (() => {
   const run = load(workingContext);
   run.fire();
@@ -304,31 +327,31 @@ const healthyWiring = (() => {
   let wired;
   try {
     sandbox.initDOMElements();
-    sandbox.initOrbAnimation = () => { throw new Error("simulated decorative failure"); };
-    sandbox.initOrbAnimation();
+    sandbox.initWorkbench = () => { throw new Error("simulated startup failure"); };
+    sandbox.initWorkbench();
     sandbox.initEventListeners();
     sandbox.initAutoScrollListeners();
     wired = countWiredListeners(elements);
   } catch (_err) {
     wired = countWiredListeners(elements);
   }
-  check("old order: a throwing orb left the UI completely dead", wired === 0, `listeners=${wired}`);
+  check("old order: a throwing startup step left the UI completely dead", wired === 0, `listeners=${wired}`);
 }
 
 {
   // NEW order: the same throw is contained and reported, wiring is unaffected.
   const run = load(workingContext);
-  run.sandbox.initOrbAnimation = () => { throw new Error("simulated decorative failure"); };
+  run.sandbox.initWorkbench = () => { throw new Error("simulated startup failure"); };
   run.fire();
 
   const wired = countWiredListeners(run.elements);
-  check("new order: a throwing orb still wires everything", wired === healthyWiring,
+  check("new order: a throwing startup step still wires everything", wired === healthyWiring,
     `healthy=${healthyWiring} wired=${wired}`);
 
   const banners = run.sandbox.document.body.children;
   const banner = banners[banners.length - 1];
   check("the failure is reported visibly in the window",
-    banners.length > 0 && /Orb animation failed/.test(banner.textContent || ""),
+    banners.length > 0 && /Plan workbench failed/.test(banner.textContent || ""),
     banner ? JSON.stringify(banner.textContent) : "no banner");
 }
 
@@ -364,11 +387,11 @@ const healthyWiring = (() => {
   const run = load(workingContext);
   const reported = [];
   run.sandbox.window.__deepAgentsReport = (message) => reported.push(String(message));
-  run.sandbox.initOrbAnimation = () => { throw new Error("simulated decorative failure"); };
+  run.sandbox.initWorkbench = () => { throw new Error("simulated startup failure"); };
   run.fire();
 
   check("startup failures are routed to the shared head reporter",
-    reported.some((m) => /Orb animation failed: simulated decorative failure/.test(m)),
+    reported.some((m) => /Plan workbench failed: simulated startup failure/.test(m)),
     JSON.stringify(reported));
   check("a routed failure does not also raise a local banner",
     run.sandbox.document.body.children.length === 0,

@@ -159,6 +159,20 @@ function initDOMElements() {
   DOM.bottomDock = document.getElementById("bottomDock");
   DOM.dockResizeHandle = document.getElementById("dockResizeHandle");
 
+  // Plan Workbench (centre stage: the active plan as a read/write document)
+  DOM.crumbWorkspace = document.getElementById("crumbWorkspace");
+  DOM.crumbPlanFile = document.getElementById("crumbPlanFile");
+  DOM.crumbDirty = document.getElementById("crumbDirty");
+  DOM.txtWorkbenchStat = document.getElementById("txtWorkbenchStat");
+  DOM.btnWorkbenchEdit = document.getElementById("btnWorkbenchEdit");
+  DOM.btnWorkbenchSave = document.getElementById("btnWorkbenchSave");
+  DOM.btnWorkbenchDiscard = document.getElementById("btnWorkbenchDiscard");
+  DOM.planEditorGutter = document.getElementById("planEditorGutter");
+  DOM.planDoc = document.getElementById("planDoc");
+  DOM.planEditorInput = document.getElementById("planEditorInput");
+  DOM.txtWorkbenchPath = document.getElementById("txtWorkbenchPath");
+  DOM.txtWorkbenchMeta = document.getElementById("txtWorkbenchMeta");
+
   DOM.systemStatusDot = document.getElementById("systemStatusDot");
   DOM.systemStatusLabel = document.getElementById("systemStatusLabel");
   DOM.toastContainer = document.getElementById("toastContainer");
