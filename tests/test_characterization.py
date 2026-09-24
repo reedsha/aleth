@@ -10,6 +10,8 @@ modules import), so they survive internal module reorganization.
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -328,6 +330,16 @@ class PlanStateTests(WorkspaceTestCase):
         state = ft.load_plan_state()
         self.assertEqual(state["title"], "Changed")
         self.assertEqual([s["title"] for s in state["steps"]], ["Only task"])
+
+    def test_load_recovers_when_plan_json_is_unreadable(self):
+        # An unreadable plan.json (interrupted write, transient file lock, cloud-sync
+        # placeholder) must not be reported to the UI as "no tasks" while the markdown
+        # plan is still intact: the markdown is used to rebuild the machine state.
+        self.write("PLAN.md", PLAN_MD)
+        self.write("plan.json", "{ this is not valid json")
+        state = ft.load_plan_state()
+        self.assertEqual(len(state["steps"]), 5)
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "plan.json")))
 
     def test_update_plan_task_status(self):
         self._save_demo()
@@ -1230,6 +1242,54 @@ class PromptEditorTests(unittest.TestCase):
         architect = self.registry.get_agent("software-architect")
         self.assertEqual(architect["custom_instructions"], "Be terse.")
         self.assertIn("Be terse.", architect["system_prompt"])
+
+
+class WorkspaceLocationTests(unittest.TestCase):
+    """The default workspace must not depend on the process working directory.
+
+    The desktop app is launched from shortcuts, IDE run configurations and plain
+    ``python app.py`` invocations, and the workspace is resolved at import time.
+    A cwd-relative default silently resolves to a different, freshly-created empty
+    directory for some of those launches, which reaches the UI as a blank plan tree
+    with every action control locked. Each case runs in a fresh interpreter because
+    that is exactly where the resolution happens.
+    """
+
+    _RESOLVE_SCRIPT = (
+        "import sys;"
+        "sys.path.insert(0, sys.argv[1]);"
+        "from tools.workspace import get_project_dir;"
+        "print(get_project_dir())"
+    )
+
+    @property
+    def project_root(self):
+        return os.path.dirname(os.path.dirname(os.path.abspath(ft.__file__)))
+
+    def _resolve_from(self, cwd):
+        result = subprocess.run(
+            [sys.executable, "-c", self._RESOLVE_SCRIPT, self.project_root],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+    def test_default_workspace_is_anchored_to_the_project_root(self):
+        expected = os.path.join(self.project_root, "my_project_workspace")
+        for cwd in (self.project_root, os.path.join(self.project_root, "ui"), os.path.dirname(self.project_root)):
+            if not os.path.isdir(cwd):
+                continue
+            self.assertEqual(self._resolve_from(cwd), expected, f"cwd={cwd}")
+
+    def test_foreign_cwd_does_not_create_a_second_workspace(self):
+        foreign = tempfile.mkdtemp(prefix="deepagents_foreigncwd_")
+        try:
+            self._resolve_from(foreign)
+            self.assertFalse(os.path.exists(os.path.join(foreign, "my_project_workspace")))
+        finally:
+            shutil.rmtree(foreign, ignore_errors=True)
 
 
 if __name__ == "__main__":

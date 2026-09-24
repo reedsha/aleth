@@ -13,8 +13,13 @@ invisible to the agents.
 
 import os
 
-# Default workspace directory (resolved relative to the process working directory).
-PROJECT_DIR = os.path.abspath("./my_project_workspace")
+# Default workspace directory. Anchored to this file's location instead of the
+# process working directory: the app can be launched from a shortcut, an IDE run
+# configuration or a plain ``python app.py``, and a cwd-relative path would then
+# silently point at a *different*, freshly-created empty directory -- leaving the
+# UI with no plan to render and every action control locked.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_DIR = os.path.join(PROJECT_ROOT, "my_project_workspace")
 os.makedirs(PROJECT_DIR, exist_ok=True)
 
 # Dynamic Active Plan File
