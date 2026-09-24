@@ -1,0 +1,8 @@
+# Store every file byte-for-byte; never normalise line endings.
+#
+# agents/*.py double as data files: AgentRegistry.save_system_prompt rewrites their
+# prompt constants in place at runtime. Letting git convert line endings on checkout
+# would make those files appear modified for reasons unrelated to the app, and would
+# risk the regex patching in orchestration/prompt_editor.py not matching what it
+# wrote. Keeping the worktree and the index byte-identical avoids both.
+* -text
