@@ -8,11 +8,61 @@ plan engine to test in isolation.
 
 import re
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from markdown_it import MarkdownIt
 
 from tools.workspace import get_active_plan_filename
+
+
+# A task's deliverables declaration, e.g. "Files: a.py, b.py". Both directions of the
+# translation share this one pattern on purpose: an asymmetric pair is exactly what
+# caused every task's `files` to be silently discarded whenever plan.json was
+# rehydrated from the markdown plan.
+_DELIVERABLES_RE = re.compile(r"(?i)files?\s*(?:created|modified)?\s*:\s*([^,\n]+(?:,\s*[^,\n]+)*)")
+
+
+def parse_deliverables(text: str) -> List[str]:
+    """File paths declared by a `Files: a.py, b.py` style detail line, else an empty list."""
+    match = _DELIVERABLES_RE.search(text)
+    if not match:
+        return []
+    return [f for f in (p.strip(" `\"'") for p in match.group(1).split(",")) if f]
+
+
+def format_deliverables(files: List[str]) -> str:
+    """Renders a files list as the detail line parse_deliverables() reads back."""
+    return "Files: " + ", ".join(f"`{f}`" for f in files)
+
+
+def _unique(files: List[str]) -> List[str]:
+    """Order-preserving de-duplication.
+
+    `files` is a set of deliverables, so the same path declared twice (for instance
+    by a detail bullet that also survived as a compiled line) must not accumulate.
+    """
+    seen = set()
+    unique = []
+    for f in files:
+        if f not in seen:
+            seen.add(f)
+            unique.append(f)
+    return unique
+
+
+def _absorb_detail_lines(task: Dict[str, Any], lines: List[str]) -> None:
+    """Sorts detail bullets into a task's structured `files` or free-form `details`.
+
+    A bullet that declares deliverables ("Files: a.py, b.py") belongs in `files`;
+    leaving it in `details` as well would let the two views of one fact duplicate
+    each other on the next compile/reparse round-trip.
+    """
+    for line in lines:
+        declared = parse_deliverables(line)
+        if declared:
+            task["files"] = _unique(task["files"] + declared)
+        else:
+            task["details"].append(line)
 
 
 def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed: bool = False) -> Dict[str, Any]:
@@ -100,24 +150,16 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                     is_ui = "[ui]" in raw_task_title.lower()
                     clean_task_title = re.sub(r"\[ui\]", "", raw_task_title, flags=re.IGNORECASE).strip()
 
-                    files = []
-                    clean_details = []
-                    for d in item_details:
-                        clean_details.append(d)
-                        file_match = re.search(r"(?i)files?\s*(?:created|modified)?\s*:\s*([^,\n]+(?:,\s*[^,\n]+)*)", d)
-                        if file_match:
-                            extracted = [f.strip(" `\"'") for f in file_match.group(1).split(",")]
-                            files.extend([f for f in extracted if f])
-
                     task_obj = {
                         "id": f"task-{task_counter}",
                         "section": current_section["title"],
                         "title": clean_task_title,
                         "status": status,
                         "is_ui": is_ui,
-                        "details": clean_details,
-                        "files": files
+                        "details": [],
+                        "files": []
                     }
+                    _absorb_detail_lines(task_obj, item_details)
                     current_section["tasks"].append(task_obj)
                     all_steps.append(task_obj)
                 else:
@@ -139,9 +181,11 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                             current_section["tasks"].append(task_obj)
                             all_steps.append(task_obj)
                     elif all_steps:
-                        all_steps[-1]["details"].append(item_text)
-                        for d in item_details:
-                            all_steps[-1]["details"].append(d)
+                        # Nested bullets past the first arrive here instead of the
+                        # checkbox branch above (the item scan stops at the first
+                        # list_item_close), so they must be sorted the same way or a
+                        # task's deliverables would still be dropped on rehydration.
+                        _absorb_detail_lines(all_steps[-1], [item_text] + item_details)
             i = j
 
         i += 1
@@ -196,9 +240,15 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
             mark = "x" if st == "completed" else ("-" if st == "in_progress" else " ")
             ui_prefix = "[UI] " if task.get("is_ui") else ""
             t_title = task.get("title", "")
+            files = [f for f in task.get("files", []) if f]
             lines.append(f"- [{mark}] {ui_prefix}{t_title}")
             for d in task.get("details", []):
                 lines.append(f"  - {d}")
+            if files:
+                # Without this line the markdown carries no record of a task's
+                # deliverables, so load_plan_state() lost every `files` entry
+                # whenever it rehydrated plan.json from the markdown plan.
+                lines.append(f"  - {format_deliverables(files)}")
         lines.append("")
 
     return "\n".join(lines).strip() + "\n"

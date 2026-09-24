@@ -73,7 +73,8 @@ class PlanParserTests(unittest.TestCase):
         # extraction regex only matches forms like "Files: a.py" / "File Modified: a.py".
         # The "Files Created/Modified: `a.py`" shape written by the Coder prompt is
         # retained verbatim as a detail but yields NO parsed files. This is captured
-        # here so the refactor cannot silently change it.
+        # here so the refactor cannot silently change it -- extracting it would move
+        # paths into `files` and alter audit_codebase_plan_sync() results.
         steps = ft.parse_markdown_to_plan_dict(PLAN_MD)["steps"]
         self.assertEqual(steps[0]["files"], [])
         self.assertEqual(
@@ -85,6 +86,38 @@ class PlanParserTests(unittest.TestCase):
         md = "# P\n\n## 1. S\n- [x] Done\n  - Files: `a.py`, `b.py`\n"
         steps = ft.parse_markdown_to_plan_dict(md, "P.md")["steps"]
         self.assertEqual(steps[0]["files"], ["a.py", "b.py"])
+
+    def test_deliverables_declared_after_other_details_are_extracted(self):
+        # Regression: the task scan stops at the first nested list_item_close, so any
+        # bullet after the first reaches the fallthrough branch. It must sort detail
+        # lines into `files` the same way, or compile->reparse drops deliverables.
+        md = "# P\n\n## 1. S\n- [x] Alpha\n  - note one\n  - Files: `alpha.py`, `shared.py`\n"
+        steps = ft.parse_markdown_to_plan_dict(md, "P.md")["steps"]
+        self.assertEqual(steps[0]["details"], ["note one"])
+        self.assertEqual(steps[0]["files"], ["alpha.py", "shared.py"])
+
+    def test_compile_then_reparse_preserves_deliverables(self):
+        original = {
+            "title": "Round Trip",
+            "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
+                {"id": "task-1", "section": "1. S", "title": "Alpha", "status": "completed",
+                 "is_ui": False, "details": ["note one"], "files": ["alpha.py", "shared.py"]},
+                {"id": "task-2", "section": "1. S", "title": "Beta", "status": "pending",
+                 "is_ui": False, "details": [], "files": ["beta.py"]},
+                {"id": "task-3", "section": "1. S", "title": "Gamma", "status": "in_progress",
+                 "is_ui": True, "details": ["Assigned: coder-deep"], "files": ["gamma.py"]},
+            ]}],
+        }
+
+        compiled = ft.compile_plan_json_to_markdown(original)
+        reparsed = ft.parse_markdown_to_plan_dict(compiled, "PLAN.md")
+
+        self.assertEqual(
+            [("t", s["title"], s["status"], s["is_ui"], s["details"], s["files"]) for s in reparsed["steps"]],
+            [("t", s["title"], s["status"], s["is_ui"], s["details"], s["files"]) for s in original["sections"][0]["tasks"]],
+        )
+        # A second compile must be byte-identical, so the round-trip has converged.
+        self.assertEqual(ft.compile_plan_json_to_markdown(reparsed), compiled)
 
     def test_non_checkbox_bullet_appends_to_previous_task_details(self):
         steps = ft.parse_markdown_to_plan_dict(PLAN_MD)["steps"]
@@ -313,14 +346,14 @@ class PlanStateTests(WorkspaceTestCase):
         self._save_demo()
         self.assertEqual(len(ft.sync_plan_on_disk()["steps"]), 5)
 
-    def test_rehydration_side_decides_whether_files_survive(self):
-        """Pins a pre-existing markdown round-trip limitation.
+    def test_files_survive_rehydration_from_markdown(self):
+        """Both rehydration sides must now agree on a task's deliverables.
 
-        compile_plan_json_to_markdown() emits statuses and details but never a
-        Files line, so whichever side load_plan_state() prefers decides whether
-        deliverables survive. The refactor preserves this behaviour verbatim; if
-        it ever changes, audit and rollback results change with it, so this test
-        is here to fail loudly on that day.
+        compile_plan_json_to_markdown() emits a `Files: ...` detail line for every
+        task that has deliverables, and the parser reads it back. Whichever
+        representation the mtime check prefers, `files` is therefore stable;
+        previously the markdown side silently dropped every entry, so audit and
+        rollback results depended on which write won a sub-millisecond race.
         """
         self.save_state({
             "title": "Round Trip",
@@ -336,12 +369,12 @@ class PlanStateTests(WorkspaceTestCase):
         from_json = self.read_state()
         self.assertEqual([t["files"] for t in from_json["steps"]], [["alpha.py"], ["beta.py"]])
 
-        # 2. markdown strictly newer -> deliverables dropped, details retained.
+        # 2. markdown strictly newer -> same deliverables, rehydrated from markdown.
         md_path = os.path.join(self.tmp, "PLAN.md")
         bumped = os.path.getmtime(md_path) + 5
         os.utime(md_path, (bumped, bumped))
         from_md = ft.load_plan_state()
-        self.assertEqual([t["files"] for t in from_md["steps"]], [[], []])
+        self.assertEqual([t["files"] for t in from_md["steps"]], [["alpha.py"], ["beta.py"]])
         self.assertEqual([t["status"] for t in from_md["steps"]], ["completed", "pending"])
         self.assertEqual([t["details"] for t in from_md["steps"]], [["note one"], []])
 
