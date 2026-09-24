@@ -1,0 +1,11 @@
+# Python virtualenv and bytecode
+venv/
+__pycache__/
+*.py[cod]
+
+# Local secrets
+.env
+
+# Runtime workspace output: plans, generated code and task backups are produced
+# by running the app, not authored by hand.
+my_project_workspace/

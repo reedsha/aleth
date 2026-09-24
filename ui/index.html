@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepAgents • Plan Orchestrator Studio</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Ambient background glow -->
+  <div class="ambient-glow"></div>
+
+  <div class="app-layout">
+    <!-- ============================================================ -->
+    <!-- 1. LEFT SIDEBAR (Expanded to 250px, Agents & Workspace)       -->
+    <!-- ============================================================ -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand-row">
+          <span class="brand-logo-text">DEEPAGENTS</span>
+          <span class="brand-badge">STUDIO</span>
+        </div>
+
+        <!-- Prominent Top Workspace Card (Bug-Free Dialog) -->
+        <div class="workspace-card" id="btnSelectWorkspace" title="Click to select workspace folder">
+          <div class="workspace-card-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>
+            </svg>
+          </div>
+          <div class="workspace-card-meta">
+            <span class="workspace-label">WORKSPACE</span>
+            <span class="workspace-name" id="txtWorkspacePath">my_project_workspace</span>
+          </div>
+          <button class="btn-change-folder" type="button">Change</button>
+        </div>
+      </div>
+
+      <!-- Agent Navigation Sections -->
+      <div class="sidebar-nav-scroll">
+        <!-- Section 1: MAIN AGENTS (Coordinators) -->
+        <div class="agent-section-block">
+          <div class="section-title-row">
+            <span class="section-title">MAIN AGENTS</span>
+            <span class="section-count" id="countMainAgents">1</span>
+          </div>
+          <div class="agent-items-list" id="sidebarMainAgentsList"></div>
+        </div>
+
+        <!-- Section 2: CODER AGENTS (Sub-Agents) -->
+        <div class="agent-section-block">
+          <div class="section-title-row">
+            <span class="section-title">CODER AGENTS</span>
+            <span class="section-count" id="countCoderAgents">2</span>
+          </div>
+          <div class="agent-items-list" id="sidebarCoderAgentsList"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============================================================ -->
+    <!-- 2. MAIN WORKSPACE STAGE                                      -->
+    <!-- ============================================================ -->
+    <main class="main-stage">
+      <!-- Top Status Bar -->
+      <header class="top-status-bar">
+        <div class="top-status-left">
+          <span class="status-pill-ready" id="systemStatusPill">
+            <span class="status-dot ready" id="systemStatusDot"></span>
+            <span class="status-text" id="systemStatusLabel">Ready</span>
+          </span>
+          <span class="active-plan-badge-readonly" id="topActivePlanBadge" title="Active Plan Anchor">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            <span id="txtTopActivePlanName">PLAN.md</span>
+          </span>
+        </div>
+
+        <div class="top-status-right">
+          <button class="btn-top-action" id="btnNavFiles" title="Workspace Files Explorer">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            <span>Files</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- VIEW 1: CHAT & EXECUTION WORKSPACE -->
+      <section class="workspace-view active" id="chatWorkspaceView">
+        
+        <!-- HERO EMPTY STATE: Clean "How can I help today?" -->
+        <div class="empty-state" id="emptyStateContainer">
+          <div class="orb-container">
+            <canvas id="orbCanvas" width="200" height="200"></canvas>
+            <div class="orb-specular"></div>
+          </div>
+          <h1 class="hero-title">How can I help today?</h1>
+          <p class="hero-subtitle">State-anchored execution against the dynamic plan file.</p>
+        </div>
+
+        <!-- EXECUTION STAGE: AGENT ACTIVITY CARDS (50/50 Split Grid) -->
+        <div class="execution-stage" id="executionStage" style="display: none;">
+          <div class="cards-grid" id="cardsGrid">
+            
+            <!-- Left: Architect Card -->
+            <div class="agent-card architect-card" id="cardArchitect">
+              <div class="card-header">
+                <div class="agent-identity">
+                  <div class="agent-icon-badge architect-badge">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                      <polyline points="2 17 12 22 22 17"/>
+                      <polyline points="2 12 12 17 22 12"/>
+                    </svg>
+                  </div>
+                  <div class="agent-meta">
+                    <div class="agent-title-row">
+                      <span class="agent-name">Lead Software Architect</span>
+                      <span class="role-pill main-pill">Coordinator</span>
+                    </div>
+                    <span class="agent-model">Planner & Verifier • Restricted Shell</span>
+                  </div>
+                </div>
+
+                <div class="card-controls">
+                  <span class="status-badge" id="architectStatusBadge">Planning</span>
+                  <button class="btn-card-close" id="btnCloseArchitect" disabled title="Close Card (Available when completed)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18"/>
+                      <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Inline Warning Badge with Retry -->
+              <div class="inline-error-badge" id="architectErrorBadge" style="display: none;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <span class="error-msg" id="architectErrorMsg">Error occurred during execution</span>
+                <button class="btn-retry" id="btnRetryArchitect">Retry</button>
+              </div>
+
+              <!-- Live Monospaced Thinking & Log Container -->
+              <div class="card-logs-container" id="architectLogs">
+                <div class="log-stream-content" id="architectStreamContent"></div>
+              </div>
+
+              <!-- Summary Container with Deliverables & Next Steps Proposals -->
+              <div class="card-summary-container" id="architectSummary" style="display: none;"></div>
+            </div>
+
+            <!-- Right: Coder Card (Spawned on delegation) -->
+            <div class="agent-card coder-card" id="cardCoder" style="display: none;">
+              <div class="card-header">
+                <div class="agent-identity">
+                  <div class="agent-icon-badge coder-badge">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="16 18 22 12 16 6"/>
+                      <polyline points="8 6 2 12 8 18"/>
+                    </svg>
+                  </div>
+                  <div class="agent-meta">
+                    <div class="agent-title-row">
+                      <span class="agent-name" id="coderCardName">Senior Backend Coder</span>
+                      <span class="role-pill coder-pill">Sub-Agent</span>
+                    </div>
+                    <span class="agent-model" id="coderCardModel">Full Shell Access</span>
+                  </div>
+                </div>
+
+                <div class="card-controls">
+                  <span class="status-badge coder-status" id="coderStatusBadge">Implementing</span>
+                  <button class="btn-card-close" id="btnCloseCoder" disabled title="Close Card (Available when completed)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <line x1="18" y1="6" x2="6" y2="18"/>
+                      <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Inline Warning Badge with Retry -->
+              <div class="inline-error-badge" id="coderErrorBadge" style="display: none;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <span class="error-msg" id="coderErrorMsg">Execution error</span>
+                <button class="btn-retry" id="btnRetryCoder">Retry</button>
+              </div>
+
+              <!-- Live Monospaced Thinking & Log Container -->
+              <div class="card-logs-container" id="coderLogs">
+                <div class="log-stream-content" id="coderStreamContent"></div>
+              </div>
+
+              <!-- Standardized Summary Container -->
+              <div class="card-summary-container" id="coderSummary" style="display: none;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============================================================ -->
+        <!-- ACTION CONTROL PANEL (Intent-Driven Gatekeeper Architecture) -->
+        <!-- ============================================================ -->
+        <div class="action-control-panel-container" id="actionControlPanelContainer">
+          
+          <!-- Strict Plan Lock Overlay -->
+          <div class="action-panel-lock-overlay" id="actionPanelLockOverlay" style="display: none;">
+            <div class="lock-card">
+              <div class="lock-icon-badge">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+              </div>
+              <div class="lock-meta">
+                <span class="lock-title">Action Control Panel Locked</span>
+                <span class="lock-desc">Please switch to an existing plan (⇄) or create a new plan (＋) in the Plan Tracker sidebar to unlock actions.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="action-dock-card" id="actionDockCard">
+            <!-- Top Action Buttons Grid -->
+            <div class="action-buttons-grid">
+              
+              <!-- 1. Fix Bug -->
+              <button class="action-btn action-fix-bug" id="btnActionFixBug" type="button" data-action="fix_bug" title="Analyze & patch bug">
+                <div class="action-btn-icon bug-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect width="8" height="14" x="8" y="6" rx="4"/>
+                    <path d="m19 7-3 2"/>
+                    <path d="m5 7 3 2"/>
+                    <path d="m19 19-3-2"/>
+                    <path d="m5 19 3-2"/>
+                    <path d="M20 13h-4"/>
+                    <path d="M4 13h4"/>
+                    <path d="m10 4 1 2"/>
+                    <path d="m14 4-1 2"/>
+                  </svg>
+                </div>
+                <div class="action-btn-text">
+                  <span class="action-btn-title">Fix Bug</span>
+                  <span class="action-btn-sub">Diagnose & patch</span>
+                </div>
+              </button>
+
+              <!-- 2. Execute Next Step (Primary) -->
+              <button class="action-btn action-next-step primary-action" id="btnActionNextStep" type="button" data-action="next_step" title="Target and execute top pending task">
+                <div class="action-btn-icon lightning-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                  </svg>
+                </div>
+                <div class="action-btn-text">
+                  <span class="action-btn-title">Execute Next Step</span>
+                  <span class="action-btn-sub" id="lblNextStepTarget">Run top pending task</span>
+                </div>
+              </button>
+
+              <!-- 3. Update Plan -->
+              <button class="action-btn action-update-plan" id="btnActionUpdatePlan" type="button" data-action="update_plan" title="Directly refine plan.json">
+                <div class="action-btn-icon edit-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </div>
+                <div class="action-btn-text">
+                  <span class="action-btn-title">Update Plan</span>
+                  <span class="action-btn-sub">Refine plan.json</span>
+                </div>
+              </button>
+
+              <!-- 4. Analyze Codebase -->
+              <button class="action-btn action-analyze" id="btnActionAnalyze" type="button" data-action="analyze" title="Inspect files and architecture">
+                <div class="action-btn-icon search-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                </div>
+                <div class="action-btn-text">
+                  <span class="action-btn-title">Analyze Code</span>
+                  <span class="action-btn-sub">Inspect architecture</span>
+                </div>
+              </button>
+
+              <!-- 5. Get Recommendation -->
+              <button class="action-btn action-recommend" id="btnActionRecommend" type="button" data-action="recommend" title="Architect proposed next steps">
+                <div class="action-btn-icon lightbulb-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/>
+                    <path d="M9 18h6"/>
+                    <path d="M10 22h4"/>
+                  </svg>
+                </div>
+                <div class="action-btn-text">
+                  <span class="action-btn-title">Recommend</span>
+                  <span class="action-btn-sub">Architect proposals</span>
+                </div>
+              </button>
+
+              <!-- 6. Custom Action -->
+              <button class="action-btn action-custom" id="btnActionCustom" type="button" data-action="custom" title="Ad-hoc request routed by Architect">
+                <div class="action-btn-icon command-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="4 17 10 11 4 5"/>
+                    <line x1="12" y1="19" x2="20" y2="19"/>
+                  </svg>
+                </div>
+                <div class="action-btn-text">
+                  <span class="action-btn-title">Custom Action</span>
+                  <span class="action-btn-sub">Ad-hoc directive</span>
+                </div>
+              </button>
+
+            </div>
+
+            <!-- Bottom Status Row (Read-Only Status, Progress & Stop) -->
+            <div class="action-dock-bottom-row">
+              <div class="dock-status-left">
+                <!-- Read-Only Plan Status Pill -->
+                <div class="readonly-plan-pill" id="readonlyPlanPill" title="Dynamic Memory Anchor (Read-Only Status)">
+                  <span class="status-dot ready" id="planStatusDot"></span>
+                  <span class="pill-prefix">Active Plan:</span>
+                  <span class="pill-name" id="txtBottomActivePlan">PLAN.md</span>
+                </div>
+                <span class="dock-progress-pill" id="txtDockProgress">0/0 Tasks</span>
+              </div>
+
+              <div class="dock-status-right">
+                <button class="btn-stop-dock" id="btnDockStop" type="button" style="display: none;" title="Halt current running workflow">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                  </svg>
+                  <span>Stop Task</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW 2: AGENT SETTINGS / PROMPT EDITOR VIEW -->
+      <section class="prompt-editor-view" id="promptEditorView" style="display: none;">
+        <div class="editor-header">
+          <div class="editor-header-left">
+            <button class="btn-back" id="btnBackToChat">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="19" y1="12" x2="5" y2="12"/>
+                <polyline points="12 19 5 12 12 5"/>
+              </svg>
+              <span>Back to Workspace</span>
+            </button>
+            <div class="editor-agent-title">
+              <h2 id="editorAgentDisplayName">Lead Software Architect</h2>
+              <span class="role-pill" id="editorRolePill">Coordinator</span>
+            </div>
+          </div>
+
+          <div class="editor-header-right">
+            <span class="badge-tech" id="editorModelBadge">openai:policy/architect</span>
+            <span class="badge-tech" id="editorFilePathBadge">agents/architect.py</span>
+          </div>
+        </div>
+
+        <div class="editor-body">
+          <div class="editor-panel-top">
+            <div class="editor-section-label">
+              <span>TIERED SYSTEM PROMPT ARCHITECTURE</span>
+              <span class="char-count" id="promptCharCount">0 chars • 0 lines</span>
+            </div>
+            <div class="editor-tools-badges">
+              <span class="tools-label">Assigned Tools:</span>
+              <div class="tools-pills-row" id="editorToolsList"></div>
+            </div>
+          </div>
+
+          <!-- Tier 1: Protected Core System Architecture (Read-Only) -->
+          <div class="core-rules-container" id="editorCoreContainer">
+            <div class="core-rules-header" id="btnToggleCoreRules">
+              <div class="core-rules-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+                <span>PROTECTED CORE ARCHITECTURE & ROUTING RULES (READ-ONLY)</span>
+              </div>
+              <span class="core-rules-toggle-hint" id="lblCoreToggle">Show Protected Rules ▼</span>
+            </div>
+            <div class="core-rules-content" id="coreRulesContent" style="display: none;">
+              <pre class="core-rules-pre" id="txtCoreRulesPre"></pre>
+            </div>
+          </div>
+
+          <!-- Tier 2: Customizable Developer Directives (Editable) -->
+          <div class="editor-section-label" style="margin-top: 14px;">
+            <span>CUSTOM DEVELOPER DIRECTIVES (EDITABLE)</span>
+            <span style="font-size: 10px; color: #94a3b8;">Custom instructions appended to agent without altering core rules</span>
+          </div>
+
+          <div class="editor-code-container">
+            <div class="line-numbers" id="editorLineNumbers">1</div>
+            <textarea id="txtSystemPrompt" spellcheck="false" placeholder="Enter custom developer directives, style guidelines, or project constraints..."></textarea>
+          </div>
+
+          <div class="editor-actions-row">
+            <button class="btn-secondary" id="btnResetPrompt">Reset to Original</button>
+            <button class="btn-primary" id="btnSavePrompt">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                <polyline points="17 21 17 13 7 13 7 21"/>
+                <polyline points="7 3 7 8 15 8"/>
+              </svg>
+              <span>Save Custom Directives</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- FILES MODAL -->
+      <div class="modal-overlay" id="filesModalOverlay" style="display: none;">
+        <div class="files-modal">
+          <div class="modal-header">
+            <div class="param-header-title">
+              <div class="param-icon-badge" style="background: rgba(14, 165, 233, 0.18); color: #38bdf8;">📁</div>
+              <div class="param-title-meta">
+                <h3>Workspace Files</h3>
+                <span class="param-subtitle">Inspecting repository files</span>
+              </div>
+            </div>
+            <button class="modal-close-btn" id="btnCloseFilesModal">&times;</button>
+          </div>
+          <div class="files-modal-search-row">
+            <input type="text" class="files-search-input" id="inputSearchWorkspaceFiles" placeholder="Filter files by name or extension...">
+            <span class="files-count-badge" id="txtFilesCountBadge">0 files</span>
+          </div>
+          <div class="modal-body" id="modalFilesList"></div>
+          <div class="files-modal-footer">
+            <button class="btn-dialog-secondary" id="btnCloseFilesModalFooter">Close</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ============================================================ -->
+    <!-- 3. RIGHT SIDEBAR (Plan Tree Tracker Component)                -->
+    <!-- ============================================================ -->
+    <aside class="right-plan-sidebar" id="rightPlanSidebar">
+      <div class="plan-sidebar-header">
+        <div class="plan-header-title-row">
+          <div class="plan-title-left">
+            <span class="plan-badge">PLAN TRACKER</span>
+            <span class="plan-filename" id="txtSidebarPlanName">PLAN.md</span>
+          </div>
+          <div class="plan-header-actions">
+            <button class="btn-plan-action" id="btnAuditPlanSync" title="Audit Codebase & Plan Synchronization">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>
+                <path d="m9 12 2 2 4-4"/>
+              </svg>
+            </button>
+            <button class="btn-plan-action" id="btnSwitchPlan" title="Switch or Select .md Plan File">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m16 3 4 4-4 4"/>
+                <path d="M20 7H4"/>
+                <path d="m8 21-4-4 4-4"/>
+                <path d="M4 17h16"/>
+              </svg>
+            </button>
+            <button class="btn-plan-action primary" id="btnCreatePlanModal" title="Create New Plan File">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"/>
+                <line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Progress Overview Meter -->
+        <div class="plan-progress-card">
+          <div class="plan-progress-labels">
+            <span class="progress-title">Roadmap Completion</span>
+            <span class="progress-ratio" id="txtPlanProgressRatio">0%</span>
+          </div>
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="planProgressBarFill" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Native Clickable Plan Tree Container -->
+      <div class="plan-tree-container" id="planTreeContainer">
+        <!-- Rendered dynamically by native JS parser -->
+      </div>
+    </aside>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: ACTION PARAMETER & CUSTOM INSTRUCTIONS MODAL          -->
+  <!-- ============================================================ -->
+  <div class="modal-overlay" id="actionParamModalOverlay" style="display: none;">
+    <div class="action-param-card">
+      <div class="modal-header">
+        <div class="param-header-title">
+          <div class="param-icon-badge" id="paramModalIcon">⚡</div>
+          <div class="param-title-meta">
+            <h3 id="paramModalTitle">Execute Next Step</h3>
+            <span class="param-subtitle" id="paramModalSubtitle">Architect Gatekeeper Parameter Configuration</span>
+          </div>
+        </div>
+        <button class="modal-close-btn" id="btnCloseParamModal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Target Task Card (Shown for Next Step or Inline Tasks) -->
+        <div class="param-target-task-card" id="paramTargetTaskCard" style="display: none;">
+          <span class="target-label">TARGETED TASK:</span>
+          <div class="target-title-row">
+            <span class="target-badge" id="paramTargetBadge">Pending</span>
+            <span class="target-title" id="paramTargetTitle">Task title</span>
+          </div>
+        </div>
+
+        <!-- Multimodal UI Vision Section (Shown for [UI] tasks) -->
+        <div class="param-ui-vision-section" id="paramUiVisionSection" style="display: none;">
+          <div class="ui-vision-header">
+            <span class="ui-vision-badge">🎨 MULTIMODAL UI TASK</span>
+            <span class="ui-vision-subtitle">Reference Mockup / Wireframe Upload</span>
+          </div>
+          <p class="ui-vision-desc">Upload a wireframe, screenshot, or design mockup. The Architect and Coder will incorporate layout, hierarchy, and styling constraints directly into code generation.</p>
+          <div class="bug-upload-row">
+            <label class="btn-secondary btn-upload-attachment" for="inputUiImageAttachment">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+                <circle cx="9" cy="9" r="2"/>
+                <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+              </svg>
+              <span>Upload Design Reference</span>
+            </label>
+            <input type="file" id="inputUiImageAttachment" accept="image/*" style="display: none;">
+            <span class="attachment-name" id="lblUiAttachmentName">No image selected</span>
+          </div>
+          <div class="ui-image-preview-card" id="uiImagePreviewCard" style="display: none;">
+            <img id="imgUiPreview" src="" alt="Reference Preview">
+            <button class="btn-remove-preview" id="btnRemoveUiPreview" type="button" title="Remove image">&times;</button>
+          </div>
+        </div>
+
+        <!-- Bug Fix Specific Section (Required input for Fix Bug) -->
+        <div class="param-bug-section" id="paramBugSection" style="display: none;">
+          <label class="modal-input-label">
+            BUG DESCRIPTION / ERROR LOGS <span class="required-star">*Required</span>
+          </label>
+          <textarea 
+            class="modal-textarea-input" 
+            id="inputBugDescription" 
+            rows="3" 
+            placeholder="Paste error logs, stack trace, or describe the expected vs actual behavior..."></textarea>
+          
+          <div class="bug-upload-row">
+            <label class="btn-secondary btn-upload-attachment" for="inputBugAttachment">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+              </svg>
+              <span>Attach Screenshot / Reference</span>
+            </label>
+            <input type="file" id="inputBugAttachment" accept="image/*,.log,.txt" style="display: none;">
+            <span class="attachment-name" id="lblAttachmentName">No file attached</span>
+          </div>
+          <div class="bug-validation-msg" id="bugValidationMsg" style="display: none;">
+            ⚠️ Bug description or screenshot is strictly required to proceed.
+          </div>
+        </div>
+
+        <!-- Pre-written System Prompt Preset Banner -->
+        <div class="param-preset-banner">
+          <div class="preset-banner-header">
+            <span class="preset-label">ARCHITECT GATEKEEPER DIRECTIVE:</span>
+            <span class="preset-badge" id="paramActionTypeBadge">Intent Routing</span>
+          </div>
+          <p class="preset-desc" id="paramPresetDescription">Architect evaluates task requirements, analyzes workspace state, and delegates implementation to specialized Coder sub-agents.</p>
+        </div>
+
+        <!-- Custom Instructions Field (Available for ALL actions) -->
+        <div class="param-instructions-section">
+          <label class="modal-input-label" id="lblActionCustomInstructions">
+            CUSTOM INSTRUCTIONS / CONSTRAINTS (OPTIONAL)
+          </label>
+          <textarea 
+            class="modal-textarea-input" 
+            id="inputActionCustomInstructions" 
+            rows="3" 
+            placeholder="Append custom constraints, code style rules, specific libraries, or context to this action..."></textarea>
+          <div class="custom-validation-msg" id="customValidationMsg" style="display: none;">
+            ⚠️ Custom directive instruction is required to proceed.
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-dialog-primary" id="btnConfirmActionParam">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+          <span id="btnConfirmActionText">Execute Action</span>
+        </button>
+        <button class="btn-dialog-secondary" id="btnCancelParamModal">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: TASK EXECUTION CONFIRMATION POP-UP                    -->
+  <!-- ============================================================ -->
+  <div class="modal-overlay" id="confirmModalOverlay" style="display: none;">
+    <div class="confirm-dialog-card">
+      <div class="confirm-icon-badge">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+      </div>
+      <h3 class="confirm-title">Confirm Task Execution</h3>
+      <p class="confirm-desc">Are you sure you want to execute this task against the active plan (<strong id="confirmPlanFileName">PLAN.md</strong>)?</p>
+      
+      <div class="confirm-prompt-preview">
+        <span class="preview-label">TARGET PROMPT:</span>
+        <div class="preview-text" id="confirmPromptText">Task description here...</div>
+      </div>
+
+      <div class="confirm-actions-row">
+        <button class="btn-dialog-secondary" id="btnCancelExecution">Cancel</button>
+        <button class="btn-dialog-primary" id="btnConfirmExecution">Confirm & Execute</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: CREATE / SELECT PLAN MODAL                            -->
+  <!-- ============================================================ -->
+  <!-- MODAL: SWITCH PLAN (Arrows Button — Select Existing Plan File) -->
+  <div class="modal-overlay" id="switchPlanModalOverlay" style="display: none;">
+    <div class="plan-setup-modal">
+      <div class="modal-header">
+        <div class="param-header-title">
+          <div class="param-icon-badge" style="background: rgba(14, 165, 233, 0.18); color: #38bdf8;">⇄</div>
+          <div class="param-title-meta">
+            <h3>Switch Active Plan</h3>
+            <span class="param-subtitle">Select a .md plan file from workspace</span>
+          </div>
+        </div>
+        <button class="modal-close-btn" id="btnCloseSwitchPlanModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="plan-modal-section">
+          <label class="modal-input-label">AVAILABLE PLAN FILES</label>
+          <div class="existing-plans-list" id="existingPlansList"></div>
+          <span style="display:block; margin-top:10px; font-size:10px; color:#64748b;">Click a plan file to switch. The Plan Tracker tree will update automatically.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CREATE NEW PLAN (+ Button — AI-Generated Plan from Project Idea) -->
+  <div class="modal-overlay" id="createPlanModalOverlay" style="display: none;">
+    <div class="plan-setup-modal">
+      <div class="modal-header">
+        <div class="param-header-title">
+          <div class="param-icon-badge" style="background: rgba(16, 185, 129, 0.18); color: #34d399;">＋</div>
+          <div class="param-title-meta">
+            <h3>Create New Plan</h3>
+            <span class="param-subtitle">Describe your project and generate a structured plan</span>
+          </div>
+        </div>
+        <button class="modal-close-btn" id="btnCloseCreatePlanModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="plan-modal-section">
+          <label class="modal-input-label">PLAN FILENAME</label>
+          <input type="text" class="modal-text-input" id="inputNewPlanName" value="PLAN.md" placeholder="e.g. PLAN.md">
+
+          <label class="modal-input-label" style="margin-top: 12px;">PROJECT GOAL / IDEA</label>
+          <textarea class="modal-textarea-input" id="inputProjectIdea" rows="4" placeholder="Describe your software project, task requirements, or goals. The Architect will generate a structured milestone plan from this..."></textarea>
+
+          <button class="btn-primary" id="btnSubmitCreatePlan" style="margin-top: 14px; width: 100%; justify-content: center;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+            <span>Generate & Activate Structured Plan</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: CODEBASE & PLAN SYNC AUDIT (Two-Phase Resolution)     -->
+  <!-- ============================================================ -->
+  <div class="modal-overlay" id="auditModalOverlay" style="display: none;">
+    <div class="audit-dialog-card">
+      <div class="modal-header">
+        <div class="param-header-title">
+          <div class="param-icon-badge" style="background: rgba(14, 165, 233, 0.18); color: #38bdf8;">⚖️</div>
+          <div class="param-title-meta">
+            <h3>Codebase & Plan Sync Audit</h3>
+            <span class="param-subtitle">Two-Phase Discrepancy Reconciliation</span>
+          </div>
+        </div>
+        <button class="modal-close-btn" id="btnCloseAuditModal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Phase 1: Discrepancy Breakdown -->
+        <div class="audit-status-banner" id="auditStatusBanner">
+          <div class="audit-status-pill" id="auditStatusPill">Scanning...</div>
+          <span class="audit-status-summary" id="auditStatusSummary">Analyzing workspace files vs plan.json...</span>
+        </div>
+
+        <div class="audit-details-grid" id="auditDetailsGrid">
+          <div class="audit-col">
+            <div class="audit-col-header">
+              <span class="audit-col-title">Completed Tasks Missing Files</span>
+              <span class="audit-col-badge missing" id="badgeMissingFilesCount">0</span>
+            </div>
+            <div class="audit-list" id="listAuditMissing"></div>
+          </div>
+
+          <div class="audit-col">
+            <div class="audit-col-header">
+              <span class="audit-col-title">Pending Tasks With Existing Code</span>
+              <span class="audit-col-badge existing" id="badgeExistingFilesCount">0</span>
+            </div>
+            <div class="audit-list" id="listAuditExisting"></div>
+          </div>
+        </div>
+
+        <div class="audit-untracked-box" id="boxUntrackedFiles">
+          <span class="untracked-title">Untracked Workspace Files:</span>
+          <span class="untracked-content" id="txtUntrackedFiles">None</span>
+        </div>
+
+        <!-- Phase 2: Action Choices -->
+        <div class="audit-resolutions-section">
+          <span class="modal-input-label">PHASE 2: RESOLUTION STRATEGY</span>
+          <div class="audit-resolutions-row">
+            <button class="btn-audit-choice sync-plan" id="btnSyncPlanToCode">
+              <div class="audit-choice-icon">✓</div>
+              <div class="audit-choice-text">
+                <strong>Sync Plan to Codebase</strong>
+                <span>Mark tasks completed if deliverables already exist on disk</span>
+              </div>
+            </button>
+
+            <button class="btn-audit-choice force-code" id="btnForceCodeToPlan">
+              <div class="audit-choice-icon">↺</div>
+              <div class="audit-choice-text">
+                <strong>Force Code to Match Plan</strong>
+                <span>Reset missing tasks to pending so agents can rebuild code</span>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-dialog-secondary" id="btnCloseAuditModalFooter">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODAL: TASK ROLLBACK CONFIRMATION (Severe Confirmation)      -->
+  <!-- ============================================================ -->
+  <div class="modal-overlay" id="rollbackModalOverlay" style="display: none;">
+    <div class="rollback-dialog-card">
+      <div class="modal-header">
+        <div class="param-header-title">
+          <div class="param-icon-badge rollback-icon-badge">⚠️</div>
+          <div class="param-title-meta">
+            <h3 style="color: #f87171;">Confirm Milestone Rollback</h3>
+            <span class="param-subtitle">Severe State & Deliverable Reversion</span>
+          </div>
+        </div>
+        <button class="modal-close-btn" id="btnCloseRollbackModal">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="rollback-warning-banner">
+          <p>You are about to roll back the following completed milestone back to <strong>Pending</strong>.</p>
+        </div>
+
+        <div class="rollback-task-card">
+          <span class="rollback-target-label">TARGET MILESTONE:</span>
+          <h4 id="rollbackTargetTitle" class="rollback-target-title">Milestone Title</h4>
+        </div>
+
+        <div class="rollback-files-section">
+          <span class="modal-input-label">AFFECTED DELIVERABLES:</span>
+          <div class="rollback-files-box" id="rollbackFilesBox">
+            <ul id="rollbackFilesList" class="rollback-files-ul"></ul>
+          </div>
+          <span class="rollback-files-note">Prior backups in <code>.deepagents_backups</code> will be restored, or new files archived.</span>
+        </div>
+
+        <div class="rollback-confirm-checkbox-row">
+          <input type="checkbox" id="chkRollbackConfirm">
+          <label for="chkRollbackConfirm">
+            I understand that rolling back will revert this task's status to <strong>Pending</strong> and alter workspace deliverables.
+          </label>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn-dialog-secondary" id="btnCancelRollback">Cancel</button>
+        <button class="btn-rollback-confirm" id="btnConfirmRollbackAction" disabled>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+          </svg>
+          <span>Confirm & Rollback Milestone</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
