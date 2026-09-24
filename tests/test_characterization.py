@@ -7,11 +7,13 @@ modules import), so they survive internal module reorganization.
     .\\venv\\Scripts\\python.exe -m unittest discover -s tests -t . -v
 """
 
+import json
 import os
 import shutil
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from tools import file_tools as ft
 from orchestration.workflow import templates
@@ -706,6 +708,316 @@ class WorkflowEventContractTests(WorkspaceTestCase):
         reg.stop_workflow()
         self.assertTrue(reg.stop_event.is_set())
         reg.stop_event.clear()
+
+
+class CoderDelegationEventTests(WorkspaceTestCase):
+    """Locks the event streams for the branches that actually spawn a Coder.
+
+    The admin-bypass actions were covered first because they touch no subprocesses
+    and are deterministic. These three paths -- fix_bug, next_step and the
+    coder-delegation half of custom -- were not, which is why they are pinned here
+    before their ~540 lines move out of ``registry.py``: without a frozen event
+    stream, relocating them puts the zero-breakage guarantee at risk.
+
+    ``time.sleep`` only paces the stream for a human reader; it emits nothing and
+    is not part of the contract, so it is stubbed out to keep the suite fast.
+    """
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch("time.sleep", lambda *a, **k: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _collect(self, action_type, message, params=None):
+        import registry as registry_module
+
+        # The workflow reads plan state at the top; pin it so the markdown
+        # rehydration branch cannot flip mid-suite.
+        self.pin_plan_json_authoritative()
+        events = []
+        registry_module.registry.run_agent_workflow(
+            message, events.append, action_type=action_type, action_params=params or {}
+        )
+        return events
+
+    @staticmethod
+    def _types(events):
+        return [e["type"] for e in events]
+
+    def _seed_scaffold(self):
+        """Create the standard 8-task roadmap used by most of these tests."""
+        import registry as registry_module
+
+        registry_module.registry.create_new_plan_file("PLAN.md", "Demo roadmap")
+
+    def test_next_step_event_sequence(self):
+        self._seed_scaffold()
+        events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
+
+        self.assertEqual(self._types(events), [
+            "workflow_started", "architect_spawn",
+            "log", "log", "log",
+            "delegation", "coder_spawn",
+            "log", "log",
+            "tool_call", "tool_result",
+            "tool_call", "tool_result",
+            "tool_call", "tool_result",
+            "plan_updated",
+            "coder_summary",
+            "log",
+            "tool_call", "tool_result",
+            "architect_summary",
+            "workflow_complete",
+        ])
+        self.assertEqual(events[0]["action_type"], "next_step")
+
+        # The scaffold's first pending task is plain, non-core and non-UI, so it
+        # goes to the standard coder rather than coder-deep.
+        delegation = events[5]
+        self.assertEqual(delegation["target_agent"], "coder-standard")
+        self.assertEqual(delegation["target_name"], "Junior Developer")
+        self.assertEqual(delegation["task"], "Project scaffolding and runtime dependencies")
+        self.assertEqual(events[6]["model"], "openai:policy/coder-standard")
+
+        # Deliverables land on disk and are recorded against the task.
+        self.assertIn("class SolutionEngine", self.read("main.py"))
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "test_main.py")))
+
+        plan_event = [e for e in events if e["type"] == "plan_updated"][0]
+        self.assertEqual(list(plan_event), ["type", "filename", "content", "tree", "plan_json"])
+        task = plan_event["tree"][1]
+        self.assertEqual(task["id"], "task-2")
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["files"], ["main.py", "test_main.py"])
+        self.assertIn("Deliverables: `main.py`, `test_main.py`", task["details"])
+        self.assertIn("Files: `main.py`, `test_main.py`", plan_event["content"])
+
+        summary = events[-2]["summary"]
+        self.assertEqual(summary["title"], "Lead Architect Task Approval & Handoff")
+        self.assertEqual(summary["files"], ["PLAN.md", "main.py", "test_main.py"])
+        self.assertEqual(
+            summary["proposals"][0],
+            "Execute next step: 'Build core domain models and application logic'",
+        )
+        self.assertEqual(
+            events[-1]["message"],
+            "Task 'Project scaffolding and runtime dependencies' completed and verified.",
+        )
+
+        # A rollback snapshot is recorded before the deliverables are written.
+        meta = json.loads(self.read(os.path.join(".deepagents_backups", "task-2", "_meta.json")))
+        self.assertEqual(meta["main.py"]["action"], "created")
+        self.assertEqual(meta["test_main.py"]["action"], "created")
+
+    def test_next_step_targets_the_deep_coder_for_core_tasks(self):
+        self._seed_scaffold()
+        events = self._collect(
+            "next_step", "[ACTION: EXECUTE_NEXT_STEP]", {"targetTaskId": "task-3"}
+        )
+
+        delegation = [e for e in events if e["type"] == "delegation"][0]
+        self.assertEqual(delegation["target_agent"], "coder-deep")
+        self.assertEqual(delegation["target_name"], "Senior Backend Coder")
+        self.assertEqual(delegation["task"], "Build core domain models and application logic")
+
+        spawn = [e for e in events if e["type"] == "coder_spawn"][0]
+        self.assertEqual(spawn["model"], "openai:policy/coder-deep")
+
+        # An explicit target completes that task, not the first pending one.
+        plan_event = [e for e in events if e["type"] == "plan_updated"][0]
+        completed = [t["id"] for t in plan_event["tree"] if t["status"] == "completed"]
+        self.assertEqual(completed, ["task-1", "task-3"])
+
+    def test_next_step_ui_task_emits_the_vision_directive(self):
+        self.save_state({
+            "title": "UI Demo",
+            "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
+                {"id": "task-1", "section": "1. S", "title": "Dashboard view", "status": "pending",
+                 "is_ui": True, "details": [], "files": []},
+            ]}],
+        })
+        events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
+
+        logs = [e["text"] for e in events if e["type"] == "log"]
+        self.assertIn("> \U0001f3a8 [MULTIMODAL UI TASK DETECTED] Tag: [UI]\n", logs)
+        self.assertIn("> Reference Image: Wireframe & dark glassmorphic styling guide\n", logs)
+
+        # UI tasks are routed to the deep coder and get the HTML deliverable.
+        self.assertEqual([e for e in events if e["type"] == "delegation"][0]["target_agent"], "coder-deep")
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "ui_view.html")))
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "test_ui_view.py")))
+
+        plan_event = [e for e in events if e["type"] == "plan_updated"][0]
+        self.assertEqual(plan_event["tree"][0]["files"], ["ui_view.html", "test_ui_view.py"])
+
+        summary = events[-2]["summary"]
+        self.assertEqual(summary["proposals"][0], "All roadmap tasks finished! Run final test audit.")
+        self.assertEqual(events[-1]["message"], "Task 'Dashboard view' completed and verified.")
+
+    def test_next_step_when_no_pending_tasks_remain(self):
+        self.save_state({
+            "title": "Done",
+            "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
+                {"id": "task-1", "section": "1. S", "title": "Only", "status": "completed",
+                 "is_ui": False, "details": [], "files": ["only.py"]},
+            ]}],
+        })
+        events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
+
+        self.assertEqual(self._types(events), [
+            "workflow_started", "architect_spawn", "log", "architect_summary", "workflow_complete",
+        ])
+        summary = events[-2]["summary"]
+        self.assertEqual(summary["title"], "All Plan Tasks Completed")
+        self.assertEqual(summary["status"], "Finished")
+        self.assertEqual(summary["files"], ["PLAN.md"])
+        self.assertEqual(events[-1]["message"], "All steps complete.")
+
+    def _seed_buggy_main(self):
+        self._seed_scaffold()
+        ft.write_file.invoke({"filename": "main.py", "content": (
+            "from typing import Dict, Any\n\n"
+            "class SolutionEngine:\n"
+            "    def run(self) -> Dict[str, Any]:\n"
+            "        return {'status': 'success'}\n"
+        )})
+        ft.write_file.invoke({"filename": "test_main.py", "content": "def test_ok():\n    assert True\n"})
+
+    def test_fix_bug_event_sequence(self):
+        self._seed_buggy_main()
+        events = self._collect(
+            "fix_bug", "[ACTION: FIX_BUG] something broke",
+            {"bugDescription": "IndexError in run()"},
+        )
+
+        self.assertEqual(self._types(events), [
+            "workflow_started", "architect_spawn",
+            "log", "log",
+            "tool_call", "tool_result",
+            "tool_call", "tool_result",
+            "log", "log", "log", "log", "log", "log",
+            "delegation", "coder_spawn",
+            "log", "log",
+            "tool_call", "tool_result",
+            "log",
+            "tool_call", "tool_result",
+            "coder_summary",
+            "log",
+            "tool_call", "tool_result",
+            "architect_summary",
+            "workflow_complete",
+        ])
+
+        self.assertEqual(
+            [e for e in events if e["type"] == "tool_result"][0]["result"],
+            "Found code files: main.py, test_main.py",
+        )
+        delegation = [e for e in events if e["type"] == "delegation"][0]
+        self.assertEqual(delegation["target_agent"], "coder-deep")
+        self.assertEqual(delegation["task"], "Fix bug in main.py: IndexError in run()")
+
+        # The surgical patch inserts a guard comment and rewrites the regression test.
+        patched = self.read("main.py")
+        self.assertIn("# Bugfix: Input validation & error boundary", patched)
+        self.assertIn("def run(self) -> Dict[str, Any]:", patched)
+        self.assertEqual(self.read("test_main.py"), templates.BUGFIX_REGRESSION_TEST)
+        self.assertTrue(
+            os.path.isfile(os.path.join(self.tmp, ".deepagents_backups", "bugfix", "main.py"))
+        )
+
+        coder_summary = [e for e in events if e["type"] == "coder_summary"][0]["summary"]
+        self.assertEqual(coder_summary["title"], "Surgical Bug Patch: main.py")
+        self.assertEqual(coder_summary["files"], ["main.py", "test_main.py"])
+        self.assertEqual(
+            coder_summary["deliverables"][0],
+            "Applied surgical patch addressing: IndexError in run().",
+        )
+
+        summary = events[-2]["summary"]
+        self.assertEqual(summary["title"], "Lead Architect Bug Fix Approval")
+        self.assertEqual(summary["files"], ["main.py", "test_main.py"])
+        self.assertEqual(
+            events[-1]["message"], "Bug surgically diagnosed, patched, and verified."
+        )
+
+    def test_fix_bug_falls_back_to_the_message_and_strips_action_tags(self):
+        self._seed_buggy_main()
+        events = self._collect("fix_bug", "[ACTION: FIX_BUG] something broke")
+
+        delegation = [e for e in events if e["type"] == "delegation"][0]
+        self.assertEqual(delegation["task"], "Fix bug in main.py: something broke")
+        coder_summary = [e for e in events if e["type"] == "coder_summary"][0]["summary"]
+        self.assertEqual(
+            coder_summary["deliverables"][0],
+            "Applied surgical patch addressing: something broke.",
+        )
+
+    def test_custom_directive_delegates_to_the_deep_coder(self):
+        self._seed_scaffold()
+        events = self._collect("custom", "add a login endpoint")
+
+        self.assertEqual(self._types(events), [
+            "workflow_started", "architect_spawn", "log", "log", "log",
+            "delegation", "coder_spawn", "log", "coder_summary", "log",
+            "architect_summary", "workflow_complete",
+        ])
+        delegation = events[5]
+        self.assertEqual(delegation["target_agent"], "coder-deep")
+        self.assertEqual(delegation["task"], "add a login endpoint")
+
+        self.assertIn("# Custom Solution: add a login endpoint", self.read("main.py"))
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "test_main.py")))
+
+        # Only the primary deliverable is snapshotted on the custom path.
+        meta = json.loads(self.read(os.path.join(".deepagents_backups", "custom", "_meta.json")))
+        self.assertEqual(list(meta), ["main.py"])
+        self.assertEqual(meta["main.py"]["action"], "created")
+
+        self.assertEqual(events[8]["summary"]["title"], "Custom Implementation: add a login endpoint")
+        self.assertEqual(events[-1]["message"], "Custom task completed and verified.")
+
+    def test_custom_directive_bypasses_the_coder_for_analytical_prompts(self):
+        self._seed_scaffold()
+        events = self._collect("custom", "explain the architecture")
+
+        self.assertEqual(self._types(events), [
+            "workflow_started", "architect_spawn", "log", "log", "log",
+            "tool_call", "tool_result", "log", "log", "log", "log",
+            "architect_summary", "workflow_complete",
+        ])
+        # The Gatekeeper resolves analytical prompts without spawning a Coder.
+        self.assertNotIn("delegation", self._types(events))
+        summary = events[-2]["summary"]
+        self.assertEqual(summary["title"], "Lead Architect Directive Assessment")
+        self.assertEqual(summary["status"], "Handled Directly")
+        self.assertEqual(events[-1]["message"], "Custom directive executed directly by Architect.")
+
+    def test_coder_event_payloads_carry_the_full_wire_shape(self):
+        """Locks key order on the payloads the coder branches emit.
+
+        Payloads are JSON-serialised in insertion order, so a reordered key breaks
+        the frontend even when the event sequence itself is unchanged.
+        """
+        self._seed_scaffold()
+        events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
+
+        first = {}
+        for e in events:
+            first.setdefault(e["type"], e)
+
+        self.assertEqual(list(first["workflow_started"]), ["type", "message", "plan_file", "action_type"])
+        self.assertEqual(list(first["architect_spawn"]), ["type", "agent", "name", "role", "model"])
+        self.assertEqual(list(first["log"]), ["type", "agent", "log_type", "text"])
+        self.assertEqual(
+            list(first["delegation"]),
+            ["type", "from_agent", "target_agent", "target_name", "task"],
+        )
+        self.assertEqual(list(first["coder_spawn"]), ["type", "agent", "name", "role", "model"])
+        self.assertEqual(list(first["coder_summary"]), ["type", "agent", "summary"])
+        self.assertEqual(list(first["plan_updated"]), ["type", "filename", "content", "tree", "plan_json"])
+        self.assertEqual(list(first["architect_summary"]), ["type", "agent", "summary"])
+        self.assertEqual(list(first["workflow_complete"]), ["type", "status", "message"])
 
 
 class WorkflowTemplateTests(unittest.TestCase):
