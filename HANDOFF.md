@@ -37,9 +37,20 @@ c:\Users\muham\OneDrive\Desktop\deepagents\
 │   └── shell_tools.py         # Full shell (Coders) & restricted shell (Architect)
 │
 ├── ui/                        # High-contrast, dark glassmorphic frontend
-│   ├── index.html             # 3-column layout (Left Agents, Center Stage, Right Plan Tree)
+│   ├── index.html             # 3-column layout; ends with the inlined js/ bundle
 │   ├── styles.css             # Glassmorphic styling, animations, fluid ambient glows
-│   └── app.js                 # PyWebView bridge events, native tree rendering & modals
+│   └── js/                    # Frontend modules (source of truth), inlined in order
+│       ├── state.js           # Global `state` and `DOM` cache
+│       ├── dom.js             # Element lookup + escapeHtml()
+│       ├── bootstrap.js       # PyWebView handshake, offline fallback, hydration
+│       ├── plan-tree.js       # Plan tree rendering, progress meter, step extraction
+│       ├── actions.js         # Action parameter modal & confirmed task execution
+│       ├── plan-modals.js     # Switch / create plan modals
+│       ├── agents.js          # Sidebar agents & prompt editor
+│       ├── workspace.js       # Files, audit and rollback modals
+│       ├── agent-events.js    # Bridge event stream → agent cards
+│       ├── visuals.js         # Toasts and the orb animation
+│       └── wire.js            # DOM event wiring; must stay last
 │
 ├── my_project_workspace/      # Default active project directory (PROJECT_DIR)
 │   ├── PLAN.md                # Dynamic memory anchor & active roadmap (source of truth)
@@ -67,7 +78,15 @@ All Python dependencies are installed in the local virtual environment (`.\venv`
 
 # 4. Verify Plan Tree Native Parser (Zero LLM Tokens):
 .\venv\Scripts\python.exe -c "from tools.file_tools import read_file, parse_plan_tree; print(parse_plan_tree(read_file.invoke({'filename': 'PLAN.md'})))"
+
+# 5. Regenerate the inline frontend bundle (run after editing ui/js/*.js):
+.\venv\Scripts\python.exe tools\build_ui_bundle.py
 ```
+
+> **Frontend build step:** `ui/js/*.js` are the source of truth, but `ui/index.html`
+> embeds a generated copy of them so that startup performs no per-module HTTP
+> request. Editing a module without rerunning `tools/build_ui_bundle.py` leaves the
+> app on stale code; `node tests/ui_startup_contract.js` fails if the two drift apart.
 
 ---
 
