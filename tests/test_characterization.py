@@ -14,6 +14,7 @@ import time
 import unittest
 
 from tools import file_tools as ft
+from orchestration.workflow import templates
 
 PLAN_MD = """# Project Plan: Demo
 
@@ -705,6 +706,69 @@ class WorkflowEventContractTests(WorkspaceTestCase):
         reg.stop_workflow()
         self.assertTrue(reg.stop_event.is_set())
         reg.stop_event.clear()
+
+
+class WorkflowTemplateTests(unittest.TestCase):
+    """The coder delegation path writes canned deliverables; these pin what it writes.
+
+    Byte-for-byte equality with the pre-refactor literals was verified once during
+    the extraction; these assertions keep the shapes and the parameterisation honest.
+    """
+
+    def test_ui_task_selects_the_html_view(self):
+        for title in ["Dashboard view", "Build frontend", "UI polish"]:
+            deliverable = templates.select(title, False)
+            self.assertEqual(
+                (deliverable.filename, deliverable.test_filename),
+                ("ui_view.html", "test_ui_view.py"),
+            )
+            self.assertTrue(deliverable.code.startswith("<!DOCTYPE html>"))
+            self.assertTrue(deliverable.code.endswith("</html>"))
+
+    def test_ui_flag_beats_the_weather_keyword(self):
+        self.assertEqual(templates.select("weather api service", True).filename, "ui_view.html")
+        self.assertEqual(templates.select("weather api service", False).filename, "weather_api.py")
+
+    def test_ui_keywords_match_inside_words(self):
+        # Pre-existing behaviour worth pinning: "ui" is matched as a bare substring,
+        # so "Build a weather API" takes the HTML branch (b-ui-ld) and never reaches
+        # the weather template. A refactor must not silently "fix" this.
+        self.assertEqual(templates.select("Build a weather API", False).filename, "ui_view.html")
+
+    def test_weather_task_selects_the_fastapi_service(self):
+        deliverable = templates.select("weather forecast service", False)
+        self.assertEqual(
+            (deliverable.filename, deliverable.test_filename),
+            ("weather_api.py", "test_weather_api.py"),
+        )
+        self.assertIn('@app.get("/weather/{city}")', deliverable.code)
+        self.assertIn("client = TestClient(app)", deliverable.test_code)
+
+    def test_unmatched_task_falls_back_to_the_generic_engine(self):
+        deliverable = templates.select("Wire up telemetry", False)
+        self.assertEqual((deliverable.filename, deliverable.test_filename), ("main.py", "test_main.py"))
+        self.assertTrue(deliverable.code.startswith("# Generated module for task: Wire up telemetry\n"))
+        self.assertIn('"task": "Wire up telemetry"', deliverable.code)
+        self.assertEqual(deliverable.test_code, templates.SOLUTION_ENGINE_TEST)
+
+    def test_custom_directive_echoes_the_message(self):
+        message = "x" * 100
+        deliverable = templates.custom_engine(message)
+        self.assertEqual((deliverable.filename, deliverable.test_filename), ("main.py", "test_main.py"))
+        # The header is truncated to 60 characters; the returned payload is not.
+        self.assertEqual(deliverable.code.splitlines()[0], f"# Custom Solution: {message[:60]}")
+        self.assertIn(f'"prompt": "{message}"', deliverable.code)
+        self.assertEqual(deliverable.test_code, templates.SOLUTION_ENGINE_TEST)
+
+    def test_generated_modules_and_tests_are_valid_python(self):
+        for deliverable in (templates.default_engine("A title"), templates.custom_engine("A message")):
+            compile(deliverable.code, deliverable.filename, "exec")
+            compile(deliverable.test_code, deliverable.test_filename, "exec")
+
+    def test_bugfix_regression_test_targets_the_solution_engine(self):
+        compile(templates.BUGFIX_REGRESSION_TEST, "test_main.py", "exec")
+        self.assertIn("def test_bug_regression():", templates.BUGFIX_REGRESSION_TEST)
+        self.assertIn("from main import SolutionEngine", templates.BUGFIX_REGRESSION_TEST)
 
 
 class FacadeContractTests(WorkspaceTestCase):

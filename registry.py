@@ -31,7 +31,7 @@ from tools.file_tools import (
 )
 from tools.shell_tools import execute_shell_command, execute_restricted_command
 from orchestration import agent_catalog, plan_session, prompt_editor
-from orchestration.workflow import tool_call, tool_result
+from orchestration.workflow import templates, tool_call, tool_result
 
 class AgentRegistry:
     """
@@ -567,16 +567,7 @@ class AgentRegistry:
                     f"Updating regression test suite in {test_file}"
                 ))
                 time.sleep(0.3)
-                test_code = f'''# Regression test suite for bugfix
-import pytest
-from main import SolutionEngine
-
-def test_bug_regression():
-    engine = SolutionEngine()
-    result = engine.run()
-    assert result["status"] == "success"
-    assert result.get("verified") is True
-'''
+                test_code = templates.BUGFIX_REGRESSION_TEST
                 write_file.invoke({"filename": test_file, "content": test_code})
                 emit_fn(tool_result(
                     target_coder_id, "write_file",
@@ -731,92 +722,11 @@ def test_bug_regression():
                 time.sleep(0.3)
 
                 # Generate code for the task
-                task_title_lower = target_task.get("title", "").lower()
-                if is_ui_task or any(k in task_title_lower for k in ["ui", "frontend", "interface", "view"]):
-                    out_filename = "ui_view.html"
-                    out_test = "test_ui_view.py"
-                    out_code = '''<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Application View</title>
-  <style>
-    body { background: #07090e; color: #f1f5f9; font-family: Inter, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .card { background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(255, 255, 255, 0.08); backdrop-filter: blur(20px); border-radius: 16px; padding: 32px; box-shadow: 0 20px 40px rgba(0,0,0,0.5); width: 420px; text-align: center; }
-    h2 { color: #38bdf8; margin-top: 0; }
-    .btn { background: linear-gradient(135deg, #0284c7, #2563eb); color: #fff; border: none; padding: 10px 24px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: transform 0.2s; }
-    .btn:hover { transform: scale(1.03); }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>UI Component</h2>
-    <p>Rendered with glassmorphic dark theme and accessible design hierarchy.</p>
-    <button class="btn" onclick="alert('Action Triggered')">Explore Module</button>
-  </div>
-</body>
-</html>'''
-                    out_test_code = '''import os
-
-def test_ui_view_exists():
-    assert os.path.exists("my_project_workspace/ui_view.html") or os.path.exists("ui_view.html")
-'''
-                elif "weather" in task_title_lower:
-                    out_filename = "weather_api.py"
-                    out_test = "test_weather_api.py"
-                    out_code = '''from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-
-app = FastAPI(title="Weather API Service")
-
-class WeatherReport(BaseModel):
-    city: str
-    temperature_celsius: float
-    condition: str
-
-@app.get("/weather/{city}")
-def get_weather(city: str):
-    return {"city": city.title(), "temperature_celsius": 21.5, "condition": "Sunny"}
-'''
-                    out_test_code = '''from fastapi.testclient import TestClient
-from weather_api import app
-
-client = TestClient(app)
-
-def test_weather():
-    res = client.get("/weather/Tokyo")
-    assert res.status_code == 200
-    assert res.json()["city"] == "Tokyo"
-'''
-                else:
-                    out_filename = "main.py"
-                    out_test = "test_main.py"
-                    out_code = f'''# Generated module for task: {target_task.get("title")}
-from typing import Dict, Any
-
-class SolutionEngine:
-    def __init__(self, config: Dict[str, Any] = None):
-        self.config = config or {{}}
-
-    def run(self) -> Dict[str, Any]:
-        return {{
-            "task": "{target_task.get('title')}",
-            "status": "success",
-            "verified": True
-        }}
-
-if __name__ == "__main__":
-    engine = SolutionEngine()
-    print("Execution output:", engine.run())
-'''
-                    out_test_code = '''from main import SolutionEngine
-
-def test_solution():
-    engine = SolutionEngine()
-    res = engine.run()
-    assert res["status"] == "success"
-    assert res["verified"] is True
-'''
+                deliverable = templates.select(target_task.get("title", ""), is_ui_task)
+                out_filename = deliverable.filename
+                out_test = deliverable.test_filename
+                out_code = deliverable.code
+                out_test_code = deliverable.test_code
 
                 stream_text(target_coder_id, f"> Creating snapshot backup of deliverables for rollback safety...", delay=0.02)
                 backup_file_for_task(target_task.get("id"), out_filename)
@@ -1028,34 +938,11 @@ def test_solution():
                     })
                     time.sleep(0.3)
 
-                    filename = "main.py"
-                    test_filename = "test_main.py"
-                    code_content = f'''# Custom Solution: {user_message[:60]}
-from typing import Dict, Any
-
-class SolutionEngine:
-    def __init__(self, config: Dict[str, Any] = None):
-        self.config = config or {{}}
-
-    def run(self) -> Dict[str, Any]:
-        return {{
-            "prompt": "{user_message}",
-            "status": "success",
-            "verified": True
-        }}
-
-if __name__ == "__main__":
-    engine = SolutionEngine()
-    print("Execution output:", engine.run())
-'''
-                    test_content = '''from main import SolutionEngine
-
-def test_solution():
-    engine = SolutionEngine()
-    res = engine.run()
-    assert res["status"] == "success"
-    assert res["verified"] is True
-'''
+                    deliverable = templates.custom_engine(user_message)
+                    filename = deliverable.filename
+                    test_filename = deliverable.test_filename
+                    code_content = deliverable.code
+                    test_content = deliverable.test_code
                     backup_file_for_task("custom", filename)
                     stream_text(target_coder_id, f"> Writing custom code solution to `{filename}`...", delay=0.02)
                     write_file.invoke({"filename": filename, "content": code_content})
