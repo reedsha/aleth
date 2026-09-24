@@ -240,6 +240,10 @@ The interface strictly adopts a dark glassmorphic design inspired by high-end AI
 3. **Folder Dialog Reopening Loop:**
    - *Cause:* `pywebview.create_file_dialog` returning empty was triggering an unconditional `tkinter` fallback.
    - *Fix:* Explicit cancellation detection returns `{"cancelled": True}` immediately.
+4. **Window Renders But Ignores Every Click (frontend):**
+   - *Cause:* the frontend was split into per-file `js/*.js` / `styles.css` subresources, and pywebview serves the UI from a localhost HTTP server. WebView2 intermittently drops an individual fetch; a missing module threw while wiring listeners, which silently aborted the rest and left the window rendered but inert (and `debug=False` hides the console).
+   - *Fix:* every module and stylesheet is inlined into `ui/index.html` by `tools/build_ui_bundle.py`, so startup performs no subresource fetch. A head watchdog names any missing entry points, and `tests/ui_startup_contract.js` pins the bundles to their sources. Validated over repeated real launches.
+   - *Do not* re-add `<script src>` / `<link rel="stylesheet">` tags for local files, and always re-run the build script after editing `ui/js/` or `ui/css/`.
 
 ---
 
