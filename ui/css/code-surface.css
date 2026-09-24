@@ -1,0 +1,100 @@
+/* --------------------------------------------------------------------------
+   CODE SURFACE — syntax highlighting for the parameter textareas
+   --------------------------------------------------------------------------
+   The parameter fields are where a directive is written, so they get the same
+   treatment as the plan workbench: the field is underlined by a highlighted copy
+   of its own text. The textarea keeps the caret, the selection and the keyboard;
+   its glyphs are transparent so the copy shows through.
+
+   That only holds while both layers break every line at the same character, so
+   every metric that decides where a glyph lands -- font, size, line-height,
+   letter-spacing, tab-size, padding, border widths and wrapping -- is declared once
+   here, on the shared selector, and never on either layer alone. The wrapper itself
+   is built in ui/js/code-surface.js; no id or class in ui/index.html changes, so the
+   markup stays as it was.
+
+   The one metric that cannot be declared here is the width the textarea's scrollbar
+   takes from its text. Chromium wraps a textarea's text inside its content box minus
+   that scrollbar, and the overlay has no scrollbar of its own to subtract. Reserving
+   a scrollbar gutter instead is a fraction of a pixel too narrow -- and a fraction is
+   enough to rewrap a line one character early, which drags every following glyph out
+   of place. So the overlay takes no gutter and ui/js/code-surface.js measures the
+   width the textarea really lost and mirrors it as padding.
+-------------------------------------------------------------------------- */
+
+.cs-surface {
+  position: relative;
+  display: block;
+}
+
+.cs-highlight,
+.cs-input {
+  display: block;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 9px 12px;
+  /* Border widths are part of the metrics: the overlay reproduces the textarea's
+     1px frame and 2px gutter stripe as invisible spacers. Colours are matched
+     separately below, because only the textarea's frame is meant to be seen. */
+  border-style: solid;
+  border-width: 1px 1px 1px 2px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  /* Reserved on both layers so the textarea's wrap width cannot change when it grows
+     a scrollbar -- a change the overlay could not follow. The overlay cancels its own
+     reservation below and takes the measured width instead. */
+  scrollbar-gutter: stable;
+}
+
+.cs-highlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  border-color: transparent;
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  user-select: none;
+  /* Cancels the shared reservation: the padding-right that code-surface.js mirrors
+     from the textarea's scrollbar stands in for it, and reserving both would narrow
+     the copy by twice the width the textarea's own text is narrowed by. */
+  scrollbar-gutter: auto;
+}
+
+.cs-input {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--accent-blue-hover);
+  overflow: auto;
+}
+
+/* The selection is drawn by the textarea over the copy it hides; kept translucent so
+   the highlighted text stays legible while it is selected. */
+.cs-input::selection {
+  background: rgba(14, 165, 233, 0.32);
+}
+
+/* Token colours. Blue is the studio's accent for technical data -- the plan-name pills
+   already use it -- and it is spent here only on the tokens that are technical. Structure
+   markers recede, and quoted literals take the field's brightest foreground. */
+.cs-mark {
+  color: var(--text-dim);
+}
+
+.cs-code,
+.cs-path {
+  color: var(--accent-blue);
+}
+
+.cs-string {
+  color: var(--text-main);
+}

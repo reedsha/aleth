@@ -60,6 +60,7 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Auto-scroll wiring", initAutoScrollListeners);
   runStartupStep("Dock resize", initDockResize);
   runStartupStep("Plan workbench", initWorkbench);
+  runStartupStep("Code surfaces", initCodeSurfaces);
 
   // PyWebView Bridge initialization
   if (window.pywebview) {

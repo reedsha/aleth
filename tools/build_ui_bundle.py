@@ -50,6 +50,7 @@ JS_MODULES = [
     "visuals.js",
     "dock.js",
     "workbench.js",
+    "code-surface.js",
     "wire.js",
 ]
 
@@ -68,6 +69,7 @@ CSS_MODULES = [
     "rollback-modal.css",
     "dock.css",
     "workbench.css",
+    "code-surface.css",
 ]
 
 JS_BEGIN = "  <!-- BEGIN UI BUNDLE - generated from ui/js/*.js by tools/build_ui_bundle.py -->"

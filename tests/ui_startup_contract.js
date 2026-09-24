@@ -19,7 +19,7 @@ const vm = require("vm");
 const MODULES = [
   "state.js", "dom.js", "bootstrap.js", "plan-tree.js", "actions.js",
   "plan-modals.js", "agents.js", "workspace.js", "agent-events.js",
-  "visuals.js", "dock.js", "workbench.js", "wire.js",
+  "visuals.js", "dock.js", "workbench.js", "code-surface.js", "wire.js",
 ];
 
 // Mirrors tools/build_ui_bundle.py. A stylesheet that fails to load only costs
@@ -28,7 +28,7 @@ const MODULES = [
 const STYLESHEETS = [
   "base.css", "sidebar.css", "stage.css", "actions.css", "plan-tree.css",
   "modals.css", "tiered-prompt-editor.css", "ui-vision.css", "audit-modal.css",
-  "rollback-modal.css", "dock.css", "workbench.css",
+  "rollback-modal.css", "dock.css", "workbench.css", "code-surface.css",
 ];
 
 function makeElement(id, ctxFactory) {
