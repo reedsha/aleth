@@ -108,6 +108,16 @@
   overflow: hidden;
 }
 
+/* Center stage: the idle view and the live execution cards share this box. It is the
+   flex grower, so the bottom dock below it stays anchored to the bottom of the pane. */
+.stage-center {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -172,9 +182,7 @@
 .execution-stage {
   flex: 1;
   padding: 16px 28px 0 28px;
-  height: calc(100% - 130px);
-  max-height: calc(100% - 130px);
-  margin-bottom: 130px;
+  min-height: 0;
   overflow: hidden;
   transition: all var(--transition-smooth);
 }

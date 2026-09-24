@@ -59,7 +59,7 @@
       // "nothing works" into something actionable.
       function verifyModulesLoaded() {
         var required = [
-          "initDOMElements", "initEventListeners", "initAutoScrollListeners",
+          "initDOMElements", "initEventListeners", "initAutoScrollListeners", "initDockResize",
           "renderPlanTree", "openActionParamModal", "openRollbackModal",
           "handleConfirmRollback", "showToast", "handleAgentEvent"
         ];
@@ -118,7 +118,7 @@
   --radius-full: 9999px;
 
   --sidebar-left-width: 250px;
-  --sidebar-right-width: 300px;
+  --sidebar-right-width: 320px;
   --transition-fast: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-smooth: 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -523,6 +523,16 @@ body {
   overflow: hidden;
 }
 
+/* Center stage: the idle view and the live execution cards share this box. It is the
+   flex grower, so the bottom dock below it stays anchored to the bottom of the pane. */
+.stage-center {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -587,9 +597,7 @@ body {
 .execution-stage {
   flex: 1;
   padding: 16px 28px 0 28px;
-  height: calc(100% - 130px);
-  max-height: calc(100% - 130px);
-  margin-bottom: 130px;
+  min-height: 0;
   overflow: hidden;
   transition: all var(--transition-smooth);
 }
@@ -2977,6 +2985,77 @@ body {
   to { opacity: 1; transform: translateX(0); }
 }
   </style>
+  <style>
+/* --------------------------------------------------------------------------
+   BOTTOM DOCK — anchored console + action toolbar
+   The action control panel used to float over the center stage as an absolutely
+   positioned island, and the execution stage reserved 130px of clearance for it.
+   It is an in-flow dock now, so this file owns the dock geometry and only
+   overrides what the relocation requires of the panel markup it contains. The
+   rest of the panel's look is still owned by ui/css/actions.css.
+   -------------------------------------------------------------------------- */
+.bottom-dock {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #0a0e16;
+  border-top: 1px solid #333333;
+  overflow: hidden;
+}
+
+/* Drag target for the resize behaviour in ui/js/dock.js. */
+.dock-resize-handle {
+  flex: none;
+  height: 7px;
+  cursor: ns-resize;
+  position: relative;
+  background: transparent;
+}
+
+.dock-resize-handle::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  width: 46px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.16);
+  transform: translateX(-50%);
+  transition: background var(--transition-fast);
+}
+
+.dock-resize-handle:hover::before,
+.bottom-dock.resizing .dock-resize-handle::before {
+  background: var(--accent-cyan);
+}
+
+/* Live agent output area. Collapses to nothing until the dock is given a height,
+   so the dock hugs the toolbar instead of reserving an empty box. */
+.dock-logs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The action panel is the dock's footer now, not a floating island. It keeps
+   position:relative because the strict-plan lock overlay inside it is absolutely
+   positioned against this box. */
+.bottom-dock > .action-control-panel-container {
+  position: relative;
+  flex: none;
+  width: 100%;
+  padding: 0 12px 10px 12px;
+  z-index: 5;
+}
+
+.bottom-dock .action-dock-card {
+  max-width: none;
+}
+  </style>
   <!-- END STYLE BUNDLE -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3067,6 +3146,9 @@ body {
 
       <!-- VIEW 1: CHAT & EXECUTION WORKSPACE -->
       <section class="workspace-view active" id="chatWorkspaceView">
+
+        <!-- CENTER STAGE: idle workbench / live execution -->
+        <div class="stage-center">
         
         <!-- HERO EMPTY STATE: Clean "How can I help today?" -->
         <div class="empty-state" id="emptyStateContainer">
@@ -3184,10 +3266,16 @@ body {
             </div>
           </div>
         </div>
+        </div>
 
-        <!-- ============================================================ -->
-        <!-- ACTION CONTROL PANEL (Intent-Driven Gatekeeper Architecture) -->
-        <!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <!-- BOTTOM DOCK: anchored console + action toolbar                -->
+      <!-- ============================================================ -->
+      <section class="bottom-dock" id="bottomDock">
+        <div class="dock-resize-handle" id="dockResizeHandle" title="Drag to resize the console"></div>
+        <div class="dock-logs" id="dockLogs"></div>
+
+        <!-- Action Control Panel (Intent-Driven Gatekeeper Architecture) -->
         <div class="action-control-panel-container" id="actionControlPanelContainer">
           
           <!-- Strict Plan Lock Overlay -->
@@ -3326,6 +3414,7 @@ body {
             </div>
           </div>
         </div>
+      </section>
       </section>
 
       <!-- VIEW 2: AGENT SETTINGS / PROMPT EDITOR VIEW -->
@@ -4004,6 +4093,10 @@ function initDOMElements() {
   DOM.rollbackFilesList = document.getElementById("rollbackFilesList");
   DOM.chkRollbackConfirm = document.getElementById("chkRollbackConfirm");
   DOM.btnConfirmRollbackAction = document.getElementById("btnConfirmRollbackAction");
+
+  // Bottom Dock (resizable console housing the action toolbar)
+  DOM.bottomDock = document.getElementById("bottomDock");
+  DOM.dockResizeHandle = document.getElementById("dockResizeHandle");
 
   DOM.systemStatusDot = document.getElementById("systemStatusDot");
   DOM.systemStatusLabel = document.getElementById("systemStatusLabel");
@@ -5679,6 +5772,51 @@ function simulateWorkflow(prompt) {
 }
   </script>
   <script>
+// ui/js/dock.js — Bottom dock resize behaviour.
+// Self-contained on purpose: one drag gesture on one handle, and nothing else in
+// the frontend reads or writes the dock height.
+function initDockResize() {
+  const dock = DOM.bottomDock;
+  const handle = DOM.dockResizeHandle;
+  if (!dock || !handle) return;
+
+  // The toolbar at the dock's foot is ~137px tall, so 160 is the floor that keeps
+  // it fully visible; the ceiling leaves the center stage usable on short windows.
+  const MIN_HEIGHT = 160;
+  const maxHeight = () => Math.max(MIN_HEIGHT, Math.round(window.innerHeight * 0.7));
+
+  let startY = 0;
+  let startHeight = 0;
+  let dragging = false;
+
+  const onMove = (event) => {
+    if (!dragging) return;
+    // The handle sits on the dock's top edge, so dragging up grows the dock.
+    const next = startHeight + (startY - event.clientY);
+    dock.style.height = Math.min(maxHeight(), Math.max(MIN_HEIGHT, next)) + "px";
+    event.preventDefault();
+  };
+
+  const stopDragging = () => {
+    if (!dragging) return;
+    dragging = false;
+    dock.classList.remove("resizing");
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", stopDragging);
+  };
+
+  handle.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    startY = event.clientY;
+    startHeight = dock.getBoundingClientRect().height;
+    dock.classList.add("resizing");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stopDragging);
+    event.preventDefault();
+  });
+}
+  </script>
+  <script>
 // ui/js/wire.js — DOM event wiring and application bootstrap. Loaded last.
 
 // Surfaces a startup failure that would otherwise be invisible: the packaged app
@@ -5738,6 +5876,7 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("DOM lookup", initDOMElements);
   runStartupStep("Event wiring", initEventListeners);
   runStartupStep("Auto-scroll wiring", initAutoScrollListeners);
+  runStartupStep("Dock resize", initDockResize);
   runStartupStep("Orb animation", initOrbAnimation);
 
   // PyWebView Bridge initialization

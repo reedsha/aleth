@@ -48,6 +48,7 @@ JS_MODULES = [
     "workspace.js",
     "agent-events.js",
     "visuals.js",
+    "dock.js",
     "wire.js",
 ]
 
@@ -64,6 +65,7 @@ CSS_MODULES = [
     "ui-vision.css",
     "audit-modal.css",
     "rollback-modal.css",
+    "dock.css",
 ]
 
 JS_BEGIN = "  <!-- BEGIN UI BUNDLE - generated from ui/js/*.js by tools/build_ui_bundle.py -->"

@@ -17,7 +17,7 @@ const vm = require("vm");
 const MODULES = [
   "state.js", "dom.js", "bootstrap.js", "plan-tree.js", "actions.js",
   "plan-modals.js", "agents.js", "workspace.js", "agent-events.js",
-  "visuals.js", "wire.js",
+  "visuals.js", "dock.js", "wire.js",
 ];
 
 // Mirrors tools/build_ui_bundle.py. A stylesheet that fails to load only costs
@@ -26,7 +26,7 @@ const MODULES = [
 const STYLESHEETS = [
   "base.css", "sidebar.css", "stage.css", "actions.css", "plan-tree.css",
   "modals.css", "tiered-prompt-editor.css", "ui-vision.css", "audit-modal.css",
-  "rollback-modal.css",
+  "rollback-modal.css", "dock.css",
 ];
 
 function makeElement(id, ctxFactory) {
@@ -209,6 +209,60 @@ function check(label, ok, detail) {
   const fetchesStyles = /<link[^>]+href="[^"]*\.css"/.test(html);
   check("index.html no longer fetches a local stylesheet", !fetchesStyles,
     fetchesStyles ? "found a <link ... .css> tag" : "");
+}
+
+// --- 0c. The element inventory dom.js caches must exist in the markup. -------
+// Every element the frontend reaches for is captured by initDOMElements() from a
+// fixed id, so the ids in ui/js/dom.js are the frontend's contract with the body
+// markup. Relocating markup between panes (exactly what the UI redesign does) is
+// the natural way to lose one by accident, and a lost id degrades to a silent
+// no-op instead of an error. Pin the whole inventory here.
+{
+  const domCode = fs.readFileSync(path.join("ui", "js", "dom.js"), "utf8");
+  const ids = [...new Set(
+    [...domCode.matchAll(/getElementById\("([^"]+)"\)/g)].map((m) => m[1]))];
+
+  check("dom.js caches a plausible element inventory", ids.length > 100,
+    `${ids.length} ids`);
+
+  // Only the hand-authored markup is searched: the generated JS bundle legitimately
+  // builds some of these ids (e.g. #btnTreeExtract) as strings.
+  const html = fs.readFileSync(path.join("ui", "index.html"), "utf8");
+  const markup = html.slice(0, html.indexOf("<!-- BEGIN UI BUNDLE"));
+  const countOf = (id) => (markup.match(new RegExp(`id="${id}"`, "g")) || []).length;
+
+  const missing = ids.filter((id) => countOf(id) === 0);
+  check("every id dom.js caches exists in the markup", missing.length === 0,
+    missing.length ? `missing: ${missing.join(", ")}` : `${ids.length} ids present`);
+
+  const duplicated = ids.filter((id) => countOf(id) > 1);
+  check("no cached id is duplicated in the markup", duplicated.length === 0,
+    duplicated.length ? `duplicated: ${duplicated.join(", ")}` : "");
+}
+
+// --- 0d. The class contracts that span modules are pinned by name. ----------
+// These class names are the handshakes between the renderers, the delegated click
+// handlers, and the styles: rename one in only half its sites and the control
+// silently stops responding. Listing them here turns that rename into a failing
+// test, so it has to be deliberate rather than an unnoticed casualty of a move.
+{
+  const html = fs.readFileSync(path.join("ui", "index.html"), "utf8");
+  const markup = html.slice(0, html.indexOf("<!-- BEGIN UI BUNDLE"));
+  const js = MODULES.map((m) => fs.readFileSync(path.join("ui", "js", m), "utf8")).join("\n");
+  const css = STYLESHEETS.map((n) => fs.readFileSync(path.join("ui", "css", n), "utf8")).join("\n");
+  const frontend = [markup, js, css].join("\n");
+
+  const contractClasses = [
+    "action-btn", "plan-tree-item", "plan-tree-section", "btn-inline-execute",
+    "btn-inline-rollback", "agent-list-item", "active-agent", "plan-chip",
+    "log-line-tool", "log-line-decision",
+  ];
+  const absent = contractClasses.filter((name) => !frontend.includes(name));
+  check("the cross-module class contracts are all present", absent.length === 0,
+    absent.length ? `absent: ${absent.join(", ")}` : `${contractClasses.length} classes`);
+
+  const actions = (markup.match(/class="action-btn[ "]/g) || []).length;
+  check("the six action buttons are still in the markup", actions === 6, `${actions} found`);
 }
 
 // --- 1. Healthy canvas: everything wires up. --------------------------------

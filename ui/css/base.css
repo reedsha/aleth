@@ -36,7 +36,7 @@
   --radius-full: 9999px;
 
   --sidebar-left-width: 250px;
-  --sidebar-right-width: 300px;
+  --sidebar-right-width: 320px;
   --transition-fast: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-smooth: 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }

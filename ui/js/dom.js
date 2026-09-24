@@ -155,6 +155,10 @@ function initDOMElements() {
   DOM.chkRollbackConfirm = document.getElementById("chkRollbackConfirm");
   DOM.btnConfirmRollbackAction = document.getElementById("btnConfirmRollbackAction");
 
+  // Bottom Dock (resizable console housing the action toolbar)
+  DOM.bottomDock = document.getElementById("bottomDock");
+  DOM.dockResizeHandle = document.getElementById("dockResizeHandle");
+
   DOM.systemStatusDot = document.getElementById("systemStatusDot");
   DOM.systemStatusLabel = document.getElementById("systemStatusLabel");
   DOM.toastContainer = document.getElementById("toastContainer");

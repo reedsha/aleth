@@ -57,6 +57,7 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("DOM lookup", initDOMElements);
   runStartupStep("Event wiring", initEventListeners);
   runStartupStep("Auto-scroll wiring", initAutoScrollListeners);
+  runStartupStep("Dock resize", initDockResize);
   runStartupStep("Orb animation", initOrbAnimation);
 
   // PyWebView Bridge initialization
