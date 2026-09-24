@@ -1,0 +1,169 @@
+/* ========================================================================== */
+/* ROLLBACK MODAL & BUTTONS (MODULE 8)                                        */
+/* ========================================================================== */
+.btn-inline-rollback {
+  margin-left: 6px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+}
+
+.btn-inline-rollback:hover {
+  background: rgba(239, 68, 68, 0.25);
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
+  color: #fff;
+}
+
+.rollback-dialog-card {
+  width: 520px;
+  max-width: 95vw;
+  background: var(--bg-glass-card);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.8), 0 0 35px rgba(239, 68, 68, 0.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.rollback-icon-badge {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+}
+
+.rollback-warning-banner {
+  padding: 10px 14px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: var(--radius-md);
+  margin-bottom: 14px;
+}
+
+.rollback-warning-banner p {
+  margin: 0;
+  font-size: 12px;
+  color: #fca5a5;
+  line-height: 1.4;
+}
+
+.rollback-task-card {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  margin-bottom: 12px;
+}
+
+.rollback-target-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.8px;
+}
+
+.rollback-target-title {
+  margin: 4px 0 0 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.rollback-files-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.rollback-files-box {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+.rollback-files-ul {
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: #cbd5e1;
+}
+
+.rollback-files-note {
+  font-size: 10px;
+  color: #64748b;
+}
+
+.rollback-confirm-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: var(--radius-md);
+}
+
+.rollback-confirm-checkbox-row input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: #ef4444;
+  cursor: pointer;
+}
+
+.rollback-confirm-checkbox-row label {
+  font-size: 11px;
+  color: #cbd5e1;
+  line-height: 1.4;
+  cursor: pointer;
+  user-select: none;
+}
+
+.btn-rollback-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  border: none;
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-rollback-confirm:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  box-shadow: none !important;
+}
+
+.btn-rollback-confirm:not(:disabled):hover {
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.45);
+  transform: translateY(-1px);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}

@@ -1,0 +1,74 @@
+/* ========================================================================== */
+/* MULTIMODAL UI VISION SECTION (MODULE 6)                                    */
+/* ========================================================================== */
+.param-ui-vision-section {
+  padding: 14px;
+  background: rgba(244, 63, 94, 0.06);
+  border: 1px solid rgba(244, 63, 94, 0.25);
+  border-radius: var(--radius-md);
+  margin-bottom: 14px;
+}
+
+.ui-vision-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ui-vision-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #fb7185;
+  background: rgba(244, 63, 94, 0.2);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+}
+
+.ui-vision-subtitle {
+  font-size: 11px;
+  color: #fda4af;
+  font-weight: 500;
+}
+
+.ui-vision-desc {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.4;
+  margin: 0 0 10px 0;
+}
+
+.ui-image-preview-card {
+  position: relative;
+  margin-top: 10px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  max-width: 200px;
+  max-height: 140px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.ui-image-preview-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.btn-remove-preview {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.8);
+  border: none;
+  color: #fff;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+

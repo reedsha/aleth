@@ -1,0 +1,55 @@
+/* ========================================================================== */
+/* TIERED PROMPT EDITOR (MODULE 7)                                            */
+/* ========================================================================== */
+.core-rules-container {
+  margin-top: 12px;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.core-rules-header {
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.core-rules-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: #94a3b8;
+}
+
+.core-rules-toggle-hint {
+  font-size: 10px;
+  color: var(--accent-blue);
+  font-weight: 500;
+}
+
+.core-rules-content {
+  padding: 12px 14px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.core-rules-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: #64748b;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+

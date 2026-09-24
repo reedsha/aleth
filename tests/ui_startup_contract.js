@@ -7,7 +7,8 @@
 //
 //   node tests/ui_startup_contract.js
 //
-// Exits non-zero if the wiring order or the visible error reporting regresses.
+// Exits non-zero if the wiring order or the visible error reporting regresses,
+// or if ui/index.html drifts from its sources in ui/js/ and ui/css/.
 
 const fs = require("fs");
 const path = require("path");
@@ -17,6 +18,15 @@ const MODULES = [
   "state.js", "dom.js", "bootstrap.js", "plan-tree.js", "actions.js",
   "plan-modals.js", "agents.js", "workspace.js", "agent-events.js",
   "visuals.js", "wire.js",
+];
+
+// Mirrors tools/build_ui_bundle.py. A stylesheet that fails to load only costs
+// decoration, but a stylesheet that goes missing through drift is still a silent
+// regression, so the bundle is pinned here too.
+const STYLESHEETS = [
+  "base.css", "sidebar.css", "stage.css", "actions.css", "plan-tree.css",
+  "modals.css", "tiered-prompt-editor.css", "ui-vision.css", "audit-modal.css",
+  "rollback-modal.css",
 ];
 
 function makeElement(id, ctxFactory) {
@@ -169,6 +179,36 @@ function check(label, ok, detail) {
   const fetchesModules = /<script src="js\//.test(html);
   check("index.html no longer fetches the modules", !fetchesModules,
     fetchesModules ? "found a <script src=\"js/...\"> tag" : "");
+}
+
+// --- 0b. index.html must inline exactly the stylesheets in ui/css/. ----------
+// Same class of failure as the modules: styles.css was split into ui/css/*.css
+// and inlined so startup performs no stylesheet fetch either. Declaration order
+// is the cascade, so the inline order must match the generator's exactly.
+{
+  const html = fs.readFileSync(path.join("ui", "index.html"), "utf8");
+  const begin = html.indexOf("<!-- BEGIN STYLE BUNDLE");
+  const end = html.indexOf("<!-- END STYLE BUNDLE -->");
+  check("index.html contains the generated style bundle", begin !== -1 && end > begin,
+    begin === -1 ? "missing BEGIN marker" : "");
+
+  const region = begin === -1 ? "" : html.slice(begin, end);
+  const inlined = [...region.matchAll(/  <style>\n([\s\S]*?)\n  <\/style>/g)].map((m) => m[1]);
+  const onDisk = STYLESHEETS.map((name) =>
+    fs.readFileSync(path.join("ui", "css", name), "utf8")
+      .replace(/^\n+/, "")
+      .replace(/\n+$/, ""));
+
+  check("index.html inlines every stylesheet, in order", inlined.length === STYLESHEETS.length,
+    `${inlined.length} inlined vs ${STYLESHEETS.length} on disk`);
+
+  const stale = STYLESHEETS.filter((_name, i) => inlined[i] !== onDisk[i]);
+  check("the inlined style bundle matches ui/css exactly", stale.length === 0,
+    stale.length ? `stale: ${stale.join(", ")} (run: python tools/build_ui_bundle.py)` : "");
+
+  const fetchesStyles = /<link[^>]+href="[^"]*\.css"/.test(html);
+  check("index.html no longer fetches a local stylesheet", !fetchesStyles,
+    fetchesStyles ? "found a <link ... .css> tag" : "");
 }
 
 // --- 1. Healthy canvas: everything wires up. --------------------------------
