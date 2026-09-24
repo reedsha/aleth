@@ -35,6 +35,13 @@ IGNORE_DIRS = {
     ".pytest_cache", ".idea", ".vscode", ".gemini"
 }
 
+# Workspace-root markdown documents that describe the project but are not plans.
+# They stay readable in the file explorer, but every root ``.md`` is otherwise offered
+# as a switchable plan, and selecting one makes the Dual-Sync engine try to compile a
+# non-plan document -- surfacing as a blank plan tree with every action locked.
+# Compared case-insensitively against the bare filename.
+NON_PLAN_MD_FILES = {"progress.md", "readme.md", "changelog.md"}
+
 
 def get_project_dir() -> str:
     """Return the absolute path of the current project workspace."""
@@ -82,12 +89,19 @@ def get_plan_json_path() -> str:
 
 
 def list_plan_files() -> list[str]:
-    """Finds all .md plan files in the current workspace directory."""
+    """Finds all `.md` plan files in the current workspace directory.
+
+    Project documents that are not roadmaps (see ``NON_PLAN_MD_FILES``) are skipped:
+    an arbitrary ``.md`` in the workspace root is a plan candidate, so a stray
+    tracker or README would otherwise be offered as a switchable plan.
+    """
     base_dir = get_project_dir()
     if not os.path.exists(base_dir):
         return []
     md_files = []
     for f in os.listdir(base_dir):
+        if f.lower() in NON_PLAN_MD_FILES:
+            continue
         if f.lower().endswith(".md") and os.path.isfile(os.path.join(base_dir, f)):
             md_files.append(f)
     return sorted(md_files)

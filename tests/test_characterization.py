@@ -399,6 +399,16 @@ class PlanStateTests(WorkspaceTestCase):
         self.write("notes.txt", "x")
         self.assertEqual(ft.list_plan_files(), ["PLAN.md", "ROADMAP.md"])
 
+    def test_list_plan_files_skips_non_plan_documents(self):
+        # A tracker/README in the workspace root is not a roadmap. Offering one as a
+        # switchable plan made the Dual-Sync engine compile a non-plan document, which
+        # surfaced as a blank plan tree with every action locked.
+        self.write("PLAN.md", PLAN_MD)
+        self.write("PROGRESS.md", "# Project Plan & Execution Tracker\n")
+        self.write("README.md", "# readme\n")
+        self.write("CHANGELOG.md", "# changelog\n")
+        self.assertEqual(ft.list_plan_files(), ["PLAN.md"])
+
 
 class BackupAuditRollbackTests(WorkspaceTestCase):
     """Backup snapshots, two-phase audit, sync resolution and rollback."""
@@ -1053,11 +1063,18 @@ class WorkflowTemplateTests(unittest.TestCase):
         self.assertEqual(templates.select("weather api service", True).filename, "ui_view.html")
         self.assertEqual(templates.select("weather api service", False).filename, "weather_api.py")
 
-    def test_ui_keywords_match_inside_words(self):
-        # Pre-existing behaviour worth pinning: "ui" is matched as a bare substring,
-        # so "Build a weather API" takes the HTML branch (b-ui-ld) and never reaches
-        # the weather template. A refactor must not silently "fix" this.
-        self.assertEqual(templates.select("Build a weather API", False).filename, "ui_view.html")
+    def test_ui_keywords_match_only_whole_words(self):
+        # "ui" used to be matched as a bare substring, so any title merely containing
+        # the letters routed to the HTML template: "Build a weather API" became a
+        # dashboard because of the "ui" in "build", and "Code review" because of the
+        # "view" in "review". The weather keyword must now win for that title.
+        self.assertEqual(templates.select("Build a weather API", False).filename, "weather_api.py")
+        self.assertEqual(templates.select("Code review", False).filename, "main.py")
+
+    def test_ui_keywords_still_match_plurals(self):
+        # Word boundaries must not cost the common plurals.
+        self.assertEqual(templates.select("Dashboard views", False).filename, "ui_view.html")
+        self.assertEqual(templates.select("Public interfaces", False).filename, "ui_view.html")
 
     def test_weather_task_selects_the_fastapi_service(self):
         deliverable = templates.select("weather forecast service", False)

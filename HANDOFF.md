@@ -244,6 +244,15 @@ The interface strictly adopts a dark glassmorphic design inspired by high-end AI
    - *Cause:* the frontend was split into per-file `js/*.js` / `styles.css` subresources, and pywebview serves the UI from a localhost HTTP server. WebView2 intermittently drops an individual fetch; a missing module threw while wiring listeners, which silently aborted the rest and left the window rendered but inert (and `debug=False` hides the console).
    - *Fix:* every module and stylesheet is inlined into `ui/index.html` by `tools/build_ui_bundle.py`, so startup performs no subresource fetch. A head watchdog names any missing entry points, and `tests/ui_startup_contract.js` pins the bundles to their sources. Validated over repeated real launches.
    - *Do not* re-add `<script src>` / `<link rel="stylesheet">` tags for local files, and always re-run the build script after editing `ui/js/` or `ui/css/`.
+5. **UI Template Selected For Backend Tasks:**
+   - *Cause:* `templates.select` matched its UI keywords as bare substrings, so any title merely containing the letters won: `"Build a weather API"` became an HTML dashboard because of the `ui` in `build`, and `"Code review"` because of the `view` in `review`.
+   - *Fix:* the keywords are matched on word boundaries (`\b(?:ui|frontend|interface|view)s?\b`), so the weather template wins for those titles while plurals such as `"Dashboard views"` still match.
+6. **Non-Plan Markdown Offered As A Switchable Plan:**
+   - *Cause:* `list_plan_files` returned every root `.md`, so a tracker or README was listed as a plan; selecting one made the Dual-Sync engine compile a non-plan document, surfacing as a blank plan tree with every action locked.
+   - *Fix:* `NON_PLAN_MD_FILES` (progress / readme / changelog, case-insensitive) is skipped. The files stay visible in the file explorer.
+7. **Offline Fallback Disguised A Dead Bridge:**
+   - *Cause:* `initFallbackMode` seeded a fake project whenever `window.pywebview` was absent, so a failed handshake produced a fully populated window showing a project the user does not have.
+   - *Fix:* the demo data is opt-in (`?demo=1`) for layout previews only; the default path reports a visible "bridge unavailable" failure instead. The 400 ms fallback timer is also cancelled when `pywebviewready` arrives first.
 
 ---
 

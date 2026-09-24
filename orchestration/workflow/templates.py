@@ -8,6 +8,14 @@ workflow.
 """
 
 from typing import NamedTuple
+import re
+
+
+# Matched on word boundaries. A bare substring test sent any task whose title merely
+# *contained* those letters to the HTML template: "Build a weather API" became a
+# dashboard because of the "ui" in "build", and "Code review" because of the "view"
+# in "review". The optional trailing "s" keeps the common plurals matching.
+_UI_KEYWORD_RE = re.compile(r"\b(?:ui|frontend|interface|view)s?\b")
 
 
 class Deliverable(NamedTuple):
@@ -151,7 +159,7 @@ def select(task_title: str, is_ui: bool) -> Deliverable:
     unmatched falls through to the generic engine.
     """
     lowered = task_title.lower()
-    if is_ui or any(k in lowered for k in ["ui", "frontend", "interface", "view"]):
+    if is_ui or _UI_KEYWORD_RE.search(lowered):
         return ui_view()
     if "weather" in lowered:
         return weather_api()

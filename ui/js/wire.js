@@ -63,12 +63,18 @@ document.addEventListener("DOMContentLoaded", () => {
   if (window.pywebview) {
     runStartupStep("Bridge startup", onPyWebViewReady);
   } else {
-    window.addEventListener("pywebviewready", () => runStartupStep("Bridge startup", onPyWebViewReady));
-    setTimeout(() => {
+    // pywebview injects its bridge after this script has run, so the event can beat the
+    // timer. Whichever wins, the other is cancelled: a bridge that arrives promptly must
+    // not also run the fallback path, which now only reports or seeds opt-in demo data.
+    const fallbackTimer = setTimeout(() => {
       if (!window.pywebview) {
-        runStartupStep("Offline fallback", initFallbackMode);
+        runStartupStep("Bridge fallback", initFallbackMode);
       }
     }, 400);
+    window.addEventListener("pywebviewready", () => {
+      clearTimeout(fallbackTimer);
+      runStartupStep("Bridge startup", onPyWebViewReady);
+    });
   }
 });
 // ============================================================================

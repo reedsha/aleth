@@ -1,4 +1,4 @@
-// ui/js/bootstrap.js — PyWebView handshake, offline fallback seed data, agent/workspace hydration.
+// ui/js/bootstrap.js — PyWebView handshake, opt-in demo data, agent/workspace hydration.
 // ============================================================================
 // PyWebView Integration & Plan Initialization
 // ============================================================================
@@ -59,7 +59,32 @@ function reportPlanDiagnostics(planData) {
   }
 }
 
+// Demo data is opt-in (open this page with ?demo=1). It exists to preview the layout
+// in a plain browser, where there is no pywebview bridge. In the packaged app a missing
+// bridge means the desktop API failed to load, not that the user has no project -- and
+// seeding demo data there disguised exactly that failure as a working app showing a
+// project the user does not have.
+function isDemoModeRequested() {
+  try {
+    const search = window.location && window.location.search;
+    return typeof search === "string" && search.indexOf("demo") !== -1;
+  } catch (_err) {
+    return false;
+  }
+}
+
 function initFallbackMode() {
+  if (!isDemoModeRequested()) {
+    const message = "Desktop bridge unavailable: the workspace could not be loaded. " +
+      "Restart the app. (For a layout-only preview in a browser, open this page with ?demo=1.)";
+    if (typeof reportStartupFailure === "function") reportStartupFailure(message);
+    else console.error("[DeepAgents UI]", message);
+    return;
+  }
+  renderFallbackDemoData();
+}
+
+function renderFallbackDemoData() {
   applyAgentsData({
     main_agents: [
       {

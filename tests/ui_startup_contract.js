@@ -355,5 +355,37 @@ const healthyWiring = (() => {
     broken.join(" | ") || "no banner");
 }
 
+// --- 7. A missing bridge must not be disguised as a working app. ------------
+// initFallbackMode used to seed a fake project whenever the bridge was absent, so a
+// failed pywebview handshake produced a fully populated window showing a project the
+// user does not have. Demo data is opt-in now; the default path must report instead.
+{
+  const run = load(workingContext);
+  run.fire();
+  const reported = [];
+  run.sandbox.window.__deepAgentsReport = (m) => reported.push(String(m));
+  run.sandbox.initFallbackMode();
+
+  const ws = run.elements.get("txtWorkspacePath");
+  check("a missing bridge is reported rather than disguised with demo data",
+    reported.some((m) => /bridge unavailable/i.test(m)), JSON.stringify(reported));
+  check("the fallback seeds no demo data without an explicit opt-in",
+    !ws || !ws.textContent,
+    ws ? `workspace label = ${JSON.stringify(ws.textContent)}` : "no element");
+}
+
+// --- 8. ?demo=1 still seeds the layout preview. ------------------------------
+{
+  const run = load(workingContext);
+  run.fire();
+  run.sandbox.window.location = { search: "?demo=1" };
+  run.sandbox.initFallbackMode();
+
+  const ws = run.elements.get("txtWorkspacePath");
+  check("?demo=1 still seeds the preview data",
+    !!ws && /my_project_workspace/.test(ws.textContent || ""),
+    ws ? `workspace label = ${JSON.stringify(ws.textContent)}` : "no element");
+}
+
 console.log(failures === 0 ? "\nALL CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
