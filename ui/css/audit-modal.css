@@ -5,12 +5,12 @@
   width: 660px;
   max-width: 95vw;
   max-height: 84vh;
-  background: rgba(13, 17, 26, 0.96);
+  background: rgba(37, 37, 38, 0.96);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--radius-lg);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.8), 0 0 35px rgba(14, 165, 233, 0.15);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.8);
   display: flex;
   flex-direction: column;
   overflow: hidden;

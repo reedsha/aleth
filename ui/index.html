@@ -85,31 +85,32 @@
    Three-Column Layout: Left Agents Dock, Center Stage, Right Plan Tree Tracker
    ========================================================================== */
 
+/* Neutral, high-contrast dark greys in the spirit of the VS Code default theme.
+   The surfaces here are flat greys rather than navy: most components tint
+   themselves with white overlays, so retuning these few tokens cascades widely.
+   Colour is reserved for state (running, success, danger), never decoration. */
 :root {
-  --bg-primary: #07090e;
-  --bg-secondary: #0d121d;
-  --bg-sidebar: rgba(10, 14, 23, 0.94);
-  --bg-glass-card: rgba(15, 22, 36, 0.78);
-  --bg-glass-input: rgba(13, 18, 30, 0.92);
-  --bg-glass-hover: rgba(30, 41, 59, 0.55);
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-elevated: #2d2d30;
+  --bg-sidebar: rgba(37, 37, 38, 0.94);
+  --bg-glass-card: rgba(45, 45, 48, 0.78);
+  --bg-glass-hover: rgba(255, 255, 255, 0.07);
 
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --border-glass: rgba(255, 255, 255, 0.12);
-  --border-glow-blue: rgba(56, 189, 248, 0.45);
-  --border-glow-purple: rgba(168, 85, 247, 0.45);
+  --border-subtle: #333333;
+  --border-glass: #3c3c3c;
 
   --accent-blue: #0ea5e9;
   --accent-blue-hover: #38bdf8;
-  --accent-purple: #a855f7;
   --accent-cyan: #06b6d4;
   --accent-stop: #ef4444;
 
   --text-main: #f8fafc;
   --text-muted: #94a3b8;
-  --text-dim: #64748b;
+  --text-dim: #7d8a9c;
 
-  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: 'Fira Code', 'JetBrains Mono', ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
 
   --radius-sm: 8px;
   --radius-md: 14px;
@@ -143,19 +144,6 @@ body {
   overflow: hidden;
   position: relative;
   user-select: none;
-}
-
-.ambient-glow {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background: 
-    radial-gradient(circle at 45% 60%, rgba(14, 165, 233, 0.12) 0%, rgba(99, 102, 241, 0.05) 35%, rgba(7, 9, 14, 0.95) 75%),
-    radial-gradient(circle at 10% 20%, rgba(168, 85, 247, 0.05) 0%, transparent 40%);
-  pointer-events: none;
-  z-index: 0;
 }
 
 .app-layout {
@@ -202,9 +190,7 @@ body {
   font-size: 15px;
   font-weight: 800;
   letter-spacing: 1.8px;
-  background: linear-gradient(135deg, #ffffff 40%, #94a3b8 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #ffffff;
 }
 
 .brand-badge {
@@ -368,9 +354,9 @@ body {
 }
 
 .agent-item-icon.coder {
-  background: rgba(168, 85, 247, 0.18);
-  color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.3);
+  background: rgba(148, 163, 184, 0.18);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.3);
 }
 
 .agent-item-info {
@@ -401,10 +387,12 @@ body {
   background: #10b981;
 }
 
+/* Pulses while an agent is actively working, so it uses the cyan reserved for
+   running state rather than a decorative hue. */
 @keyframes delegationPulse {
-  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(168, 85, 247, 0.7); border-color: #a855f7; }
-  50% { transform: scale(1.04); box-shadow: 0 0 18px 4px rgba(168, 85, 247, 0.85); border-color: #d8b4fe; }
-  100% { transform: scale(1); box-shadow: 0 0 10px 1px rgba(168, 85, 247, 0.4); border-color: #a855f7; }
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.7); border-color: #06b6d4; }
+  50% { transform: scale(1.04); box-shadow: 0 0 18px 4px rgba(6, 182, 212, 0.85); border-color: #22d3ee; }
+  100% { transform: scale(1); box-shadow: 0 0 10px 1px rgba(6, 182, 212, 0.4); border-color: #06b6d4; }
 }
 
 .agent-list-item.delegation-highlight {
@@ -433,7 +421,7 @@ body {
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  background: rgba(8, 11, 18, 0.4);
+  background: rgba(30, 30, 30, 0.4);
   backdrop-filter: blur(12px);
   z-index: 5;
 }
@@ -631,8 +619,8 @@ body {
 }
 
 .coder-card {
-  border-color: rgba(168, 85, 247, 0.35);
-  box-shadow: 0 0 25px rgba(168, 85, 247, 0.15), 0 16px 36px rgba(0, 0, 0, 0.45);
+  border-color: rgba(148, 163, 184, 0.35);
+  box-shadow: 0 0 25px rgba(148, 163, 184, 0.15), 0 16px 36px rgba(0, 0, 0, 0.45);
 }
 
 .card-header {
@@ -666,9 +654,9 @@ body {
 }
 
 .coder-badge {
-  background: rgba(168, 85, 247, 0.18);
-  color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.3);
+  background: rgba(148, 163, 184, 0.18);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.3);
 }
 
 .agent-meta {
@@ -702,8 +690,8 @@ body {
 }
 
 .coder-pill {
-  background: rgba(168, 85, 247, 0.2);
-  color: #d8b4fe;
+  background: rgba(148, 163, 184, 0.2);
+  color: #cbd5e1;
 }
 
 .agent-model {
@@ -729,9 +717,9 @@ body {
 }
 
 .status-badge.coder-status {
-  background: rgba(168, 85, 247, 0.15);
-  color: #d8b4fe;
-  border-color: rgba(168, 85, 247, 0.25);
+  background: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.25);
 }
 
 .status-badge.completed {
@@ -836,17 +824,17 @@ body {
 }
 
 .log-line-decision {
-  color: #d8b4fe;
+  color: #cbd5e1;
   padding: 4px 8px;
-  background: rgba(168, 85, 247, 0.1);
-  border-left: 3px solid #c084fc;
+  background: rgba(148, 163, 184, 0.1);
+  border-left: 3px solid #94a3b8;
   border-radius: 0 4px 4px 0;
   margin: 6px 0;
 }
 
 .card-summary-container {
   padding: 14px 18px;
-  background: rgba(15, 23, 42, 0.85);
+  background: rgba(37, 37, 38, 0.85);
   border-top: 1px solid var(--border-subtle);
   animation: fadeIn 0.4s ease forwards;
   max-height: 220px;
@@ -937,7 +925,7 @@ body {
 .action-dock-card {
   width: 100%;
   max-width: 780px;
-  background: rgba(13, 18, 30, 0.92);
+  background: rgba(37, 37, 38, 0.92);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -959,7 +947,7 @@ body {
   width: 100%;
   height: 100%;
   border-radius: 20px;
-  background: rgba(8, 11, 18, 0.85);
+  background: rgba(30, 30, 30, 0.85);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border: 1px solid rgba(245, 158, 11, 0.3);
@@ -1133,23 +1121,23 @@ body {
 }
 
 .action-analyze .search-icon {
-  background: rgba(99, 102, 241, 0.14);
-  color: #818cf8;
-  border: 1px solid rgba(99, 102, 241, 0.25);
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.25);
 }
 .action-analyze:hover {
-  border-color: rgba(99, 102, 241, 0.45);
-  box-shadow: 0 0 16px rgba(99, 102, 241, 0.25);
+  border-color: rgba(148, 163, 184, 0.45);
+  box-shadow: 0 0 16px rgba(148, 163, 184, 0.25);
 }
 
 .action-recommend .lightbulb-icon {
-  background: rgba(168, 85, 247, 0.14);
-  color: #c084fc;
-  border: 1px solid rgba(168, 85, 247, 0.25);
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.25);
 }
 .action-recommend:hover {
-  border-color: rgba(168, 85, 247, 0.45);
-  box-shadow: 0 0 16px rgba(168, 85, 247, 0.25);
+  border-color: rgba(148, 163, 184, 0.45);
+  box-shadow: 0 0 16px rgba(148, 163, 184, 0.25);
 }
 
 .action-custom .command-icon {
@@ -1269,7 +1257,7 @@ body {
 .action-param-card {
   width: 100%;
   max-width: 580px;
-  background: rgba(13, 17, 26, 0.96);
+  background: rgba(37, 37, 38, 0.96);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -1872,13 +1860,12 @@ body {
   flex: 1;
   padding: 10px 18px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  background: #0284c7;
   border: none;
   color: #fff;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 0 16px rgba(14, 165, 233, 0.4);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1887,8 +1874,7 @@ body {
 }
 
 .btn-dialog-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
-  box-shadow: 0 0 20px rgba(14, 165, 233, 0.55);
+  background: #0ea5e9;
 }
 
 .btn-dialog-primary:disabled {
@@ -1926,7 +1912,7 @@ body {
   width: 90%;
   max-width: 640px;
   max-height: 82vh;
-  background: rgba(13, 17, 26, 0.96);
+  background: rgba(37, 37, 38, 0.96);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -1938,6 +1924,7 @@ body {
   animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Workspace Files Modal Styling */
 .files-modal .modal-header {
   padding: 16px 20px;
   display: flex;
@@ -2297,7 +2284,7 @@ body {
 .editor-code-container {
   flex: 1;
   display: flex;
-  background: rgba(10, 15, 25, 0.85);
+  background: rgba(30, 30, 30, 0.85);
   border: 1px solid var(--border-glass);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -2356,13 +2343,12 @@ body {
   gap: 8px;
   padding: 10px 22px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #0ea5e9, #0284c7);
+  background: #0284c7;
   border: none;
   color: #fff;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 0 20px rgba(14, 165, 233, 0.4);
 }
 
 .toast-container {
@@ -2378,7 +2364,7 @@ body {
 .toast {
   padding: 12px 20px;
   border-radius: var(--radius-md);
-  background: rgba(15, 23, 42, 0.95);
+  background: rgba(37, 37, 38, 0.95);
   border: 1px solid var(--border-glass);
   color: #fff;
   font-size: 13px;
@@ -2395,7 +2381,7 @@ body {
 /* ========================================================================== */
 .core-rules-container {
   margin-top: 12px;
-  background: rgba(15, 23, 42, 0.6);
+  background: rgba(37, 37, 38, 0.6);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--radius-md);
   overflow: hidden;
@@ -2528,12 +2514,12 @@ body {
   width: 660px;
   max-width: 95vw;
   max-height: 84vh;
-  background: rgba(13, 17, 26, 0.96);
+  background: rgba(37, 37, 38, 0.96);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: var(--radius-lg);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.8), 0 0 35px rgba(14, 165, 233, 0.15);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.8);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2955,7 +2941,7 @@ body {
   gap: 8px;
   padding: 10px 18px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  background: #b91c1c;
   border: none;
   color: #fff;
   font-size: 12.5px;
@@ -2999,7 +2985,7 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: #0a0e16;
+  background: var(--bg-secondary);
   border-top: 1px solid #333333;
   overflow: hidden;
 }
@@ -3062,9 +3048,6 @@ body {
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-  <!-- Ambient background glow -->
-  <div class="ambient-glow"></div>
-
   <div class="app-layout">
     <!-- ============================================================ -->
     <!-- 1. LEFT SIDEBAR (Expanded to 250px, Agents & Workspace)       -->

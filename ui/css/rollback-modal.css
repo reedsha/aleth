@@ -138,7 +138,7 @@
   gap: 8px;
   padding: 10px 18px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  background: #b91c1c;
   border: none;
   color: #fff;
   font-size: 12.5px;
