@@ -57,6 +57,83 @@ function updateNextStepButtonPreview() {
   }
 }
 
+// --- Task cards -------------------------------------------------------------
+// Titles and details come from plan.json, which is compiled from the plan markdown, so
+// they still carry the source markers ("**bold**", `code`). A task card is a component,
+// not a document, so the markers are dropped instead of printed. One pass only, exactly
+// like the workbench: a second pass would rescan the spans the first one inserted.
+const PLAN_INLINE_RE = /(`[^`\n]*`)|(\*\*[^*\n]*\*\*)|(__[^_\n]*__)/g;
+
+// Takes ALREADY-ESCAPED text and returns markup. Callers stay responsible for the
+// escaping order -- escape the raw string first, then apply this.
+function planInlineMarkup(escapedText) {
+  const paired = escapedText.replace(PLAN_INLINE_RE, (match, code, strong) => {
+    const marker = code ? "`" : (strong ? "**" : "__");
+    const inner = match.slice(marker.length, -marker.length);
+    return code
+      ? `<span class="task-md-code">${inner}</span>`
+      : `<span class="task-md-strong">${inner}</span>`;
+  });
+  // An unpaired marker would otherwise print as literal punctuation. The inserted spans
+  // contain neither character, so this cleanup cannot reach into them.
+  return paired.replace(/\*\*/g, "").replace(/`/g, "");
+}
+
+// The three states the plan format defines. Anything else behaves as pending, which is
+// what the previous renderer did too, so an unknown status cannot change behaviour.
+function planStepState(step) {
+  return (step.status === "completed" || step.status === "in_progress") ? step.status : "pending";
+}
+
+function planStatusIcon(stepState) {
+  if (stepState === "completed") return '<div class="step-status-icon completed">✓</div>';
+  if (stepState === "in_progress") return '<div class="step-status-icon in_progress">●</div>';
+  // A pending task is the absence of a state, so the ring is left empty.
+  return '<div class="step-status-icon pending"></div>';
+}
+
+// Domain pills are only ever drawn from data the plan actually carries. `is_ui` is the
+// one domain flag in the schema today -- tools/plan_parser.py reads a "[UI]" tag into it
+// and writes it back out -- so it is the only pill that can be shown without inventing
+// metadata. API and DB pills hook in here, and only here, once the plan schema carries
+// a domain for them.
+function planDomainPills(step) {
+  if (!step.is_ui) return "";
+  return '<span class="task-domain-pill pill-ui">UI</span>';
+}
+
+// Deliverables sit under the title rather than inside the collapsed details drawer, so
+// they can be read without expanding the card.
+function planFileChips(step) {
+  return (step.files || []).filter(Boolean).map(file =>
+    `<span class="task-file-chip" title="${escapeHtml(file)}">📄 ${escapeHtml(file)}</span>`
+  ).join("");
+}
+
+const PLAN_EXECUTE_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
+const PLAN_ROLLBACK_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-7.1L3 8"/></svg>';
+const PLAN_STOP_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
+
+// One state, one affordance, drawn inline on the card so a task can be acted on without
+// opening anything. The bridge has no per-task stop -- only the global one -- so the
+// Stop button is offered only while a run is genuinely active; otherwise the card just
+// reports that the task is in progress rather than offering a button that would lie.
+function planInlineActions(step, stepState) {
+  if (stepState === "pending") {
+    return `<button class="btn-inline-execute" data-task-id="${escapeHtml(step.id)}" data-task-title="${escapeHtml(step.title)}" title="Execute this specific task">${PLAN_EXECUTE_ICON}<span>Execute</span></button>`;
+  }
+  if (stepState === "completed") {
+    return `<button class="btn-inline-rollback" data-task-id="${escapeHtml(step.id)}" title="Roll this completed task back to pending">${PLAN_ROLLBACK_ICON}<span>Rollback</span></button>`;
+  }
+  if (stepState === "in_progress") {
+    if (state.isExecuting) {
+      return `<button class="btn-inline-stop" title="Stop the running agent execution">${PLAN_STOP_ICON}<span>Stop</span></button>`;
+    }
+    return '<span class="task-state-chip running">Running</span>';
+  }
+  return "";
+}
+
 function renderPlanTree() {
   DOM.planTreeContainer.innerHTML = "";
 
@@ -130,64 +207,45 @@ function renderPlanTree() {
 
     const headerEl = document.createElement("div");
     headerEl.className = "plan-tree-section-header";
-    headerEl.textContent = section.title.toUpperCase();
+    // Uppercase the raw text first: uppercasing an escaped "&amp;" would break the entity.
+    headerEl.innerHTML = planInlineMarkup(escapeHtml(String(section.title).toUpperCase()));
     sectionEl.appendChild(headerEl);
 
     (section.tasks || []).forEach(step => {
+      const stepState = planStepState(step);
       const itemEl = document.createElement("div");
-      itemEl.className = "plan-tree-item";
+      itemEl.className = `plan-tree-item step-${stepState}`;
       itemEl.id = `tree_${step.id}`;
 
-      let iconHtml = '<div class="step-status-icon pending">○</div>';
-      if (step.status === "completed") {
-        iconHtml = '<div class="step-status-icon completed">✓</div>';
-      } else if (step.status === "in_progress") {
-        iconHtml = '<div class="step-status-icon in_progress">●</div>';
-      }
-
-      const uiBadge = step.is_ui ? '<span class="ui-task-badge">UI</span>' : '';
-
-      // Inline action buttons
-      let inlineActionBtn = '';
-      if (step.status === "pending") {
-        inlineActionBtn = `<button class="btn-inline-execute" data-task-id="${escapeHtml(step.id)}" data-task-title="${escapeHtml(step.title)}" title="Execute this specific task">⚡ Run</button>`;
-      } else if (step.status === "completed") {
-        inlineActionBtn = `<button class="btn-inline-rollback" data-task-id="${escapeHtml(step.id)}" title="Rollback this completed task to pending">↺ Revert</button>`;
-      }
-
-      const hasDetails = (step.details && step.details.length > 0) || (step.files && step.files.length > 0);
-      const toggleArrow = hasDetails ? '<span class="step-toggle-arrow">▶</span>' : '';
-
-      let detailsHtml = "";
-      if (hasDetails) {
-        const bullets = [];
-        if (step.details) {
-          step.details.forEach(d => bullets.push(`<div class="step-detail-bullet">${escapeHtml(d)}</div>`));
-        }
-        if (step.files && step.files.length > 0) {
-          bullets.push(`<div class="step-detail-bullet" style="color: #38bdf8;"><strong>Files:</strong> ${escapeHtml(step.files.join(", "))}</div>`);
-        }
-        detailsHtml = `
-          <div class="step-details-drawer">
-            ${bullets.join("")}
-          </div>
-        `;
-      }
+      const details = (step.details || []).filter(d => d !== null && d !== undefined && String(d).trim() !== "");
+      const hasDetails = details.length > 0;
+      const pills = planDomainPills(step);
+      const fileChips = planFileChips(step);
+      const metaHtml = (pills || fileChips) ? `<div class="task-card-meta">${pills}${fileChips}</div>` : "";
+      const detailsHtml = hasDetails ? `
+        <div class="step-details-drawer">
+          ${details.map(d => `<div class="step-detail-bullet">${planInlineMarkup(escapeHtml(String(d)))}</div>`).join("")}
+        </div>
+      ` : "";
 
       itemEl.innerHTML = `
         <div class="plan-tree-item-row">
-          ${iconHtml}
-          ${uiBadge}
-          <span class="step-title ${step.status === "completed" ? "completed" : ""}">${escapeHtml(step.title)}</span>
-          ${inlineActionBtn}
-          ${toggleArrow}
+          ${planStatusIcon(stepState)}
+          <div class="step-title${stepState === "completed" ? " completed" : ""}">${planInlineMarkup(escapeHtml(step.title))}</div>
+          <div class="task-card-actions">
+            ${planInlineActions(step, stepState)}
+            ${hasDetails ? '<span class="step-toggle-arrow">▶</span>' : ''}
+          </div>
         </div>
+        ${metaHtml}
         ${detailsHtml}
       `;
 
       // Accordion toggle on row click (excluding clicks on inline action buttons)
       itemEl.addEventListener("click", (e) => {
-        if (e.target.closest(".btn-inline-execute") || e.target.closest(".btn-inline-rollback")) return;
+        if (e.target.closest(".btn-inline-execute") ||
+            e.target.closest(".btn-inline-rollback") ||
+            e.target.closest(".btn-inline-stop")) return;
         itemEl.classList.toggle("expanded");
       });
 
@@ -209,6 +267,16 @@ function renderPlanTree() {
         rollbackBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           openRollbackModal(step);
+        });
+      }
+
+      // Inline stop button (only rendered while a run is active) mirrors the dock's
+      // global stop, because that is the only stop the bridge exposes.
+      const stopBtn = itemEl.querySelector(".btn-inline-stop");
+      if (stopBtn) {
+        stopBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          handleStopClick();
         });
       }
 

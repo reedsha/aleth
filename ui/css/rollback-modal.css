@@ -1,27 +1,7 @@
 /* ========================================================================== */
-/* ROLLBACK MODAL & BUTTONS (MODULE 8)                                        */
+/* ROLLBACK MODAL (MODULE 8)                                                  */
+/* The inline per-task Rollback button lives with the task card, in plan-tree.css. */
 /* ========================================================================== */
-.btn-inline-rollback {
-  margin-left: 6px;
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #f87171;
-  font-size: 10px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  display: inline-flex;
-  align-items: center;
-}
-
-.btn-inline-rollback:hover {
-  background: rgba(239, 68, 68, 0.25);
-  box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
-  color: #fff;
-}
-
 .rollback-dialog-card {
   width: 520px;
   max-width: 95vw;

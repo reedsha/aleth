@@ -104,6 +104,7 @@
   --accent-blue-hover: #38bdf8;
   --accent-cyan: #06b6d4;
   --accent-stop: #ef4444;
+  --accent-amber: #f59e0b;
 
   --text-main: #f8fafc;
   --text-muted: #94a3b8;
@@ -1155,43 +1156,8 @@ body {
   box-shadow: 0 0 14px rgba(239, 68, 68, 0.5);
 }
 
-/* Inline Execute Button in Right Plan Sidebar */
-.btn-inline-execute {
-  margin-left: auto;
-  padding: 2px 7px;
-  font-size: 9.5px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  border-radius: 4px;
-  background: rgba(14, 165, 233, 0.15);
-  border: 1px solid rgba(14, 165, 233, 0.35);
-  color: #38bdf8;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.btn-inline-execute:hover {
-  background: #0ea5e9;
-  color: #ffffff;
-  box-shadow: 0 0 8px rgba(14, 165, 233, 0.5);
-}
-
-/* UI Badge for [UI] Tagged Tasks */
-.ui-task-badge {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.6px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: rgba(236, 72, 153, 0.18);
-  color: #f472b6;
-  border: 1px solid rgba(236, 72, 153, 0.35);
-  margin-right: 5px;
-  text-transform: uppercase;
-}
+/* The plan tree's inline task actions (execute, rollback, stop) and its domain pills are
+   styled with the task card itself, in plan-tree.css. */
 
 /* Action Parameter Modal Styling */
 .action-param-card {
@@ -1526,7 +1492,7 @@ body {
 .plan-tree-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .plan-tree-section-header {
@@ -1537,74 +1503,239 @@ body {
   padding: 2px 4px;
 }
 
+/* --------------------------------------------------------------------------
+   Task cards
+   Each task is a card rather than a line of text: its state, its domain and its
+   deliverables are readable at a glance, and the action it supports is attached
+   to it instead of living only in the dock. The 2px left edge carries the state
+   so a scan down the sidebar reads as a progress bar.
+   -------------------------------------------------------------------------- */
 .plan-tree-item {
   display: flex;
   flex-direction: column;
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.02);
+  gap: 6px;
+  padding: 8px 9px 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
+  border-left: 2px solid #3c4654;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .plan-tree-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--bg-glass-hover);
   border-color: var(--border-glass);
+}
+
+.plan-tree-item.step-completed {
+  border-left-color: #10b981;
+}
+
+.plan-tree-item.step-in_progress {
+  border-left-color: var(--accent-amber);
 }
 
 .plan-tree-item-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
 .step-status-icon {
-  width: 16px;
-  height: 16px;
-  min-width: 16px;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  margin-top: 1px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 9px;
+  box-sizing: border-box;
 }
 
 .step-status-icon.completed {
-  background: rgba(16, 185, 129, 0.2);
-  color: #10b981;
+  background: #10b981;
   border: 1px solid #10b981;
+  color: #10231c;
 }
 
 .step-status-icon.in_progress {
-  background: rgba(14, 165, 233, 0.2);
-  color: #38bdf8;
-  border: 1px solid #38bdf8;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid var(--accent-amber);
+  color: var(--accent-amber);
   animation: pulseDot 1s infinite alternate;
 }
 
 .step-status-icon.pending {
-  background: rgba(255, 255, 255, 0.05);
-  color: #64748b;
-  border: 1px solid #475569;
+  background: transparent;
+  border: 1.5px solid #4b5563;
 }
 
 .step-title {
   flex: 1;
-  font-size: 12px;
+  min-width: 0;
+  font-size: 11.5px;
   font-weight: 500;
   color: var(--text-main);
-  line-height: 1.35;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .step-title.completed {
-  color: #94a3b8;
+  color: var(--text-dim);
   text-decoration: line-through;
 }
 
-.step-toggle-arrow {
+/* Plan text still carries its markdown markers; they are rendered rather than printed. */
+.task-md-strong {
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.task-md-code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--accent-blue-hover);
+  background: rgba(14, 165, 233, 0.1);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.task-card-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: -1px;
+}
+
+/* Deliverables and domain tags sit under the title, indented past the state icon. */
+.task-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding-left: 22px;
+}
+
+.task-domain-pill {
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.task-domain-pill.pill-ui {
+  color: #f472b6;
+  background: rgba(236, 72, 153, 0.12);
+  border-color: rgba(236, 72, 153, 0.32);
+}
+
+.task-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --------------------------------------------------------------------------
+   Inline task actions (one per state)
+   -------------------------------------------------------------------------- */
+.btn-inline-execute,
+.btn-inline-rollback,
+.btn-inline-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-ui);
+  font-size: 9.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.btn-inline-execute {
+  background: rgba(14, 165, 233, 0.12);
+  border: 1px solid rgba(14, 165, 233, 0.32);
+  color: var(--accent-blue-hover);
+}
+
+.btn-inline-execute:hover {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #04121c;
+}
+
+/* Quiet at rest so the sidebar does not read as a wall of red, destructive on hover. */
+.btn-inline-rollback {
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid var(--border-glass);
+  color: var(--text-muted);
+}
+
+.btn-inline-rollback:hover {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
+.btn-inline-stop {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: var(--accent-amber);
+}
+
+.btn-inline-stop:hover {
+  background: var(--accent-amber);
+  border-color: var(--accent-amber);
+  color: #1a1206;
+}
+
+/* Shown for an in-progress task while no run is active to stop. */
+.task-state-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
   font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.task-state-chip.running {
+  color: var(--accent-amber);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+  animation: pulseDot 1.2s infinite alternate;
+}
+
+.step-toggle-arrow {
+  font-size: 8px;
   color: var(--text-dim);
+  padding: 0 1px;
   transition: transform var(--transition-fast);
 }
 
@@ -1614,10 +1745,10 @@ body {
 
 .step-details-drawer {
   display: none;
-  margin-top: 8px;
-  padding-top: 6px;
+  margin-top: 2px;
+  padding: 6px 0 0 22px;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-muted);
 }
 
@@ -1631,12 +1762,14 @@ body {
   gap: 6px;
   margin-bottom: 3px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 10px;
+  overflow-wrap: anywhere;
 }
 
 .step-detail-bullet::before {
   content: "•";
-  color: #38bdf8;
+  color: var(--accent-blue);
+  flex: none;
 }
   </style>
   <style>
@@ -2742,29 +2875,9 @@ body {
   </style>
   <style>
 /* ========================================================================== */
-/* ROLLBACK MODAL & BUTTONS (MODULE 8)                                        */
+/* ROLLBACK MODAL (MODULE 8)                                                  */
+/* The inline per-task Rollback button lives with the task card, in plan-tree.css. */
 /* ========================================================================== */
-.btn-inline-rollback {
-  margin-left: 6px;
-  padding: 2px 7px;
-  border-radius: var(--radius-sm);
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #f87171;
-  font-size: 10px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  display: inline-flex;
-  align-items: center;
-}
-
-.btn-inline-rollback:hover {
-  background: rgba(239, 68, 68, 0.25);
-  box-shadow: 0 0 10px rgba(239, 68, 68, 0.3);
-  color: #fff;
-}
-
 .rollback-dialog-card {
   width: 520px;
   max-width: 95vw;
@@ -4639,6 +4752,83 @@ function updateNextStepButtonPreview() {
   }
 }
 
+// --- Task cards -------------------------------------------------------------
+// Titles and details come from plan.json, which is compiled from the plan markdown, so
+// they still carry the source markers ("**bold**", `code`). A task card is a component,
+// not a document, so the markers are dropped instead of printed. One pass only, exactly
+// like the workbench: a second pass would rescan the spans the first one inserted.
+const PLAN_INLINE_RE = /(`[^`\n]*`)|(\*\*[^*\n]*\*\*)|(__[^_\n]*__)/g;
+
+// Takes ALREADY-ESCAPED text and returns markup. Callers stay responsible for the
+// escaping order -- escape the raw string first, then apply this.
+function planInlineMarkup(escapedText) {
+  const paired = escapedText.replace(PLAN_INLINE_RE, (match, code, strong) => {
+    const marker = code ? "`" : (strong ? "**" : "__");
+    const inner = match.slice(marker.length, -marker.length);
+    return code
+      ? `<span class="task-md-code">${inner}</span>`
+      : `<span class="task-md-strong">${inner}</span>`;
+  });
+  // An unpaired marker would otherwise print as literal punctuation. The inserted spans
+  // contain neither character, so this cleanup cannot reach into them.
+  return paired.replace(/\*\*/g, "").replace(/`/g, "");
+}
+
+// The three states the plan format defines. Anything else behaves as pending, which is
+// what the previous renderer did too, so an unknown status cannot change behaviour.
+function planStepState(step) {
+  return (step.status === "completed" || step.status === "in_progress") ? step.status : "pending";
+}
+
+function planStatusIcon(stepState) {
+  if (stepState === "completed") return '<div class="step-status-icon completed">✓</div>';
+  if (stepState === "in_progress") return '<div class="step-status-icon in_progress">●</div>';
+  // A pending task is the absence of a state, so the ring is left empty.
+  return '<div class="step-status-icon pending"></div>';
+}
+
+// Domain pills are only ever drawn from data the plan actually carries. `is_ui` is the
+// one domain flag in the schema today -- tools/plan_parser.py reads a "[UI]" tag into it
+// and writes it back out -- so it is the only pill that can be shown without inventing
+// metadata. API and DB pills hook in here, and only here, once the plan schema carries
+// a domain for them.
+function planDomainPills(step) {
+  if (!step.is_ui) return "";
+  return '<span class="task-domain-pill pill-ui">UI</span>';
+}
+
+// Deliverables sit under the title rather than inside the collapsed details drawer, so
+// they can be read without expanding the card.
+function planFileChips(step) {
+  return (step.files || []).filter(Boolean).map(file =>
+    `<span class="task-file-chip" title="${escapeHtml(file)}">📄 ${escapeHtml(file)}</span>`
+  ).join("");
+}
+
+const PLAN_EXECUTE_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
+const PLAN_ROLLBACK_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-7.1L3 8"/></svg>';
+const PLAN_STOP_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
+
+// One state, one affordance, drawn inline on the card so a task can be acted on without
+// opening anything. The bridge has no per-task stop -- only the global one -- so the
+// Stop button is offered only while a run is genuinely active; otherwise the card just
+// reports that the task is in progress rather than offering a button that would lie.
+function planInlineActions(step, stepState) {
+  if (stepState === "pending") {
+    return `<button class="btn-inline-execute" data-task-id="${escapeHtml(step.id)}" data-task-title="${escapeHtml(step.title)}" title="Execute this specific task">${PLAN_EXECUTE_ICON}<span>Execute</span></button>`;
+  }
+  if (stepState === "completed") {
+    return `<button class="btn-inline-rollback" data-task-id="${escapeHtml(step.id)}" title="Roll this completed task back to pending">${PLAN_ROLLBACK_ICON}<span>Rollback</span></button>`;
+  }
+  if (stepState === "in_progress") {
+    if (state.isExecuting) {
+      return `<button class="btn-inline-stop" title="Stop the running agent execution">${PLAN_STOP_ICON}<span>Stop</span></button>`;
+    }
+    return '<span class="task-state-chip running">Running</span>';
+  }
+  return "";
+}
+
 function renderPlanTree() {
   DOM.planTreeContainer.innerHTML = "";
 
@@ -4712,64 +4902,45 @@ function renderPlanTree() {
 
     const headerEl = document.createElement("div");
     headerEl.className = "plan-tree-section-header";
-    headerEl.textContent = section.title.toUpperCase();
+    // Uppercase the raw text first: uppercasing an escaped "&amp;" would break the entity.
+    headerEl.innerHTML = planInlineMarkup(escapeHtml(String(section.title).toUpperCase()));
     sectionEl.appendChild(headerEl);
 
     (section.tasks || []).forEach(step => {
+      const stepState = planStepState(step);
       const itemEl = document.createElement("div");
-      itemEl.className = "plan-tree-item";
+      itemEl.className = `plan-tree-item step-${stepState}`;
       itemEl.id = `tree_${step.id}`;
 
-      let iconHtml = '<div class="step-status-icon pending">○</div>';
-      if (step.status === "completed") {
-        iconHtml = '<div class="step-status-icon completed">✓</div>';
-      } else if (step.status === "in_progress") {
-        iconHtml = '<div class="step-status-icon in_progress">●</div>';
-      }
-
-      const uiBadge = step.is_ui ? '<span class="ui-task-badge">UI</span>' : '';
-
-      // Inline action buttons
-      let inlineActionBtn = '';
-      if (step.status === "pending") {
-        inlineActionBtn = `<button class="btn-inline-execute" data-task-id="${escapeHtml(step.id)}" data-task-title="${escapeHtml(step.title)}" title="Execute this specific task">⚡ Run</button>`;
-      } else if (step.status === "completed") {
-        inlineActionBtn = `<button class="btn-inline-rollback" data-task-id="${escapeHtml(step.id)}" title="Rollback this completed task to pending">↺ Revert</button>`;
-      }
-
-      const hasDetails = (step.details && step.details.length > 0) || (step.files && step.files.length > 0);
-      const toggleArrow = hasDetails ? '<span class="step-toggle-arrow">▶</span>' : '';
-
-      let detailsHtml = "";
-      if (hasDetails) {
-        const bullets = [];
-        if (step.details) {
-          step.details.forEach(d => bullets.push(`<div class="step-detail-bullet">${escapeHtml(d)}</div>`));
-        }
-        if (step.files && step.files.length > 0) {
-          bullets.push(`<div class="step-detail-bullet" style="color: #38bdf8;"><strong>Files:</strong> ${escapeHtml(step.files.join(", "))}</div>`);
-        }
-        detailsHtml = `
-          <div class="step-details-drawer">
-            ${bullets.join("")}
-          </div>
-        `;
-      }
+      const details = (step.details || []).filter(d => d !== null && d !== undefined && String(d).trim() !== "");
+      const hasDetails = details.length > 0;
+      const pills = planDomainPills(step);
+      const fileChips = planFileChips(step);
+      const metaHtml = (pills || fileChips) ? `<div class="task-card-meta">${pills}${fileChips}</div>` : "";
+      const detailsHtml = hasDetails ? `
+        <div class="step-details-drawer">
+          ${details.map(d => `<div class="step-detail-bullet">${planInlineMarkup(escapeHtml(String(d)))}</div>`).join("")}
+        </div>
+      ` : "";
 
       itemEl.innerHTML = `
         <div class="plan-tree-item-row">
-          ${iconHtml}
-          ${uiBadge}
-          <span class="step-title ${step.status === "completed" ? "completed" : ""}">${escapeHtml(step.title)}</span>
-          ${inlineActionBtn}
-          ${toggleArrow}
+          ${planStatusIcon(stepState)}
+          <div class="step-title${stepState === "completed" ? " completed" : ""}">${planInlineMarkup(escapeHtml(step.title))}</div>
+          <div class="task-card-actions">
+            ${planInlineActions(step, stepState)}
+            ${hasDetails ? '<span class="step-toggle-arrow">▶</span>' : ''}
+          </div>
         </div>
+        ${metaHtml}
         ${detailsHtml}
       `;
 
       // Accordion toggle on row click (excluding clicks on inline action buttons)
       itemEl.addEventListener("click", (e) => {
-        if (e.target.closest(".btn-inline-execute") || e.target.closest(".btn-inline-rollback")) return;
+        if (e.target.closest(".btn-inline-execute") ||
+            e.target.closest(".btn-inline-rollback") ||
+            e.target.closest(".btn-inline-stop")) return;
         itemEl.classList.toggle("expanded");
       });
 
@@ -4791,6 +4962,16 @@ function renderPlanTree() {
         rollbackBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           openRollbackModal(step);
+        });
+      }
+
+      // Inline stop button (only rendered while a run is active) mirrors the dock's
+      // global stop, because that is the only stop the bridge exposes.
+      const stopBtn = itemEl.querySelector(".btn-inline-stop");
+      if (stopBtn) {
+        stopBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          handleStopClick();
         });
       }
 
