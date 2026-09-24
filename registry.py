@@ -24,14 +24,14 @@ from tools.file_tools import (
     parse_markdown_to_plan_dict,
     compile_plan_json_to_markdown,
     backup_file_for_task,
-    audit_codebase_plan_sync,
     resolve_sync_plan_to_codebase,
     resolve_sync_code_to_plan,
     rollback_task_state
 )
 from tools.shell_tools import execute_shell_command, execute_restricted_command
 from orchestration import agent_catalog, plan_session, prompt_editor
-from orchestration.workflow import templates, tool_call, tool_result
+from orchestration.workflow import actions_admin, events, templates, tool_call, tool_result
+from orchestration.workflow.context import WorkflowContext
 
 class AgentRegistry:
     """
@@ -163,22 +163,17 @@ class AgentRegistry:
         def should_stop() -> bool:
             return self.stop_event.is_set()
 
-        def stream_text(agent_id: str, text: str, log_type: str = "thinking", delay: float = 0.02):
-            lines = text.split("\n")
-            for line in lines:
-                if should_stop():
-                    return
-                emit_fn({
-                    "type": "log",
-                    "agent": agent_id,
-                    "log_type": log_type,
-                    "text": line + "\n"
-                })
-                time.sleep(delay)
+        stream_text = events.make_stream_text(emit_fn, should_stop)
 
         try:
             plan_file = get_active_plan_filename()
             plan_state = load_plan_state()
+            ctx = WorkflowContext(
+                emit_fn=emit_fn,
+                stream_text=stream_text,
+                should_stop=should_stop,
+                plan_file=plan_file,
+            )
 
             # Emit workflow started
             emit_fn({
@@ -204,251 +199,21 @@ class AgentRegistry:
             # ACTION 1: UPDATE PLAN (Administrative Bypass)
             # =========================================================
             if action_type == "update_plan":
-                stream_text("software-architect", f"> [GATEKEEPER: ADMINISTRATIVE BYPASS] Intent: Update Plan.\n> Bypassing Coder delegation. Zero coder tokens will be used.", log_type="decision", delay=0.02)
-                time.sleep(0.2)
-                if should_stop(): return
-
-                emit_fn(tool_call(
-                    "software-architect", "load_plan_state", {"plan_file": plan_file},
-                    f"Hydrating machine state from {plan_file} (plan.json)"
-                ))
-                time.sleep(0.3)
-                emit_fn(tool_result(
-                    "software-architect", "load_plan_state",
-                    f"Loaded plan state: {len(plan_state.get('sections', []))} sections, {len(plan_state.get('steps', []))} tasks."
-                ))
-                time.sleep(0.2)
-
-                custom_instructions = action_params.get("customInstructions", "") or user_message
-                clean_inst = custom_instructions.replace("[ACTION: UPDATE_PLAN]", "").replace("Instructions:", "").strip()
-                stream_text("software-architect", f"> Evaluating plan refinement directives: \"{clean_inst or 'General Roadmap Refinement'}\"...", delay=0.02)
-
-                # Update or refine tasks/sections in plan_state
-                sections = plan_state.get("sections", [])
-                updated = False
-                
-                # Check for explicit new task directives or append to last section
-                if any(k in clean_inst.lower() for k in ["add task", "new task", "create task", "include task"]):
-                    new_task_title = re.sub(r'^(add|new|create|include)\s+task\s*:?', '', clean_inst, flags=re.I).strip()
-                    if not new_task_title:
-                        new_task_title = "Implement additional system requirement"
-                    target_sec = sections[-1] if sections else {"id": "sec-1", "title": "General", "tasks": []}
-                    task_id = f"task-{len(plan_state.get('steps', [])) + 1}"
-                    new_task = {
-                        "id": task_id,
-                        "section": target_sec.get("title"),
-                        "title": new_task_title,
-                        "status": "pending",
-                        "is_ui": any(k in new_task_title.lower() for k in ["[ui]", "ui", "frontend", "view", "interface"]),
-                        "details": [f"Added via Architect Administrative Bypass: {clean_inst[:60]}"],
-                        "files": []
-                    }
-                    target_sec.setdefault("tasks", []).append(new_task)
-                    updated = True
-                else:
-                    # General refinement of pending milestones
-                    for sec in sections:
-                        for t in sec.get("tasks", []):
-                            if t.get("status") == "pending" and not updated:
-                                t.setdefault("details", []).append(f"Architect directive: {clean_inst[:80]}")
-                                updated = True
-                                break
-
-                saved_plan = save_plan_state(plan_state)
-                latest_markdown = compile_plan_json_to_markdown(saved_plan)
-
-                emit_fn(tool_call(
-                    "software-architect", "save_plan_state", {"plan_file": plan_file},
-                    f"Persisting refined AST state to plan.json & recompiling {plan_file}"
-                ))
-                time.sleep(0.3)
-                emit_fn(tool_result(
-                    "software-architect", "save_plan_state",
-                    f"Plan state saved successfully ({len(latest_markdown)} chars markdown compiled)"
-                ))
-                time.sleep(0.2)
-
-                emit_fn({
-                    "type": "plan_updated",
-                    "filename": plan_file,
-                    "content": latest_markdown,
-                    "tree": saved_plan.get("steps", []),
-                    "plan_json": saved_plan
-                })
-
-                stream_text("software-architect", f"> Plan successfully updated and compiled into `{plan_file}`.\n> Ready for milestone execution.", delay=0.02)
-
-                emit_fn({
-                    "type": "architect_summary",
-                    "agent": "software-architect",
-                    "summary": {
-                        "title": "Architect Plan Refinement (Administrative Bypass)",
-                        "status": "Plan Updated & Synced",
-                        "files": [plan_file, "plan.json"],
-                        "deliverables": [
-                            f"Machine state in `plan.json` synchronized from user directives.",
-                            f"Standardized markdown recompiled in `{plan_file}`.",
-                            "Administrative bypass active: zero Coder tokens consumed."
-                        ],
-                        "proposals": [
-                            "Execute top pending task using 'Execute Next Step'.",
-                            "Run Codebase Audit to verify disk synchronization.",
-                            "Review task file dependencies in Plan Tracker."
-                        ]
-                    }
-                })
-                time.sleep(0.3)
-                emit_fn({
-                    "type": "workflow_complete",
-                    "status": "finished",
-                    "message": "Plan updated successfully via Administrative Bypass."
-                })
+                actions_admin.update_plan_action(ctx, plan_state, action_params, user_message)
                 return
 
             # =========================================================
             # ACTION 2: ANALYZE CODEBASE (Administrative Bypass)
             # =========================================================
             elif action_type == "analyze":
-                stream_text("software-architect", f"> [GATEKEEPER: ADMINISTRATIVE BYPASS] Intent: Analyze Codebase.\n> Bypassing Coder delegation. Zero coder tokens will be used.", log_type="decision", delay=0.02)
-                time.sleep(0.2)
-                if should_stop(): return
-
-                emit_fn(tool_call(
-                    "software-architect", "list_workspace_files", {},
-                    "Scanning workspace directory structure"
-                ))
-                time.sleep(0.3)
-                files = list_workspace_files()
-                file_names = [f["path"] for f in files]
-                emit_fn(tool_result(
-                    "software-architect", "list_workspace_files",
-                    f"Found {len(files)} files: {', '.join(file_names[:6])}{'...' if len(files) > 6 else ''}"
-                ))
-                time.sleep(0.2)
-
-                emit_fn(tool_call(
-                    "software-architect", "audit_codebase_plan_sync", {},
-                    "Comparing workspace modules against plan.json deliverables"
-                ))
-                time.sleep(0.3)
-                audit_res = audit_codebase_plan_sync()
-                emit_fn(tool_result(
-                    "software-architect", "audit_codebase_plan_sync",
-                    audit_res["summary"]
-                ))
-                time.sleep(0.2)
-
-                # Syntax check with restricted shell
-                py_files = [f["name"] for f in files if f["name"].endswith(".py") and not f["name"].startswith(".")]
-                tested_files = []
-                for pyf in py_files[:3]:
-                    emit_fn(tool_call(
-                        "software-architect", "execute_restricted_command",
-                        {"command": f"python -m py_compile {pyf}"},
-                        f"Validating syntax for {pyf}"
-                    ))
-                    time.sleep(0.2)
-                    comp_res = execute_restricted_command.invoke({"command": f"python -m py_compile {pyf}"})
-                    tested_files.append(pyf)
-                    emit_fn(tool_result(
-                        "software-architect", "execute_restricted_command",
-                        "Syntax check clean" if not comp_res.strip() else comp_res.strip()
-                    ))
-
-                stream_text("software-architect", f"> Architectural Analysis Report:\n- Workspace modules: {len(files)} total files.\n- Verified Python syntax on: {', '.join(tested_files) if tested_files else 'None'}.\n- Plan synchronization status: {audit_res['summary']}\n- System Health: Stable.", delay=0.02)
-
-                emit_fn({
-                    "type": "architect_summary",
-                    "agent": "software-architect",
-                    "summary": {
-                        "title": "Architect Codebase & Structural Analysis",
-                        "status": "Analysis Complete",
-                        "files": [f["path"] for f in files[:8]],
-                        "deliverables": [
-                            f"Evaluated workspace structure ({len(files)} files found).",
-                            f"Audit verdict: {audit_res['summary']}.",
-                            f"Verified compilation and syntax on core modules."
-                        ],
-                        "proposals": [
-                            "Run 'Fix Bug' if error stack traces are observed.",
-                            "Use 'Execute Next Step' to proceed with next milestone.",
-                            "Run 'Force Code to Match Plan' if deliverables need reconstruction."
-                        ]
-                    }
-                })
-                time.sleep(0.3)
-                emit_fn({
-                    "type": "workflow_complete",
-                    "status": "finished",
-                    "message": "Codebase analysis completed via Administrative Bypass."
-                })
+                actions_admin.analyze_action(ctx)
                 return
 
             # =========================================================
             # ACTION 3: RECOMMEND (Administrative Bypass)
             # =========================================================
             elif action_type == "recommend":
-                stream_text("software-architect", f"> [GATEKEEPER: ADMINISTRATIVE BYPASS] Intent: Strategic Recommendation.\n> Bypassing Coder delegation. Zero coder tokens will be used.", log_type="decision", delay=0.02)
-                time.sleep(0.2)
-                if should_stop(): return
-
-                emit_fn(tool_call(
-                    "software-architect", "load_plan_state", {"plan_file": plan_file},
-                    "Inspecting current plan progress and task milestones"
-                ))
-                time.sleep(0.3)
-                emit_fn(tool_result(
-                    "software-architect", "load_plan_state",
-                    f"Plan loaded: {len(plan_state.get('steps', []))} total tasks."
-                ))
-                time.sleep(0.2)
-
-                steps = plan_state.get("steps", [])
-                completed_count = sum(1 for s in steps if s.get("status") == "completed")
-                pending_tasks = [s for s in steps if s.get("status") == "pending"]
-                next_task = pending_tasks[0] if pending_tasks else None
-
-                stream_text(
-                    "software-architect",
-                    f"> Roadmap Audit: {completed_count}/{len(steps)} tasks completed.\n"
-                    f"> Next priority task: \"{next_task.get('title') if next_task else 'All tasks complete'}\".\n"
-                    f"> Formulating strategic architectural guidance...",
-                    delay=0.02
-                )
-                time.sleep(0.3)
-
-                rec_proposals = []
-                if next_task:
-                    rec_proposals.append(f"Execute immediate next task: '{next_task.get('title')}'")
-                    if next_task.get("is_ui"):
-                        rec_proposals.append("Prepare visual mockup/screenshot reference for UI task.")
-                    rec_proposals.append("Review file dependencies before generating code.")
-                else:
-                    rec_proposals.append("All plan milestones completed! Run automated test suite.")
-                    rec_proposals.append("Package application for production deployment.")
-                    rec_proposals.append("Create new feature roadmap file.")
-
-                emit_fn({
-                    "type": "architect_summary",
-                    "agent": "software-architect",
-                    "summary": {
-                        "title": "Architect Strategic Roadmap Recommendations",
-                        "status": "Advisory Formulated",
-                        "files": [plan_file, "plan.json"],
-                        "deliverables": [
-                            f"Milestone progress analyzed: {completed_count}/{len(steps)} tasks finished.",
-                            f"Identified critical path focus: '{next_task.get('title') if next_task else 'Deployment'}'.",
-                            "Architecture advisory prepared (Administrative Bypass, 0 coder tokens)."
-                        ],
-                        "proposals": rec_proposals
-                    }
-                })
-                time.sleep(0.3)
-                emit_fn({
-                    "type": "workflow_complete",
-                    "status": "finished",
-                    "message": "Recommendations generated via Administrative Bypass."
-                })
+                actions_admin.recommend_action(ctx, plan_state)
                 return
 
             # =========================================================

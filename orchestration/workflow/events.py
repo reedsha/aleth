@@ -9,7 +9,8 @@ Key order is part of the contract: payloads are JSON-serialised in insertion
 order, so these constructors mirror the field order the UI was written against.
 """
 
-from typing import Any, Dict
+import time
+from typing import Any, Callable, Dict
 
 
 def tool_call(agent: str, tool: str, args: Dict[str, Any], description: str) -> Dict[str, Any]:
@@ -31,3 +32,32 @@ def tool_result(agent: str, tool: str, result: str) -> Dict[str, Any]:
         "tool": tool,
         "result": result
     }
+
+
+def log_event(agent: str, log_type: str, text: str) -> Dict[str, Any]:
+    """One streamed line of agent narration."""
+    return {
+        "type": "log",
+        "agent": agent,
+        "log_type": log_type,
+        "text": text
+    }
+
+
+def make_stream_text(
+    emit_fn: Callable[[Dict[str, Any]], None],
+    should_stop: Callable[[], bool],
+):
+    """Builds the line-at-a-time narrator every workflow branch uses.
+
+    Lines are paced so the UI reads them as live output, and a stop request
+    aborts mid-message rather than after the whole message has been emitted.
+    """
+    def stream_text(agent_id: str, text: str, log_type: str = "thinking", delay: float = 0.02):
+        for line in text.split("\n"):
+            if should_stop():
+                return
+            emit_fn(log_event(agent_id, log_type, line + "\n"))
+            time.sleep(delay)
+
+    return stream_text
