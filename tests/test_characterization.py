@@ -625,6 +625,43 @@ class WorkflowEventContractTests(WorkspaceTestCase):
         self.assertEqual(len(summary["proposals"]), 2)
         self.assertTrue(summary["proposals"][0].startswith("Execute immediate next task:"))
 
+    def test_tool_events_carry_the_full_wire_payload(self):
+        """Locks the exact tool_call/tool_result payloads and their key order.
+
+        Payloads are JSON-serialised in insertion order and the UI animates the
+        pair as a unit, so a renamed or reordered key breaks the frontend even
+        when the event sequence itself is unchanged.
+        """
+        import registry as registry_module
+
+        registry_module.registry.create_new_plan_file("PLAN.md", "Demo roadmap")
+        events = self._collect("recommend", "[ACTION: RECOMMEND_NEXT_STEPS]")
+
+        call = [e for e in events if e["type"] == "tool_call"][0]
+        result = [e for e in events if e["type"] == "tool_result"][0]
+
+        self.assertEqual(list(call), ["type", "agent", "tool", "args", "description"])
+        self.assertEqual(
+            call,
+            {
+                "type": "tool_call",
+                "agent": "software-architect",
+                "tool": "load_plan_state",
+                "args": {"plan_file": "PLAN.md"},
+                "description": "Inspecting current plan progress and task milestones",
+            },
+        )
+        self.assertEqual(list(result), ["type", "agent", "tool", "result"])
+        self.assertEqual(
+            result,
+            {
+                "type": "tool_result",
+                "agent": "software-architect",
+                "tool": "load_plan_state",
+                "result": "Plan loaded: 8 total tasks.",
+            },
+        )
+
     def test_update_plan_action_event_sequence(self):
         import registry as registry_module
 

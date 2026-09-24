@@ -31,6 +31,7 @@ from tools.file_tools import (
 )
 from tools.shell_tools import execute_shell_command, execute_restricted_command
 from orchestration import agent_catalog, plan_session, prompt_editor
+from orchestration.workflow import tool_call, tool_result
 
 class AgentRegistry:
     """
@@ -207,20 +208,15 @@ class AgentRegistry:
                 time.sleep(0.2)
                 if should_stop(): return
 
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "load_plan_state",
-                    "args": {"plan_file": plan_file},
-                    "description": f"Hydrating machine state from {plan_file} (plan.json)"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "load_plan_state", {"plan_file": plan_file},
+                    f"Hydrating machine state from {plan_file} (plan.json)"
+                ))
                 time.sleep(0.3)
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "load_plan_state",
-                    "result": f"Loaded plan state: {len(plan_state.get('sections', []))} sections, {len(plan_state.get('steps', []))} tasks."
-                })
+                emit_fn(tool_result(
+                    "software-architect", "load_plan_state",
+                    f"Loaded plan state: {len(plan_state.get('sections', []))} sections, {len(plan_state.get('steps', []))} tasks."
+                ))
                 time.sleep(0.2)
 
                 custom_instructions = action_params.get("customInstructions", "") or user_message
@@ -261,20 +257,15 @@ class AgentRegistry:
                 saved_plan = save_plan_state(plan_state)
                 latest_markdown = compile_plan_json_to_markdown(saved_plan)
 
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "save_plan_state",
-                    "args": {"plan_file": plan_file},
-                    "description": f"Persisting refined AST state to plan.json & recompiling {plan_file}"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "save_plan_state", {"plan_file": plan_file},
+                    f"Persisting refined AST state to plan.json & recompiling {plan_file}"
+                ))
                 time.sleep(0.3)
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "save_plan_state",
-                    "result": f"Plan state saved successfully ({len(latest_markdown)} chars markdown compiled)"
-                })
+                emit_fn(tool_result(
+                    "software-architect", "save_plan_state",
+                    f"Plan state saved successfully ({len(latest_markdown)} chars markdown compiled)"
+                ))
                 time.sleep(0.2)
 
                 emit_fn({
@@ -322,61 +313,47 @@ class AgentRegistry:
                 time.sleep(0.2)
                 if should_stop(): return
 
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "list_workspace_files",
-                    "args": {},
-                    "description": "Scanning workspace directory structure"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "list_workspace_files", {},
+                    "Scanning workspace directory structure"
+                ))
                 time.sleep(0.3)
                 files = list_workspace_files()
                 file_names = [f["path"] for f in files]
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "list_workspace_files",
-                    "result": f"Found {len(files)} files: {', '.join(file_names[:6])}{'...' if len(files) > 6 else ''}"
-                })
+                emit_fn(tool_result(
+                    "software-architect", "list_workspace_files",
+                    f"Found {len(files)} files: {', '.join(file_names[:6])}{'...' if len(files) > 6 else ''}"
+                ))
                 time.sleep(0.2)
 
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "audit_codebase_plan_sync",
-                    "args": {},
-                    "description": "Comparing workspace modules against plan.json deliverables"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "audit_codebase_plan_sync", {},
+                    "Comparing workspace modules against plan.json deliverables"
+                ))
                 time.sleep(0.3)
                 audit_res = audit_codebase_plan_sync()
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "audit_codebase_plan_sync",
-                    "result": audit_res["summary"]
-                })
+                emit_fn(tool_result(
+                    "software-architect", "audit_codebase_plan_sync",
+                    audit_res["summary"]
+                ))
                 time.sleep(0.2)
 
                 # Syntax check with restricted shell
                 py_files = [f["name"] for f in files if f["name"].endswith(".py") and not f["name"].startswith(".")]
                 tested_files = []
                 for pyf in py_files[:3]:
-                    emit_fn({
-                        "type": "tool_call",
-                        "agent": "software-architect",
-                        "tool": "execute_restricted_command",
-                        "args": {"command": f"python -m py_compile {pyf}"},
-                        "description": f"Validating syntax for {pyf}"
-                    })
+                    emit_fn(tool_call(
+                        "software-architect", "execute_restricted_command",
+                        {"command": f"python -m py_compile {pyf}"},
+                        f"Validating syntax for {pyf}"
+                    ))
                     time.sleep(0.2)
                     comp_res = execute_restricted_command.invoke({"command": f"python -m py_compile {pyf}"})
                     tested_files.append(pyf)
-                    emit_fn({
-                        "type": "tool_result",
-                        "agent": "software-architect",
-                        "tool": "execute_restricted_command",
-                        "result": "Syntax check clean" if not comp_res.strip() else comp_res.strip()
-                    })
+                    emit_fn(tool_result(
+                        "software-architect", "execute_restricted_command",
+                        "Syntax check clean" if not comp_res.strip() else comp_res.strip()
+                    ))
 
                 stream_text("software-architect", f"> Architectural Analysis Report:\n- Workspace modules: {len(files)} total files.\n- Verified Python syntax on: {', '.join(tested_files) if tested_files else 'None'}.\n- Plan synchronization status: {audit_res['summary']}\n- System Health: Stable.", delay=0.02)
 
@@ -415,20 +392,15 @@ class AgentRegistry:
                 time.sleep(0.2)
                 if should_stop(): return
 
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "load_plan_state",
-                    "args": {"plan_file": plan_file},
-                    "description": "Inspecting current plan progress and task milestones"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "load_plan_state", {"plan_file": plan_file},
+                    "Inspecting current plan progress and task milestones"
+                ))
                 time.sleep(0.3)
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "load_plan_state",
-                    "result": f"Plan loaded: {len(plan_state.get('steps', []))} total tasks."
-                })
+                emit_fn(tool_result(
+                    "software-architect", "load_plan_state",
+                    f"Plan loaded: {len(plan_state.get('steps', []))} total tasks."
+                ))
                 time.sleep(0.2)
 
                 steps = plan_state.get("steps", [])
@@ -491,43 +463,33 @@ class AgentRegistry:
                 attachment = action_params.get("bugAttachment", "")
 
                 # Inspect files
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "list_workspace_files",
-                    "args": {},
-                    "description": "Checking available workspace files to diagnose bug"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "list_workspace_files", {},
+                    "Checking available workspace files to diagnose bug"
+                ))
                 time.sleep(0.3)
                 files = list_workspace_files()
                 py_files = [f["name"] for f in files if f["name"].endswith(".py") and not f["name"].startswith(".")]
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "list_workspace_files",
-                    "result": f"Found code files: {', '.join(py_files) if py_files else 'None'}"
-                })
+                emit_fn(tool_result(
+                    "software-architect", "list_workspace_files",
+                    f"Found code files: {', '.join(py_files) if py_files else 'None'}"
+                ))
 
                 target_file = py_files[0] if py_files else "main.py"
                 test_file = [f for f in py_files if "test" in f]
                 test_file = test_file[0] if test_file else "test_main.py"
 
                 # Read target file
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "read_file",
-                    "args": {"filename": target_file},
-                    "description": f"Inspecting {target_file} for root cause"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "read_file", {"filename": target_file},
+                    f"Inspecting {target_file} for root cause"
+                ))
                 time.sleep(0.3)
                 curr_code = read_file.invoke({"filename": target_file})
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "read_file",
-                    "result": f"Inspected {target_file} ({len(curr_code)} bytes)"
-                })
+                emit_fn(tool_result(
+                    "software-architect", "read_file",
+                    f"Inspected {target_file} ({len(curr_code)} bytes)"
+                ))
 
                 clean_bug = bug_desc.replace("[ACTION: FIX_BUG]", "").replace("Bug Report:", "").strip()
                 stream_text(
@@ -587,31 +549,23 @@ class AgentRegistry:
                 else:
                     patched_code = f"# Bugfix Applied: {clean_bug[:60]}\n" + patched_code
 
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": target_coder_id,
-                    "tool": "write_file",
-                    "args": {"filename": target_file},
-                    "description": f"Applying surgical bug patch to {target_file}"
-                })
+                emit_fn(tool_call(
+                    target_coder_id, "write_file", {"filename": target_file},
+                    f"Applying surgical bug patch to {target_file}"
+                ))
                 time.sleep(0.3)
                 write_file.invoke({"filename": target_file, "content": patched_code})
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": target_coder_id,
-                    "tool": "write_file",
-                    "result": f"Successfully patched {target_file}"
-                })
+                emit_fn(tool_result(
+                    target_coder_id, "write_file",
+                    f"Successfully patched {target_file}"
+                ))
 
                 # Regression test
                 stream_text(target_coder_id, f"> Updating regression test in `{test_file}`...", delay=0.02)
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": target_coder_id,
-                    "tool": "write_file",
-                    "args": {"filename": test_file},
-                    "description": f"Updating regression test suite in {test_file}"
-                })
+                emit_fn(tool_call(
+                    target_coder_id, "write_file", {"filename": test_file},
+                    f"Updating regression test suite in {test_file}"
+                ))
                 time.sleep(0.3)
                 test_code = f'''# Regression test suite for bugfix
 import pytest
@@ -624,12 +578,10 @@ def test_bug_regression():
     assert result.get("verified") is True
 '''
                 write_file.invoke({"filename": test_file, "content": test_code})
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": target_coder_id,
-                    "tool": "write_file",
-                    "result": f"Regression tests updated in {test_file}"
-                })
+                emit_fn(tool_result(
+                    target_coder_id, "write_file",
+                    f"Regression tests updated in {test_file}"
+                ))
 
                 # Coder summary
                 emit_fn({
@@ -650,21 +602,17 @@ def test_bug_regression():
 
                 # Phase 3: Architect Verification
                 stream_text("software-architect", f"> [PHASE 3: VERIFICATION LOOP] Lead Architect verifying patch in `{target_file}` via restricted shell...", delay=0.02)
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "execute_restricted_command",
-                    "args": {"command": f"python -m py_compile {target_file}"},
-                    "description": f"Verifying patched syntax for {target_file}"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "execute_restricted_command",
+                    {"command": f"python -m py_compile {target_file}"},
+                    f"Verifying patched syntax for {target_file}"
+                ))
                 time.sleep(0.3)
                 check_res = execute_restricted_command.invoke({"command": f"python -m py_compile {target_file}"})
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "execute_restricted_command",
-                    "result": "Syntax and compilation verified with 0 errors" if not check_res.strip() else check_res.strip()
-                })
+                emit_fn(tool_result(
+                    "software-architect", "execute_restricted_command",
+                    "Syntax and compilation verified with 0 errors" if not check_res.strip() else check_res.strip()
+                ))
                 time.sleep(0.2)
 
                 emit_fn({
@@ -875,37 +823,27 @@ def test_solution():
                 backup_file_for_task(target_task.get("id"), out_test)
 
                 stream_text(target_coder_id, f"> Writing production deliverables: `{out_filename}` and `{out_test}`...", delay=0.02)
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": target_coder_id,
-                    "tool": "write_file",
-                    "args": {"filename": out_filename},
-                    "description": f"Writing module deliverables to {out_filename}"
-                })
+                emit_fn(tool_call(
+                    target_coder_id, "write_file", {"filename": out_filename},
+                    f"Writing module deliverables to {out_filename}"
+                ))
                 time.sleep(0.3)
                 write_file.invoke({"filename": out_filename, "content": out_code})
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": target_coder_id,
-                    "tool": "write_file",
-                    "result": f"Wrote {len(out_code)} chars to {out_filename}"
-                })
+                emit_fn(tool_result(
+                    target_coder_id, "write_file",
+                    f"Wrote {len(out_code)} chars to {out_filename}"
+                ))
 
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": target_coder_id,
-                    "tool": "write_file",
-                    "args": {"filename": out_test},
-                    "description": f"Writing test suite to {out_test}"
-                })
+                emit_fn(tool_call(
+                    target_coder_id, "write_file", {"filename": out_test},
+                    f"Writing test suite to {out_test}"
+                ))
                 time.sleep(0.3)
                 write_file.invoke({"filename": out_test, "content": out_test_code})
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": target_coder_id,
-                    "tool": "write_file",
-                    "result": f"Wrote {len(out_test_code)} chars to {out_test}"
-                })
+                emit_fn(tool_result(
+                    target_coder_id, "write_file",
+                    f"Wrote {len(out_test_code)} chars to {out_test}"
+                ))
 
                 # Mark task completed in plan_state
                 target_task["status"] = "completed"
@@ -916,20 +854,16 @@ def test_solution():
                 saved_plan = save_plan_state(plan_state)
                 latest_markdown = compile_plan_json_to_markdown(saved_plan)
 
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": target_coder_id,
-                    "tool": "save_plan_state",
-                    "args": {"task_id": target_task.get("id"), "status": "completed"},
-                    "description": f"Marked task '{target_task.get('title')}' completed in plan.json & {plan_file}"
-                })
+                emit_fn(tool_call(
+                    target_coder_id, "save_plan_state",
+                    {"task_id": target_task.get("id"), "status": "completed"},
+                    f"Marked task '{target_task.get('title')}' completed in plan.json & {plan_file}"
+                ))
                 time.sleep(0.3)
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": target_coder_id,
-                    "tool": "save_plan_state",
-                    "result": "Machine state and Markdown synchronized"
-                })
+                emit_fn(tool_result(
+                    target_coder_id, "save_plan_state",
+                    "Machine state and Markdown synchronized"
+                ))
 
                 emit_fn({
                     "type": "plan_updated",
@@ -957,22 +891,18 @@ def test_solution():
 
                 # Architect Verification
                 stream_text("software-architect", f"> Verifying task deliverables via restricted shell...", delay=0.02)
-                emit_fn({
-                    "type": "tool_call",
-                    "agent": "software-architect",
-                    "tool": "execute_restricted_command",
-                    "args": {"command": f"python -m py_compile {out_filename if out_filename.endswith('.py') else out_test}"},
-                    "description": "Validating syntax and deliverable integrity"
-                })
+                emit_fn(tool_call(
+                    "software-architect", "execute_restricted_command",
+                    {"command": f"python -m py_compile {out_filename if out_filename.endswith('.py') else out_test}"},
+                    "Validating syntax and deliverable integrity"
+                ))
                 time.sleep(0.3)
                 cmd_to_run = f"python -m py_compile {out_filename}" if out_filename.endswith(".py") else f"python -m py_compile {out_test}"
                 v_res = execute_restricted_command.invoke({"command": cmd_to_run})
-                emit_fn({
-                    "type": "tool_result",
-                    "agent": "software-architect",
-                    "tool": "execute_restricted_command",
-                    "result": "Syntax and compilation verified with 0 errors" if not v_res.strip() else v_res.strip()
-                })
+                emit_fn(tool_result(
+                    "software-architect", "execute_restricted_command",
+                    "Syntax and compilation verified with 0 errors" if not v_res.strip() else v_res.strip()
+                ))
 
                 next_p = [t for s in saved_plan.get("sections", []) for t in s.get("tasks", []) if t.get("status") == "pending"]
                 proposals = [
@@ -1022,20 +952,15 @@ def test_solution():
                     )
                     time.sleep(0.3)
 
-                    emit_fn({
-                        "type": "tool_call",
-                        "agent": "software-architect",
-                        "tool": "load_plan_state",
-                        "args": {"plan_file": plan_file},
-                        "description": "Inspecting workspace plan memory"
-                    })
+                    emit_fn(tool_call(
+                        "software-architect", "load_plan_state", {"plan_file": plan_file},
+                        "Inspecting workspace plan memory"
+                    ))
                     time.sleep(0.3)
-                    emit_fn({
-                        "type": "tool_result",
-                        "agent": "software-architect",
-                        "tool": "load_plan_state",
-                        "result": f"Loaded plan {plan_file}"
-                    })
+                    emit_fn(tool_result(
+                        "software-architect", "load_plan_state",
+                        f"Loaded plan {plan_file}"
+                    ))
 
                     stream_text("software-architect", f"> Direct Architect Response to Custom Directive:\n- Workspace is anchored to `{plan_file}`.\n- Active milestones: {len(plan_state.get('steps', []))} items.\n- No physical code modification requested; administrative resolution applied.", delay=0.02)
 
