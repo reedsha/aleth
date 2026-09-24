@@ -371,7 +371,17 @@ class BridgeAPI:
         return self.start_execution(prompt)
 
 
-def main():
+def main(argv=None):
+    """Launch the desktop UI.
+
+    ``--debug`` opens the WebView2 DevTools. The window normally runs with
+    ``debug=False``, which makes an uncaught error or a failed resource invisible:
+    the window renders but nothing responds. DevTools exposes the console and the
+    network log for exactly that case.
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    debug = "--debug" in argv
+
     api = BridgeAPI()
     
     ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "index.html")
@@ -387,7 +397,7 @@ def main():
     )
 
     api.set_window(window)
-    webview.start(debug=False)
+    webview.start(debug=debug)
 
 
 if __name__ == "__main__":

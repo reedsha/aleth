@@ -70,6 +70,10 @@ All Python dependencies are installed in the local virtual environment (`.\venv`
 # 1. Launch the Native Desktop Application (PyWebView):
 .\venv\Scripts\python.exe app.py
 
+# 1b. Same, with WebView2 DevTools open (diagnose a window that renders but
+#     ignores input: the console and network log show which request or script failed):
+.\venv\Scripts\python.exe app.py --debug
+
 # 2. Run Headless Multi-Agent Verification (CLI Mode):
 .\venv\Scripts\python.exe main.py --cli "Implement weather service endpoints"
 
