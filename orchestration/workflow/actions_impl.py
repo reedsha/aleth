@@ -17,6 +17,7 @@ import os
 import time
 from typing import Any, Dict
 
+from agents import laya as laya_gate
 from orchestration.workflow import templates
 from orchestration.workflow.context import WorkflowContext
 from orchestration.workflow.events import tool_call, tool_result
@@ -280,8 +281,8 @@ def next_step_action(
             delay=0.02
         )
 
-    # Delegate to Coder
-    target_coder_id = "coder-deep" if (is_ui_task or "core" in target_task.get("title", "").lower()) else "coder-standard"
+    # Delegate to Coder (routing rule owned by the System 1 decision engine)
+    target_coder_id = laya_gate.route_coder(target_task.get("title", ""), is_ui=is_ui_task)
     target_coder = coder_agents.get(target_coder_id, {
         "id": target_coder_id,
         "name": target_coder_id,
@@ -439,14 +440,14 @@ def custom_action(
 ) -> None:
     """The Gatekeeper fallback: classify a free-form prompt, then answer or delegate."""
     plan_file = ctx.plan_file
-    lower_msg = user_message.lower()
-    is_admin_bypass = any(k in lower_msg for k in ["analyze", "plan", "roadmap", "recommend", "how does", "what is", "status", "explain", "review", "audit"])
+    verdict = laya_gate.classify(user_message)
+    is_admin_bypass = verdict.intent == laya_gate.INTENT_ADMIN
 
     if is_admin_bypass:
         ctx.stream_text(
             "software-architect",
             f"> [GATEKEEPER EVALUATION] Prompt: \"{user_message[:60]}\"\n"
-            f"> Classification: Architectural / Analytical Query.\n"
+            f"> Classification: Architectural / Analytical Query (evidence: {'; '.join(verdict.reasons)}).\n"
             f"> Activating ADMINISTRATIVE BYPASS: Handled directly by Architect (0 Coder tokens).",
             log_type="decision",
             delay=0.02
@@ -495,19 +496,19 @@ def custom_action(
     ctx.stream_text(
         "software-architect",
         f"> [GATEKEEPER EVALUATION] Prompt: \"{user_message[:60]}\"\n"
-        f"> Classification: Code Modification / Implementation.\n"
+        f"> Classification: Code Modification / Implementation (evidence: {'; '.join(verdict.reasons)}).\n"
         f"> Architect Rule: Cannot write application code directly. Summoning Coder...",
         log_type="decision",
         delay=0.02
     )
     time.sleep(0.3)
 
-    target_coder_id = "coder-deep"
+    target_coder_id = laya_gate.coder_for_domain(verdict.domain)
     target_coder = coder_agents.get(target_coder_id, {
         "id": target_coder_id,
         "name": target_coder_id,
-        "display_name": "Senior Backend Coder",
-        "model": "openai:policy/coder-deep"
+        "display_name": "Senior Backend Coder" if target_coder_id == laya_gate.CODER_DEEP else "Junior Developer",
+        "model": f"openai:policy/{target_coder_id}"
     })
 
     ctx.emit_fn({

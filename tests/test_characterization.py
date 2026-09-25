@@ -1314,6 +1314,41 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertEqual(summary["status"], "Handled Directly")
         self.assertEqual(events[-1]["message"], "Custom directive executed directly by Architect.")
 
+    def test_gatekeeper_delegates_an_imperative_request_that_sounds_administrative(self):
+        """An action verb now beats an administrative-sounding word.
+
+        The gate this replaced tested nine bare substrings, so "status" on its own
+        routed "fix the status endpoint" to the Architect and no code was written.
+        """
+        self._seed_scaffold()
+        events = self._collect("custom", "fix the status endpoint")
+
+        self.assertIn("delegation", self._types(events))
+        delegation = [e for e in events if e["type"] == "delegation"][0]
+        self.assertEqual(delegation["target_agent"], "coder-deep")
+
+    def test_gatekeeper_answers_a_question_the_old_gate_would_have_delegated(self):
+        """A question is administrative on its shape alone, with no keyword needed."""
+        self._seed_scaffold()
+        events = self._collect("custom", "what does main.py do?")
+
+        self.assertNotIn("delegation", self._types(events))
+        self.assertEqual(
+            events[-1]["message"], "Custom directive executed directly by Architect."
+        )
+
+    def test_the_gatekeeper_log_carries_the_evidence_for_its_decision(self):
+        """The routing reason reaches the console, so a surprising route is explainable."""
+        self._seed_scaffold()
+        events = self._collect("custom", "add a login endpoint")
+
+        evidence_lines = [
+            e["text"] for e in events
+            if e["type"] == "log" and "evidence:" in e.get("text", "")
+        ]
+        self.assertEqual(len(evidence_lines), 1)
+        self.assertIn("opens with the code action 'add'", evidence_lines[0])
+
     def test_coder_event_payloads_carry_the_full_wire_shape(self):
         """Locks key order on the payloads the coder branches emit.
 
