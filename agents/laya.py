@@ -270,16 +270,29 @@ def coder_for_domain(domain: str) -> str:
     return CODER_STANDARD if domain in _STANDARD_CODER_DOMAINS else CODER_DEEP
 
 
+# The ``[UI]`` marker is metadata, never prose. A task that *describes* the tag --
+# "Wire zero-token `[UI]` task tagging into the parser" -- would otherwise be tagged on
+# the strength of the literal it happens to mention. Standalone tags are consumed by the
+# parser before this predicate runs; this only neutralises the ones left in prose or in
+# backticks. Neutralised rather than deleted so the surrounding words stay apart:
+# "the [UI] tag" must not read as "the tag".
+_UI_TAG_LITERAL_RE = re.compile(r"\[ui\]", re.IGNORECASE)
+
+
 def inferred_ui(title: str, is_ui: bool = False) -> bool:
     """Whether a task should carry the ``[UI]`` tag in the plan tree.
 
     An explicit tag always wins; otherwise the vocabulary shared with
     ``templates.select`` decides, so a task can never be tagged in the tree yet
     rendered as a plain module on the delegation path.
+
+    Every other part of a title counts, including backticked paths: a task that names
+    ``ui/js/sidebar.js`` is UI work however it is punctuated.
     """
     if is_ui:
         return True
-    return bool(UI_KEYWORD_RE.search((title or "").lower()))
+    prose = _UI_TAG_LITERAL_RE.sub(" ", title or "")
+    return bool(UI_KEYWORD_RE.search(prose.lower()))
 
 
 def classify(text: str, context: Optional[Mapping[str, Any]] = None) -> Verdict:

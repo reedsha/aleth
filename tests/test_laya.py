@@ -13,6 +13,7 @@ import unittest
 
 from agents import laya
 from orchestration.workflow import templates
+from tools import plan_parser
 
 
 class GatekeeperIntentTests(unittest.TestCase):
@@ -139,6 +140,62 @@ class UiInferenceTests(unittest.TestCase):
     def test_a_word_that_merely_contains_a_keyword_is_not_ui(self):
         self.assertFalse(laya.inferred_ui("Build a weather API"))
         self.assertFalse(laya.inferred_ui("Code review"))
+
+    def test_a_title_that_only_mentions_the_tag_is_not_ui(self):
+        # The parser's own roadmap task: the tag it talks about is metadata, not a UI
+        # keyword, so mentioning it must not tag the task that describes it.
+        self.assertFalse(
+            laya.inferred_ui("Wire zero-token `[UI]` task tagging into the parser")
+        )
+
+    def test_mentioning_the_tag_does_not_mask_a_real_ui_keyword(self):
+        self.assertTrue(laya.inferred_ui("Add the [UI] tag to the dashboard view"))
+
+    def test_a_backticked_source_path_still_marks_a_ui_task(self):
+        # Guards the fix against over-reach: treating every code span as inert would
+        # untag the tasks whose only signal is a `ui/js/...` path, and so move their
+        # delegations. Only the tag literal itself is metadata.
+        self.assertTrue(laya.inferred_ui("Redesign the right panel (`ui/js/sidebar.js`)"))
+
+    def _one_task(self, markdown):
+        parsed = plan_parser.parse_markdown_to_plan_dict(markdown, "PLAN.md")
+        return parsed["sections"][0]["tasks"][0]
+
+    def test_the_parser_stamps_the_inferred_tag_during_hydration(self):
+        """The tree and the delegation path must not disagree about a UI task."""
+        task = self._one_task("## 1. Build\n- [ ] Build the dashboard view\n")
+        self.assertTrue(task["is_ui"])
+
+    def test_the_parser_leaves_a_plain_task_alone(self):
+        task = self._one_task("## 1. Build\n- [ ] Build the plan parser\n")
+        self.assertFalse(task["is_ui"])
+
+    def test_the_parser_does_not_duplicate_an_explicit_tag(self):
+        task = self._one_task("## 1. Build\n- [ ] [UI] Wire the backend\n")
+        self.assertTrue(task["is_ui"])
+        self.assertEqual(task["title"], "Wire the backend")
+
+    def test_the_parser_does_not_tag_a_task_that_describes_the_tag(self):
+        task = self._one_task("## 1. Build\n- [ ] Wire zero-token `[UI]` tagging\n")
+        self.assertFalse(task["is_ui"])
+        self.assertEqual(task["title"], "Wire zero-token `[UI]` tagging")
+
+    def test_an_inferred_tag_is_written_out_and_survives_a_compile_cycle(self):
+        """The first save promotes the guess to an explicit tag, and stays put after.
+
+        The compiler emits ``[UI] `` for a UI task, so a second pass reads a tag where
+        the first pass had only wording. The two passes must agree, or the plan file
+        would rewrite itself on every save.
+        """
+        source = "## 1. Build\n- [ ] Build the dashboard view\n"
+        once = plan_parser.compile_plan_json_to_markdown(
+            plan_parser.parse_markdown_to_plan_dict(source, "PLAN.md")
+        )
+        self.assertIn("[UI] Build the dashboard view", once)
+        twice = plan_parser.compile_plan_json_to_markdown(
+            plan_parser.parse_markdown_to_plan_dict(once, "PLAN.md")
+        )
+        self.assertEqual(once, twice)
 
 
 class CoderRoutingTests(unittest.TestCase):

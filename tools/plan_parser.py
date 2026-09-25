@@ -95,11 +95,31 @@ def _status_from_mark(mark: str) -> str:
     return "completed" if mark.lower() == "x" else ("in_progress" if mark == "-" else "pending")
 
 
+def _inferred_ui(title: str) -> bool:
+    """Whether a title should carry the ``[UI]`` tag on the strength of its wording.
+
+    Imported at call time rather than at module scope on purpose: ``orchestration``'s
+    package ``__init__`` pulls in the agent catalogue, which imports
+    ``tools.file_tools``, which imports this module, so a module-level import here
+    would close a cycle while the app boots. Laya owns the predicate so the plan tree
+    and the delegation path can never disagree about what a UI task is.
+    """
+    from agents.laya import inferred_ui
+    return inferred_ui(title)
+
+
 def _split_ui_tag(title: str) -> Tuple[str, bool]:
-    """Splits a title into (clean title, is it [UI]-tagged)."""
-    if not _UI_TAG_RE.search(title):
-        return title.strip(), False
-    return _UI_TAG_RE.sub("", title, count=1).strip(), True
+    """Splits a title into (clean title, is it a UI task).
+
+    An explicit ``[UI]`` tag is honoured exactly as written. Otherwise the keyword
+    vocabulary decides -- the same vocabulary ``templates.select`` already matches on
+    -- so a task cannot be drawn as a plain module in the tree while the delegation
+    path routes it, delegates it and renders it as a UI task.
+    """
+    if _UI_TAG_RE.search(title):
+        return _UI_TAG_RE.sub("", title, count=1).strip(), True
+    clean = title.strip()
+    return clean, _inferred_ui(clean)
 
 
 def _collect_state_summary(tokens: List[Any]) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int]]:
