@@ -15,10 +15,13 @@ as ``from tools.file_tools import load_plan_state`` keep working unchanged.
 
 from tools.file_ops import (
     MAX_FILE_READ_CHARS,
+    MAX_PREVIEW_CHARS,
+    PREVIEW_FILENAME,
     all_file_tools,
     append_to_file,
     list_workspace_files,
     read_file,
+    read_preview_source,
     write_file,
 )
 from tools.plan_parser import (
@@ -82,6 +85,9 @@ __all__ = [
     "list_workspace_files",
     "all_file_tools",
     "MAX_FILE_READ_CHARS",
+    "read_preview_source",
+    "PREVIEW_FILENAME",
+    "MAX_PREVIEW_CHARS",
     # recovery / audit
     "get_backup_dir",
     "backup_file_for_task",

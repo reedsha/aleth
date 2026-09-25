@@ -53,6 +53,7 @@ JS_MODULES = [
     "code-surface.js",
     "console.js",
     "diff-pane.js",
+    "preview.js",
     "wire.js",
 ]
 
@@ -74,6 +75,7 @@ CSS_MODULES = [
     "code-surface.css",
     "console.css",
     "diff-pane.css",
+    "preview.css",
 ]
 
 JS_BEGIN = "  <!-- BEGIN UI BUNDLE - generated from ui/js/*.js by tools/build_ui_bundle.py -->"

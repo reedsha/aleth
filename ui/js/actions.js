@@ -335,5 +335,12 @@ function finalizeWorkflow(status) {
     openDiffPane(state.lastRunDiffKey);
   }
 
+  // A run that rewrote the interface should not leave a stale one on screen. The preview
+  // only reads the file from disk, so re-reading it can never be wrong, whatever the run
+  // ended up doing.
+  if (state.previewOpen && typeof refreshPreview === "function") {
+    refreshPreview();
+  }
+
   showToast(status === "stopped" ? "Task halted by user" : "Task concluded successfully!", status === "stopped" ? "info" : "success");
 }

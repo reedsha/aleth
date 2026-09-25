@@ -594,6 +594,67 @@ class TaskDiffTests(WorkspaceTestCase):
         )
 
 
+class PreviewSourceTests(WorkspaceTestCase):
+    """The read-only text surface behind the UI's live preview.
+
+    The preview renders through the bridge rather than pointing an iframe at a file://
+    URL, because WebView2 does not reliably finish a local document load. These pin what
+    the bridge hands over instead.
+    """
+
+    def test_reads_the_interface_file(self):
+        ft.write_file.invoke({"filename": ft.PREVIEW_FILENAME, "content": "<h1>hi</h1>\n"})
+        res = ft.read_preview_source()
+
+        self.assertTrue(res["success"])
+        self.assertTrue(res["found"])
+        self.assertEqual(res["filename"], ft.PREVIEW_FILENAME)
+        self.assertEqual(res["content"], "<h1>hi</h1>\n")
+        self.assertFalse(res["truncated"])
+        self.assertEqual(res["error"], "")
+
+    def test_missing_file_is_an_ordinary_answer(self):
+        # The workspace legitimately holds no interface until a task builds one, so an
+        # absent file is data the preview explains rather than an error it shouts about.
+        res = ft.read_preview_source()
+
+        self.assertTrue(res["success"])
+        self.assertFalse(res["found"])
+        self.assertEqual(res["content"], "")
+        self.assertEqual(res["error"], "")
+
+    def test_a_path_cannot_reach_outside_the_workspace(self):
+        outside = tempfile.mkdtemp(prefix="deepagents_previewoutside_")
+        try:
+            with open(os.path.join(outside, "secret.txt"), "w", encoding="utf-8") as fh:
+                fh.write("not for the preview")
+
+            res = ft.read_preview_source(os.path.join(outside, "secret.txt"))
+
+            # Only the basename survives, so the lookup stays inside the workspace and
+            # finds nothing rather than serving the outside file.
+            self.assertFalse(res["found"])
+            self.assertEqual(res["filename"], "secret.txt")
+            self.assertTrue(os.path.isfile(os.path.join(outside, "secret.txt")))
+        finally:
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_blank_filename_is_rejected(self):
+        res = ft.read_preview_source("   ")
+
+        self.assertFalse(res["success"])
+        self.assertFalse(res["found"])
+
+    def test_an_oversized_file_is_truncated_not_refused(self):
+        ft.write_file.invoke({"filename": ft.PREVIEW_FILENAME, "content": "0123456789ABCDEF"})
+        with mock.patch("tools.file_ops.MAX_PREVIEW_CHARS", 10):
+            res = ft.read_preview_source()
+
+        self.assertTrue(res["found"])
+        self.assertTrue(res["truncated"])
+        self.assertEqual(res["content"], "0123456789")
+
+
 class RegistryContractTests(WorkspaceTestCase):
     """Agent introspection surface consumed by the PyWebView bridge and UI."""
 
@@ -1197,7 +1258,8 @@ class FacadeContractTests(WorkspaceTestCase):
         "MAX_FILE_READ_CHARS", "get_backup_dir", "backup_file_for_task",
         "audit_codebase_plan_sync", "resolve_sync_plan_to_codebase",
         "resolve_sync_code_to_plan", "rollback_task_state", "PLAN_JSON_FILE",
-        "BACKUP_SUBDIR",
+        "BACKUP_SUBDIR", "read_preview_source", "PREVIEW_FILENAME",
+        "MAX_PREVIEW_CHARS",
     )
 
     def test_all_public_names_resolve(self):

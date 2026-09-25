@@ -112,12 +112,15 @@
    flex grower, so the bottom dock below it stays anchored to the bottom of the pane.
    It lays out as a row so the tracked-edits pane (diff-pane.css) can dock to its right
    like an IDE's second editor group. With that pane hidden the stage holds exactly one
-   visible child, so the row collapses to the width the column gave it. */
+   visible child, so the row collapses to the width the column gave it. It is the
+   positioning context for the live-preview overlay (preview.css), which covers the stage
+   instead of taking a column of its own. */
 .stage-center {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: row;
+  position: relative;
   overflow: hidden;
 }
 

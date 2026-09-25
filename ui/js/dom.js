@@ -161,6 +161,17 @@ function initDOMElements() {
   DOM.consoleStream = document.getElementById("consoleStream");
   DOM.btnConsoleClear = document.getElementById("btnConsoleClear");
 
+  // Live preview (the workspace's generated interface, rendered in place)
+  DOM.btnTogglePreview = document.getElementById("btnTogglePreview");
+  DOM.previewPane = document.getElementById("previewPane");
+  DOM.previewPath = document.getElementById("previewPath");
+  DOM.previewFrame = document.getElementById("previewFrame");
+  DOM.previewFail = document.getElementById("previewFail");
+  DOM.previewFailMsg = document.getElementById("previewFailMsg");
+  DOM.btnPreviewReload = document.getElementById("btnPreviewReload");
+  DOM.btnPreviewRetry = document.getElementById("btnPreviewRetry");
+  DOM.btnPreviewClose = document.getElementById("btnPreviewClose");
+
   // Tracked-edits pane (the stage's right-hand editor split)
   DOM.diffPane = document.getElementById("diffPane");
   DOM.diffPaneTitle = document.getElementById("diffPaneTitle");

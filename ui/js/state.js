@@ -26,7 +26,9 @@ const state = {
   targetTaskId: null,
   targetTaskTitle: null,
   // The snapshot key the tracked-edits pane should read once the current run lands.
-  lastRunDiffKey: null
+  lastRunDiffKey: null,
+  // Whether the live preview pane is on screen.
+  previewOpen: false
 };
 
 // DOM Cache

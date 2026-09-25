@@ -99,5 +99,46 @@ def list_workspace_files() -> list[dict]:
     return files_list
 
 
+# The interface file the Coder agent writes into the workspace. The live preview renders
+# this file, so its name is a contract between the agent's output and the preview pane.
+PREVIEW_FILENAME = "ui_view.html"
+
+# A ceiling on what is handed to the webview in one go. A generated interface far past this
+# is truncated rather than allowed to stall the frame; the preview says so when it happens.
+MAX_PREVIEW_CHARS = 1_500_000
+
+
+def read_preview_source(filename: str = PREVIEW_FILENAME) -> dict:
+    """Reads a workspace file as text for the live preview. Read-only.
+
+    The preview renders through the bridge rather than pointing an iframe at a ``file://``
+    URL: WebView2 does not reliably complete a local document load, and the frame then sits
+    blank. Handing over the text sidesteps the document load entirely.
+
+    A file that is simply absent is an ordinary answer (``found: False``), not an error --
+    the workspace legitimately holds no interface until a task builds one, and the preview
+    has a message for exactly that case.
+    """
+    requested = str(filename or "").strip()
+    # basename keeps the read inside the workspace even if a caller passes a path.
+    safe = os.path.basename(requested)
+    if not safe:
+        return {"success": False, "found": False, "filename": "", "content": "",
+                "truncated": False, "error": "No preview filename was given."}
+    try:
+        filepath = os.path.join(get_project_dir(), safe)
+        if not os.path.isfile(filepath):
+            return {"success": True, "found": False, "filename": safe, "content": "",
+                    "truncated": False, "error": ""}
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(MAX_PREVIEW_CHARS + 1)
+        truncated = len(content) > MAX_PREVIEW_CHARS
+        return {"success": True, "found": True, "filename": safe,
+                "content": content[:MAX_PREVIEW_CHARS], "truncated": truncated, "error": ""}
+    except Exception as e:
+        return {"success": False, "found": False, "filename": safe, "content": "",
+                "truncated": False, "error": str(e)}
+
+
 # Export a bundle for easy importing
 all_file_tools = [read_file, write_file, append_to_file]

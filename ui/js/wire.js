@@ -63,6 +63,7 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Code surfaces", initCodeSurfaces);
   runStartupStep("Terminal console", initTerminalConsole);
   runStartupStep("Diff pane", initDiffPane);
+  runStartupStep("Live preview", initPreview);
 
   // PyWebView Bridge initialization
   if (window.pywebview) {
@@ -279,6 +280,12 @@ function initEventListeners() {
   // ── Dock console & tracked-edits pane ──
   on(DOM.btnConsoleClear, "click", clearConsole);
   on(DOM.btnDiffPaneClose, "click", closeDiffPane);
+
+  // ── Live preview ──
+  on(DOM.btnTogglePreview, "click", togglePreview);
+  on(DOM.btnPreviewReload, "click", refreshPreview);
+  on(DOM.btnPreviewRetry, "click", refreshPreview);
+  on(DOM.btnPreviewClose, "click", closePreview);
 }
 
 function checkAllCardsClosed() {

@@ -28,7 +28,8 @@ from tools.file_tools import (
     resolve_sync_plan_to_codebase,
     resolve_sync_code_to_plan,
     rollback_task_state,
-    task_diff
+    task_diff,
+    read_preview_source
 )
 
 class BridgeAPI:
@@ -363,6 +364,19 @@ class BridgeAPI:
             return task_diff(task_id)
         except Exception as e:
             return {"success": False, "error": str(e), "task_id": task_id, "files": []}
+
+    def get_preview_source(self, filename: str = None):
+        """Reads the workspace interface file for the live preview. Read-only.
+
+        The preview renders this text through the bridge instead of pointing an iframe at a
+        ``file://`` URL, because WebView2 does not reliably finish a local document load and
+        the frame is then left blank.
+        """
+        try:
+            return read_preview_source(filename) if filename else read_preview_source()
+        except Exception as e:
+            return {"success": False, "found": False, "filename": filename or "",
+                    "content": "", "truncated": False, "error": str(e)}
 
     def stop_execution(self):
         """Signals active workflow to stop and emit completion."""
