@@ -8,6 +8,11 @@
    -------------------------------------------------------------------------- */
 .bottom-dock {
   flex: none;
+  /* A default height so the console below the toolbar has a home at launch: the logs
+     pane is the dock's flexible remainder, so with no default it computes to zero and
+     would hold nothing until the seam was dragged. The toolbar is ~146px, so this
+     leaves ~84px of console. Dragging the seam still overrides it. */
+  height: 240px;
   display: flex;
   flex-direction: column;
   min-height: 0;

@@ -61,6 +61,8 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Dock resize", initDockResize);
   runStartupStep("Plan workbench", initWorkbench);
   runStartupStep("Code surfaces", initCodeSurfaces);
+  runStartupStep("Terminal console", initTerminalConsole);
+  runStartupStep("Diff pane", initDiffPane);
 
   // PyWebView Bridge initialization
   if (window.pywebview) {
@@ -273,6 +275,10 @@ function initEventListeners() {
   on(DOM.btnWorkbenchDiscard, "click", handleWorkbenchDiscard);
   on(DOM.planEditorInput, "input", handleWorkbenchInput);
   on(DOM.planEditorInput, "scroll", syncWorkbenchGutterScroll);
+
+  // ── Dock console & tracked-edits pane ──
+  on(DOM.btnConsoleClear, "click", clearConsole);
+  on(DOM.btnDiffPaneClose, "click", closeDiffPane);
 }
 
 function checkAllCardsClosed() {

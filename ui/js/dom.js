@@ -158,6 +158,15 @@ function initDOMElements() {
   // Bottom Dock (resizable console housing the action toolbar)
   DOM.bottomDock = document.getElementById("bottomDock");
   DOM.dockResizeHandle = document.getElementById("dockResizeHandle");
+  DOM.consoleStream = document.getElementById("consoleStream");
+  DOM.btnConsoleClear = document.getElementById("btnConsoleClear");
+
+  // Tracked-edits pane (the stage's right-hand editor split)
+  DOM.diffPane = document.getElementById("diffPane");
+  DOM.diffPaneTitle = document.getElementById("diffPaneTitle");
+  DOM.diffPaneStat = document.getElementById("diffPaneStat");
+  DOM.diffPaneBody = document.getElementById("diffPaneBody");
+  DOM.btnDiffPaneClose = document.getElementById("btnDiffPaneClose");
 
   // Plan Workbench (centre stage: the active plan as a read/write document)
   DOM.crumbWorkspace = document.getElementById("crumbWorkspace");

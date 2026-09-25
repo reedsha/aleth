@@ -5,6 +5,10 @@
 function handleAgentEvent(event) {
   if (!event || !event.type) return;
 
+  // Every inbound event also lands in the dock console, which keeps a plain transcript
+  // of the run for the pane an IDE user already watches.
+  echoAgentEvent(event);
+
   switch (event.type) {
     case "workflow_started":
       break;

@@ -531,6 +531,69 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
         self.assertIn("not found in active plan", res["error"])
 
 
+class TaskDiffTests(WorkspaceTestCase):
+    """The read-only diff surface behind the UI's tracked-edits pane."""
+
+    def _seed_diffable_task(self):
+        ft.write_file.invoke({"filename": "existing.py", "content": "v1\n"})
+        ft.backup_file_for_task("task-9", "existing.py")
+        ft.write_file.invoke({"filename": "existing.py", "content": "v2\n"})
+
+        ft.backup_file_for_task("task-9", "brand_new.py")
+        ft.write_file.invoke({"filename": "brand_new.py", "content": "b\n"})
+
+    def test_task_diff_reports_modified_and_created(self):
+        self._seed_diffable_task()
+        res = ft.task_diff("task-9")
+
+        self.assertTrue(res["success"])
+        self.assertTrue(res["found"])
+        self.assertEqual(res["task_id"], "task-9")
+        # One entry per recorded file, ordered by name rather than by write order.
+        self.assertEqual([f["filename"] for f in res["files"]], ["brand_new.py", "existing.py"])
+
+        created, modified = res["files"]
+        self.assertEqual(created["action"], "created")
+        self.assertIsNone(created["before"])
+        self.assertEqual(created["after"], "b\n")
+        self.assertTrue(created["available"])
+        self.assertEqual((created["added"], created["removed"]), (1, 0))
+
+        self.assertEqual(modified["action"], "modified")
+        self.assertEqual(modified["before"], "v1\n")
+        self.assertEqual(modified["after"], "v2\n")
+        self.assertTrue(modified["available"])
+        self.assertEqual((modified["added"], modified["removed"]), (1, 1))
+
+        self.assertIn("-v1", modified["diff"])
+        self.assertIn("+v2", modified["diff"])
+        self.assertEqual(res["totals"], {"files": 2, "added": 2, "removed": 1})
+
+    def test_task_diff_unknown_task_is_empty_not_an_error(self):
+        # analyze / recommend / update_plan never snapshot files, so an absent backup
+        # directory is an ordinary answer, not a failure the pane should shout about.
+        res = ft.task_diff("task-unknown")
+        self.assertTrue(res["success"])
+        self.assertFalse(res["found"])
+        self.assertEqual(res["files"], [])
+        self.assertEqual(res["totals"], {"files": 0, "added": 0, "removed": 0})
+
+    def test_task_diff_blank_task_id_is_rejected(self):
+        res = ft.task_diff("  ")
+        self.assertFalse(res["success"])
+        self.assertEqual(res["files"], [])
+
+    def test_task_diff_does_not_modify_the_workspace(self):
+        self._seed_diffable_task()
+        ft.task_diff("task-9")
+        self.assertEqual(self.read("existing.py"), "v2\n")
+        self.assertEqual(self.read("brand_new.py"), "b\n")
+        self.assertEqual(
+            self.read(os.path.join(".deepagents_backups", "task-9", "existing.py")),
+            "v1\n",
+        )
+
+
 class RegistryContractTests(WorkspaceTestCase):
     """Agent introspection surface consumed by the PyWebView bridge and UI."""
 

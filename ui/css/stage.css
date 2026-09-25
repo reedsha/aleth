@@ -109,13 +109,23 @@
 }
 
 /* Center stage: the idle view and the live execution cards share this box. It is the
-   flex grower, so the bottom dock below it stays anchored to the bottom of the pane. */
+   flex grower, so the bottom dock below it stays anchored to the bottom of the pane.
+   It lays out as a row so the tracked-edits pane (diff-pane.css) can dock to its right
+   like an IDE's second editor group. With that pane hidden the stage holds exactly one
+   visible child, so the row collapses to the width the column gave it. */
 .stage-center {
   flex: 1;
   min-height: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   overflow: hidden;
+}
+
+/* Whichever of these is on screen must be allowed to shrink when the edits pane takes
+   its share of the row. Harmless in the single-child case: each is full width anyway. */
+.stage-center > .plan-workbench,
+.stage-center > .execution-stage {
+  min-width: 0;
 }
 
 /* Execution Stage (50/50 Split Grid) */

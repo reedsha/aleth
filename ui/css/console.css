@@ -1,0 +1,103 @@
+/* ui/css/console.css — The dock console: a terminal transcript of the agent stream.
+   The pane itself is .dock-logs (dock.css); this styles only what goes inside it. */
+
+.console-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 24px;
+  padding: 0 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.console-clear {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.console-clear:hover {
+  color: var(--text-main);
+  border-color: var(--border-glass);
+}
+
+.console-stream {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 12px 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.console-line {
+  display: flex;
+  gap: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.console-time {
+  flex: none;
+  color: var(--text-dim);
+  opacity: 0.65;
+  user-select: none;
+}
+
+.console-text {
+  min-width: 0;
+}
+
+/* Colour marks only the functional state of a line -- what opened, what ran, what failed
+   -- never decoration. `run`/`exit` carry the accent, agent chatter stays muted. */
+.console-cmd .console-text,
+.console-tool .console-text {
+  color: var(--accent-blue-hover);
+}
+
+.console-ok .console-text {
+  color: #10b981;
+}
+
+.console-error .console-text {
+  color: var(--accent-stop);
+}
+
+.console-agent .console-text,
+.console-decision .console-text {
+  color: var(--accent-amber);
+}
+
+.console-delegate .console-text {
+  color: var(--text-main);
+}
+
+.console-summary .console-text {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.console-state .console-text {
+  color: var(--text-dim);
+}

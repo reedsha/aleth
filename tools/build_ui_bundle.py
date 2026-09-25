@@ -51,6 +51,8 @@ JS_MODULES = [
     "dock.js",
     "workbench.js",
     "code-surface.js",
+    "console.js",
+    "diff-pane.js",
     "wire.js",
 ]
 
@@ -70,6 +72,8 @@ CSS_MODULES = [
     "dock.css",
     "workbench.css",
     "code-surface.css",
+    "console.css",
+    "diff-pane.css",
 ]
 
 JS_BEGIN = "  <!-- BEGIN UI BUNDLE - generated from ui/js/*.js by tools/build_ui_bundle.py -->"

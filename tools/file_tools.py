@@ -39,6 +39,7 @@ from tools.recovery import (
     resolve_sync_code_to_plan,
     resolve_sync_plan_to_codebase,
     rollback_task_state,
+    task_diff,
 )
 from tools.workspace import (
     BACKUP_SUBDIR,
@@ -88,6 +89,7 @@ __all__ = [
     "resolve_sync_plan_to_codebase",
     "resolve_sync_code_to_plan",
     "rollback_task_state",
+    "task_diff",
     # constants
     "PLAN_JSON_FILE",
     "BACKUP_SUBDIR",

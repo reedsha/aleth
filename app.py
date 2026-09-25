@@ -27,7 +27,8 @@ from tools.file_tools import (
     audit_codebase_plan_sync,
     resolve_sync_plan_to_codebase,
     resolve_sync_code_to_plan,
-    rollback_task_state
+    rollback_task_state,
+    task_diff
 )
 
 class BridgeAPI:
@@ -355,6 +356,13 @@ class BridgeAPI:
             return res
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def get_task_diff(self, task_id: str):
+        """Read-only diff of the file edits a task recorded in .deepagents_backups."""
+        try:
+            return task_diff(task_id)
+        except Exception as e:
+            return {"success": False, "error": str(e), "task_id": task_id, "files": []}
 
     def stop_execution(self):
         """Signals active workflow to stop and emit completion."""

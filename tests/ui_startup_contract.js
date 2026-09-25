@@ -19,7 +19,8 @@ const vm = require("vm");
 const MODULES = [
   "state.js", "dom.js", "bootstrap.js", "plan-tree.js", "actions.js",
   "plan-modals.js", "agents.js", "workspace.js", "agent-events.js",
-  "visuals.js", "dock.js", "workbench.js", "code-surface.js", "wire.js",
+  "visuals.js", "dock.js", "workbench.js", "code-surface.js", "console.js",
+  "diff-pane.js", "wire.js",
 ];
 
 // Mirrors tools/build_ui_bundle.py. A stylesheet that fails to load only costs
@@ -29,6 +30,7 @@ const STYLESHEETS = [
   "base.css", "sidebar.css", "stage.css", "actions.css", "plan-tree.css",
   "modals.css", "tiered-prompt-editor.css", "ui-vision.css", "audit-modal.css",
   "rollback-modal.css", "dock.css", "workbench.css", "code-surface.css",
+  "console.css", "diff-pane.css",
 ];
 
 function makeElement(id, ctxFactory) {
@@ -259,8 +261,8 @@ function check(label, ok, detail) {
 
   const contractClasses = [
     "action-btn", "plan-tree-item", "plan-tree-section", "btn-inline-execute",
-    "btn-inline-rollback", "agent-list-item", "active-agent", "plan-chip",
-    "log-line-tool", "log-line-decision",
+    "btn-inline-rollback", "btn-inline-diff", "agent-list-item", "active-agent",
+    "plan-chip", "log-line-tool", "log-line-decision",
   ];
   const absent = contractClasses.filter((name) => !frontend.includes(name));
   check("the cross-module class contracts are all present", absent.length === 0,

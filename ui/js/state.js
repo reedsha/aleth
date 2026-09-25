@@ -24,7 +24,9 @@ const state = {
   pendingPrompt: "",
   selectedAction: null,
   targetTaskId: null,
-  targetTaskTitle: null
+  targetTaskTitle: null,
+  // The snapshot key the tracked-edits pane should read once the current run lands.
+  lastRunDiffKey: null
 };
 
 // DOM Cache

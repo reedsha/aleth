@@ -203,6 +203,20 @@ async function handleActionParamConfirm() {
 // ============================================================================
 // Execution Lifecycle
 // ============================================================================
+// Which directory of snapshots a run's file edits land in. fix_bug and custom snapshot
+// under fixed keys, next_step under the target task's id, and the three read-only intents
+// (update_plan, analyze, recommend) write no files at all, so there is nothing to show.
+// The fixed keys are shared across runs of the same intent, so their pane reflects the
+// most recent run that wrote there rather than one particular run.
+function diffKeyForRun(actionType, actionParams) {
+  if (actionType === "next_step") {
+    return (actionParams && actionParams.targetTaskId) || state.targetTaskId || null;
+  }
+  if (actionType === "fix_bug") return "bugfix";
+  if (actionType === "custom") return "custom";
+  return null;
+}
+
 async function executeConfirmedTask(promptText, actionType = "custom", actionParams = {}) {
   const text = promptText || state.pendingPrompt;
   if (!text) return;
@@ -239,6 +253,18 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
 
   DOM.btnCloseArchitect.disabled = true;
   DOM.btnCloseCoder.disabled = true;
+
+  // The stage splits now so the tracked-edits pane is in place while the agents work; it
+  // is filled in when they finish, because the snapshots only exist once files are written.
+  // Without the bridge (the browser layout preview) there is nothing to read, so the pane
+  // is left closed rather than opened onto an error.
+  state.lastRunDiffKey = diffKeyForRun(actionType, actionParams);
+  if (state.lastRunDiffKey && window.pywebview && window.pywebview.api) {
+    openDiffPane(state.lastRunDiffKey, true);
+  } else {
+    state.lastRunDiffKey = null;
+    closeDiffPane();
+  }
 
   DOM.systemStatusDot.className = "status-dot running";
   DOM.systemStatusLabel.textContent = "Multi-Agent Active";
@@ -301,6 +327,13 @@ function finalizeWorkflow(status) {
 
   DOM.systemStatusDot.className = "status-dot ready";
   DOM.systemStatusLabel.textContent = status === "stopped" ? "Halted" : "Ready";
+
+  // Leave the run's real file edits on screen the moment it stops, so what changed is
+  // visible in the stage rather than only as a summary line on a card.
+  if (status !== "stopped" && status !== "error" && state.lastRunDiffKey &&
+      window.pywebview && window.pywebview.api) {
+    openDiffPane(state.lastRunDiffKey);
+  }
 
   showToast(status === "stopped" ? "Task halted by user" : "Task concluded successfully!", status === "stopped" ? "info" : "success");
 }

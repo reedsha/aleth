@@ -9,12 +9,13 @@ offers two resolutions: trust the codebase, or force the codebase back in line
 with the plan. Rollback consumes the snapshots to reverse a completed task.
 """
 
+import difflib
 import json
 import os
 import re
 import shutil
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from tools.plan_parser import compile_plan_json_to_markdown
 from tools.plan_state import load_plan_state, save_plan_state
@@ -31,6 +32,35 @@ def get_backup_dir() -> str:
     path = os.path.join(get_project_dir(), BACKUP_SUBDIR)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+# A single source file larger than this is reported by name and size instead of by
+# content, so a diff view can never be handed a multi-megabyte blob.
+MAX_DIFF_SOURCE_CHARS = 200_000
+
+
+def _read_snapshot_text(path: Optional[str]) -> Optional[str]:
+    """Read a text file, or return None when absent, oversized or not decodable."""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        if os.path.getsize(path) > MAX_DIFF_SOURCE_CHARS:
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _unified_diff(filename: str, before: Optional[str], after: Optional[str]) -> List[str]:
+    """Unified diff of a file's prior and current text, newline-free per line."""
+    return list(difflib.unified_diff(
+        (before or "").splitlines(),
+        (after or "").splitlines(),
+        fromfile="/dev/null" if before is None else f"a/{filename}",
+        tofile="/dev/null" if after is None else f"b/{filename}",
+        lineterm="",
+    ))
 
 
 def backup_file_for_task(task_id: str, filename: str) -> Optional[str]:
@@ -63,6 +93,73 @@ def backup_file_for_task(task_id: str, filename: str) -> Optional[str]:
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     return backup_path if os.path.exists(filepath) else None
+
+
+def task_diff(task_id: str) -> Dict[str, Any]:
+    """Diff a task's recorded deliverables: snapshot against workspace.
+
+    ``backup_file_for_task`` writes ``_meta.json`` beside the snapshots, recording for
+    each file whether the task *modified* an existing file (keeping the prior copy) or
+    *created* a new one. Reading that snapshot against the workspace file now yields the
+    real before/after pair, so the change shown is the change the task actually made
+    rather than a prose summary of it. Read-only: it never writes to the workspace.
+    """
+    task_key = str(task_id or "").strip()
+    empty = {"files": [], "totals": {"files": 0, "added": 0, "removed": 0}}
+    if not task_key:
+        return {"success": False, "error": "No task id given.", "task_id": task_id, **empty}
+
+    base_dir = get_project_dir()
+    task_backup_dir = os.path.join(get_backup_dir(), task_key)
+    meta_path = os.path.join(task_backup_dir, "_meta.json")
+    if not os.path.isfile(meta_path):
+        # Not every task writes files (analyze / recommend / update_plan never do).
+        return {"success": True, "found": False, "task_id": task_key, **empty}
+
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+    except Exception as e:
+        return {"success": False, "error": f"Could not read backup metadata: {e}",
+                "task_id": task_key, **empty}
+
+    files: List[Dict[str, Any]] = []
+    total_added = 0
+    total_removed = 0
+
+    for filename, info in meta.items():
+        info = info if isinstance(info, dict) else {}
+        action = info.get("action") or "modified"
+        before = _read_snapshot_text(info.get("backup")) if action == "modified" else None
+        after = _read_snapshot_text(os.path.join(base_dir, filename))
+
+        diff_lines = _unified_diff(filename, before, after)
+        added = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))
+        removed = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
+        total_added += added
+        total_removed += removed
+
+        files.append({
+            "filename": filename,
+            "action": action,
+            "before": before,
+            "after": after,
+            "diff": diff_lines,
+            "added": added,
+            "removed": removed,
+            # False when both sides are binary, oversized or gone, so the view can say
+            # so instead of rendering an empty box with no explanation.
+            "available": before is not None or after is not None,
+        })
+
+    files.sort(key=lambda item: item["filename"])
+    return {
+        "success": True,
+        "found": True,
+        "task_id": task_key,
+        "files": files,
+        "totals": {"files": len(files), "added": total_added, "removed": total_removed},
+    }
 
 
 def audit_codebase_plan_sync() -> Dict[str, Any]:
