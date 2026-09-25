@@ -17,6 +17,11 @@ import re
 # in "review". The optional trailing "s" keeps the common plurals matching.
 _UI_KEYWORD_RE = re.compile(r"\b(?:ui|frontend|interface|view)s?\b")
 
+# Public alias for Laya's domain tagger. It reuses this exact pattern rather than keeping
+# a second word list that could drift from the selector's, so a task can never be tagged
+# [UI] in the plan tree yet rendered as a plain module here.
+UI_KEYWORD_RE = _UI_KEYWORD_RE
+
 
 class Deliverable(NamedTuple):
     """A generated module together with the test written next to it."""
