@@ -4,11 +4,21 @@ Pure translation logic: markdown text in, strict plan dictionary out (and back).
 This module performs no file I/O and holds no state beyond reading the active
 plan filename for its default argument, which makes it the easiest part of the
 plan engine to test in isolation.
+
+Four shapes of plan content are recognised, and only the first is a milestone:
+
+    # Title                      the plan title
+    ## 🌍 Global State Summary   standing facts, captured into `state_summary`
+                                 instead of a task-less section
+    - [ ] Task                   a milestone: gets a `task-N` id and a metric slot
+      - [ ] Sub-step             folded into the parent task's `sub_steps`, never a
+                                 task of its own, at any indent depth
+      - detail bullet            a detail, or `files` when it declares deliverables
 """
 
 import re
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from markdown_it import MarkdownIt
 
@@ -20,6 +30,21 @@ from tools.workspace import get_active_plan_filename
 # caused every task's `files` to be silently discarded whenever plan.json was
 # rehydrated from the markdown plan.
 _DELIVERABLES_RE = re.compile(r"(?i)files?\s*(?:created|modified)?\s*:\s*([^,\n]+(?:,\s*[^,\n]+)*)")
+
+# A checkbox list item's mark and title. Shared by the task scan and the sub-step
+# pre-pass so the two can never disagree about what counts as a checkbox.
+_CHECKBOX_RE = re.compile(r"^[*-]?\s*\[([ xX\-])\]\s*(.*)")
+
+# The Global State Summary heading. Matched on the words rather than the whole line so
+# the decorative globe is optional and either heading level is accepted.
+_STATE_SUMMARY_RE = re.compile(r"global\s+state\s+summary", re.IGNORECASE)
+_STATE_SUMMARY_TITLE = "🌍 Global State Summary"
+
+# A `[UI]` domain tag is a standalone token. The previous bare substring test could not
+# tell a tagged task ("[UI] Dashboard view") from one that merely *mentions* the tag in
+# prose or in backticks, which stripped the tag out of the middle of the title and left
+# an orphaned empty code span behind.
+_UI_TAG_RE = re.compile(r"(?:^|\s)\[ui\](?=\s|$)", re.IGNORECASE)
 
 
 def parse_deliverables(text: str) -> List[str]:
@@ -65,15 +90,140 @@ def _absorb_detail_lines(task: Dict[str, Any], lines: List[str]) -> None:
             task["details"].append(line)
 
 
+def _status_from_mark(mark: str) -> str:
+    """The one place a checkbox mark is translated into a task status."""
+    return "completed" if mark.lower() == "x" else ("in_progress" if mark == "-" else "pending")
+
+
+def _split_ui_tag(title: str) -> Tuple[str, bool]:
+    """Splits a title into (clean title, is it [UI]-tagged)."""
+    if not _UI_TAG_RE.search(title):
+        return title.strip(), False
+    return _UI_TAG_RE.sub("", title, count=1).strip(), True
+
+
+def _collect_state_summary(tokens: List[Any]) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int]]:
+    """Captures the optional `## 🌍 Global State Summary` block.
+
+    Returns ``(summary, start, end)`` where ``start``/``end`` are the token indices the
+    block occupies, so the task scan can walk past it instead of turning its prose
+    bullets into milestones. ``summary`` is ``None`` when the plan has no such heading.
+    """
+    for i, token in enumerate(tokens):
+        if token.type != "heading_open" or token.tag not in ("h2", "h3"):
+            continue
+        if i + 1 >= len(tokens) or tokens[i + 1].type != "inline":
+            continue
+        heading_text = tokens[i + 1].content.strip()
+        if not _STATE_SUMMARY_RE.search(heading_text):
+            continue
+
+        bullets: List[str] = []
+        end = len(tokens)
+        for j in range(i + 2, len(tokens)):
+            if tokens[j].type == "heading_open":
+                end = j
+                break
+            if tokens[j].type == "inline" and tokens[j].content.strip():
+                bullets.append(tokens[j].content.strip())
+        return {"title": heading_text, "bullets": bullets}, i, end
+    return None, None, None
+
+
+def _collect_sub_steps(tokens: List[Any]) -> Tuple[Dict[str, List[List[Dict[str, Any]]]], Set[int], Set[str]]:
+    """Finds the checkbox items indented under a top-level checkbox task.
+
+    Runs as a separate pass so the milestone scan keeps behaving exactly as it did:
+    previously each parent absorbed its *first* nested checkbox into `details` and
+    hardened every remaining one into a sibling milestone, which is why a 16-task plan
+    compiled down to 21.
+
+    Returns ``(by_task, nested_indices, nested_texts)``:
+
+    * ``by_task`` maps a top-level item's raw text to a queue of its sub-step lists.
+      Nested checkbox items are flattened in document order at any indent depth, so
+      2-space and 4-space nesting both land in the same ``sub_steps`` array.
+    * ``nested_indices`` are the token indices consumed as sub-steps, which the
+      milestone scan must skip so they never take a ``task-N`` id or a metric slot.
+    * ``nested_texts`` are the raw item texts those sub-steps own, so the parent does
+      not also absorb them as duplicate detail lines.
+    """
+    stack: List[Dict[str, Any]] = []
+    top_level: List[Dict[str, Any]] = []
+
+    for index, token in enumerate(tokens):
+        if token.type == "list_item_open":
+            stack.append({"index": index, "text": None, "details": [], "children": []})
+        elif token.type == "inline" and stack:
+            frame = stack[-1]
+            if frame["text"] is None:
+                frame["text"] = token.content.strip()
+            else:
+                frame["details"].append(token.content.strip())
+        elif token.type == "list_item_close" and stack:
+            frame = stack.pop()
+            if stack:
+                stack[-1]["children"].append(frame)
+            else:
+                top_level.append(frame)
+
+    nested_indices: Set[int] = set()
+    nested_texts: Set[str] = set()
+    by_task: Dict[str, List[List[Dict[str, Any]]]] = {}
+
+    def collect(frame: Dict[str, Any], inside_step: bool, out: List[Dict[str, Any]]) -> None:
+        match = _CHECKBOX_RE.match(frame["text"] or "")
+        if match and inside_step:
+            out.append(frame)
+            nested_indices.add(frame["index"])
+            if frame["text"]:
+                nested_texts.add(frame["text"])
+            nested_texts.update(frame["details"])
+        for child in frame["children"]:
+            collect(child, inside_step or bool(match), out)
+
+    for frame in top_level:
+        if not _CHECKBOX_RE.match(frame["text"] or ""):
+            continue
+        collected: List[Dict[str, Any]] = []
+        for child in frame["children"]:
+            collect(child, True, collected)
+        if not collected:
+            continue
+        sub_steps = []
+        for item in collected:
+            mark, raw_title = _CHECKBOX_RE.match(item["text"]).groups()
+            clean_title, is_ui = _split_ui_tag(raw_title)
+            sub_step = {
+                # Filled in by the caller, which is where the parent's id is known.
+                "id": None,
+                "title": clean_title,
+                "status": _status_from_mark(mark),
+                "is_ui": is_ui,
+                "details": [],
+                "files": [],
+            }
+            _absorb_detail_lines(sub_step, item["details"])
+            sub_steps.append(sub_step)
+        # A queue, not a single list: two tasks may legitimately share a title.
+        by_task.setdefault(frame["text"] or "", []).append(sub_steps)
+
+    return by_task, nested_indices, nested_texts
+
+
 def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed: bool = False) -> Dict[str, Any]:
     """
     Parses Markdown plan files using markdown-it-py token AST.
     Extracts headers, sections, tasks (with [x], [-], [ ] status and [UI] tag),
-    nested bullet details, and referenced deliverables into a strict JSON structure.
+    the Global State Summary block, nested sub-steps, nested bullet details, and
+    referenced deliverables into a strict JSON structure.
     If relaxed=True, extracts standard bulleted and numbered list items as pending tasks.
     """
     md = MarkdownIt("gfm-like")
     tokens = md.parse(content)
+
+    state_summary, summary_start, summary_end = _collect_state_summary(tokens)
+    sub_steps_by_task, sub_step_indices, sub_step_texts = _collect_sub_steps(tokens)
 
     title = "Project Plan"
     sections = []
@@ -86,6 +236,13 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
     while i < len(tokens):
         token = tokens[i]
 
+        # 0. The Global State Summary is standing context, not a milestone list: it was
+        #    captured above, so everything between its heading and the next heading is
+        #    walked past rather than read as tasks.
+        if summary_end is not None and summary_start < i < summary_end:
+            i += 1
+            continue
+
         # 1. Headers (h1 -> Plan Title, h2/h3 -> Section or Logged Task)
         if token.type == "heading_open":
             tag = token.tag
@@ -97,12 +254,15 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                     else:
                         title = heading_text
                 elif tag in ("h2", "h3"):
+                    if summary_start is not None and i == summary_start:
+                        # Not a section: it holds no tasks and is already captured.
+                        i += 2
+                        continue
                     task_hdr = re.match(r"^\[(.*?)\]", heading_text)
                     if task_hdr:
                         task_counter += 1
                         t_title = task_hdr.group(1).strip()
-                        is_ui = "[ui]" in t_title.lower()
-                        clean_title = re.sub(r"\[ui\]", "", t_title, flags=re.IGNORECASE).strip()
+                        clean_title, is_ui = _split_ui_tag(t_title)
                         task_obj = {
                             "id": f"task-{task_counter}",
                             "section": current_section["title"],
@@ -110,7 +270,8 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                             "status": "completed",
                             "is_ui": is_ui,
                             "details": [],
-                            "files": []
+                            "files": [],
+                            "sub_steps": []
                         }
                         current_section["tasks"].append(task_obj)
                         all_steps.append(task_obj)
@@ -141,25 +302,43 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                         item_details.append(txt)
                 j += 1
 
+            if i in sub_step_indices:
+                # Part of the card of an earlier task, not a milestone of its own.
+                i = j + 1
+                continue
+
             if item_text:
-                cb_match = re.match(r"^[*-]?\s*\[([ xX\-])\]\s*(.*)", item_text)
+                cb_match = _CHECKBOX_RE.match(item_text)
                 if cb_match:
                     mark, raw_task_title = cb_match.groups()
                     task_counter += 1
-                    status = "completed" if mark.lower() == "x" else ("in_progress" if mark == "-" else "pending")
-                    is_ui = "[ui]" in raw_task_title.lower()
-                    clean_task_title = re.sub(r"\[ui\]", "", raw_task_title, flags=re.IGNORECASE).strip()
+                    clean_task_title, is_ui = _split_ui_tag(raw_task_title)
 
                     task_obj = {
                         "id": f"task-{task_counter}",
                         "section": current_section["title"],
                         "title": clean_task_title,
-                        "status": status,
+                        "status": _status_from_mark(mark),
                         "is_ui": is_ui,
                         "details": [],
-                        "files": []
+                        "files": [],
+                        "sub_steps": []
                     }
-                    _absorb_detail_lines(task_obj, item_details)
+                    queues = sub_steps_by_task.get(item_text)
+                    if queues:
+                        # Keyed by the item's own text so the sub-steps land on the task
+                        # they were indented under; the milestone scan reaches the parent
+                        # and its nested items in the same document order.
+                        sub_steps = queues.pop(0)
+                        for position, sub_step in enumerate(sub_steps, start=1):
+                            sub_step["id"] = f"task-{task_counter}-sub-{position}"
+                        task_obj["sub_steps"] = sub_steps
+                    # Sub-steps own their own lines now, so they must not also arrive as
+                    # detail bullets of the parent.
+                    _absorb_detail_lines(
+                        task_obj,
+                        [d for d in item_details if d not in sub_step_texts],
+                    )
                     current_section["tasks"].append(task_obj)
                     all_steps.append(task_obj)
                 else:
@@ -167,8 +346,7 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                         clean_item = re.sub(r"^(?:[*-]|\d+[.)])\s*", "", item_text).strip()
                         if clean_item and len(clean_item) > 2 and not clean_item.startswith("http"):
                             task_counter += 1
-                            is_ui = "[ui]" in clean_item.lower()
-                            clean_task_title = re.sub(r"\[ui\]", "", clean_item, flags=re.IGNORECASE).strip()
+                            clean_task_title, is_ui = _split_ui_tag(clean_item)
                             task_obj = {
                                 "id": f"task-{task_counter}",
                                 "section": current_section["title"],
@@ -176,7 +354,8 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                                 "status": "pending",
                                 "is_ui": is_ui,
                                 "details": item_details,
-                                "files": []
+                                "files": [],
+                                "sub_steps": []
                             }
                             current_section["tasks"].append(task_obj)
                             all_steps.append(task_obj)
@@ -209,6 +388,7 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
         "version": "1.0",
         "plan_file": filename,
         "title": title,
+        "state_summary": state_summary,
         "updated_at": time.time(),
         "sections": sections,
         "steps": all_steps,
@@ -230,6 +410,18 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
     title = data.get("title", "Project Plan")
     lines = [f"# Project Plan: {title}", ""]
 
+    # The Global State Summary is standing context rather than a milestone, so it is
+    # re-emitted directly under the title; without this the block would be erased by the
+    # first save and every later context slice would lose the plan's core facts.
+    summary = data.get("state_summary") or {}
+    if summary.get("bullets"):
+        lines.append(f"## {summary.get('title') or _STATE_SUMMARY_TITLE}")
+        for bullet in summary["bullets"]:
+            lines.append(f"- {bullet}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
     sections = data.get("sections", [])
     for sec in sections:
         sec_title = sec.get("title", "General")
@@ -242,6 +434,18 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
             t_title = task.get("title", "")
             files = [f for f in task.get("files", []) if f]
             lines.append(f"- [{mark}] {ui_prefix}{t_title}")
+            # Sub-steps are re-indented under their parent so the parser folds them back
+            # into `sub_steps` instead of rebuilding them as extra milestones.
+            for sub_step in task.get("sub_steps") or []:
+                sub_status = sub_step.get("status", "pending")
+                sub_mark = "x" if sub_status == "completed" else ("-" if sub_status == "in_progress" else " ")
+                sub_ui_prefix = "[UI] " if sub_step.get("is_ui") else ""
+                lines.append(f"  - [{sub_mark}] {sub_ui_prefix}{sub_step.get('title', '')}")
+                for d in sub_step.get("details") or []:
+                    lines.append(f"    - {d}")
+                sub_files = [f for f in sub_step.get("files") or [] if f]
+                if sub_files:
+                    lines.append(f"    - {format_deliverables(sub_files)}")
             for d in task.get("details", []):
                 lines.append(f"  - {d}")
             if files:

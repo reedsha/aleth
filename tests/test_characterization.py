@@ -41,6 +41,22 @@ RELAXED_MD = """# Notes
 - Plain bullet item
 """
 
+NESTED_MD = """# Project Plan: Steps
+
+## 🌍 Global State Summary
+- **Architecture:** dual-brain orchestration.
+- **Target Upgrade:** sub-step hierarchy.
+
+---
+
+## 1. Build
+- [ ] Parent task
+  - [ ] Child one
+  - [ ] Child two
+    - [ ] Grandchild
+- [x] Childless task
+"""
+
 
 class PlanParserTests(unittest.TestCase):
     """parse_markdown_to_plan_dict / compile_plan_json_to_markdown / parse_plan_tree"""
@@ -173,6 +189,88 @@ class PlanParserTests(unittest.TestCase):
 
     def test_parse_plan_tree_returns_steps_only(self):
         self.assertEqual(ft.parse_plan_tree(PLAN_MD), ft.parse_markdown_to_plan_dict(PLAN_MD)["steps"])
+
+    def test_nested_checkboxes_become_sub_steps_instead_of_tasks(self):
+        # A 6-line roadmap used to parse as 4 milestones: each parent absorbed its first
+        # nested checkbox into `details` and hardened every later one into a sibling task.
+        # Sub-steps are part of their parent card, so only the real milestones remain.
+        parsed = ft.parse_markdown_to_plan_dict(NESTED_MD, "PLAN.md")
+        steps = parsed["steps"]
+
+        self.assertEqual([s["title"] for s in steps], ["Parent task", "Childless task"])
+        self.assertEqual([s["status"] for s in steps], ["pending", "completed"])
+        self.assertEqual(parsed["metrics"]["total_tasks"], 2)
+        self.assertEqual(parsed["metrics"]["pending_tasks"], 1)
+
+    def test_sub_steps_flatten_both_indent_depths_under_their_parent(self):
+        steps = ft.parse_markdown_to_plan_dict(NESTED_MD, "PLAN.md")["steps"]
+        parent = steps[0]
+
+        self.assertEqual(
+            [s["title"] for s in parent["sub_steps"]],
+            ["Child one", "Child two", "Grandchild"],
+        )
+        self.assertEqual([s["status"] for s in parent["sub_steps"]], ["pending"] * 3)
+        # Sub-steps own their lines, so the parent must not also carry them as details.
+        self.assertEqual(parent["details"], [])
+        self.assertEqual(parent["files"], [])
+        self.assertEqual(steps[1]["sub_steps"], [])
+
+    def test_sub_steps_survive_compile_then_reparse(self):
+        parsed = ft.parse_markdown_to_plan_dict(NESTED_MD, "PLAN.md")
+        compiled = ft.compile_plan_json_to_markdown(parsed)
+        self.assertIn("  - [ ] Child one", compiled)
+
+        reparsed = ft.parse_markdown_to_plan_dict(compiled, "PLAN.md")
+        self.assertEqual(
+            [s["title"] for s in reparsed["steps"][0]["sub_steps"]],
+            [s["title"] for s in parsed["steps"][0]["sub_steps"]],
+        )
+        self.assertEqual(reparsed["metrics"]["total_tasks"], 2)
+        # The round trip must have converged, not grown another generation of tasks.
+        self.assertEqual(ft.compile_plan_json_to_markdown(reparsed), compiled)
+
+    def test_global_state_summary_is_captured_and_is_not_a_section(self):
+        parsed = ft.parse_markdown_to_plan_dict(NESTED_MD, "PLAN.md")
+
+        self.assertEqual(
+            parsed["state_summary"],
+            {
+                "title": "🌍 Global State Summary",
+                "bullets": [
+                    "**Architecture:** dual-brain orchestration.",
+                    "**Target Upgrade:** sub-step hierarchy.",
+                ],
+            },
+        )
+        # The heading holds no tasks, so it must not appear as an empty section.
+        self.assertEqual([s["title"] for s in parsed["sections"]], ["1. Build"])
+        self.assertNotIn("Global State Summary", [s["title"] for s in parsed["steps"]])
+
+    def test_state_summary_is_absent_when_the_plan_has_no_header(self):
+        self.assertIsNone(ft.parse_markdown_to_plan_dict(PLAN_MD, "PLAN.md")["state_summary"])
+
+    def test_global_state_summary_survives_compile_then_reparse(self):
+        parsed = ft.parse_markdown_to_plan_dict(NESTED_MD, "PLAN.md")
+        compiled = ft.compile_plan_json_to_markdown(parsed)
+
+        self.assertIn("## 🌍 Global State Summary", compiled)
+        self.assertIn("- **Architecture:** dual-brain orchestration.", compiled)
+
+        reparsed = ft.parse_markdown_to_plan_dict(compiled, "PLAN.md")
+        self.assertEqual(reparsed["state_summary"], parsed["state_summary"])
+        self.assertEqual(ft.compile_plan_json_to_markdown(reparsed), compiled)
+
+    def test_ui_tag_is_only_a_tag_when_it_stands_alone(self):
+        # A bare substring test stripped the tag out of the middle of a title that merely
+        # mentioned it, leaving an orphaned empty code span behind.
+        md = "# P\n\n## 1. S\n- [ ] Wire Laya zero-token `[UI]` task tagging into the parser\n- [ ] [UI] Dashboard view\n"
+        steps = ft.parse_markdown_to_plan_dict(md, "P.md")["steps"]
+
+        self.assertFalse(steps[0]["is_ui"])
+        self.assertEqual(steps[0]["title"], "Wire Laya zero-token `[UI]` task tagging into the parser")
+        self.assertTrue(steps[1]["is_ui"])
+        self.assertEqual(steps[1]["title"], "Dashboard view")
 
 
 class WorkspaceTestCase(unittest.TestCase):
@@ -653,6 +751,83 @@ class PreviewSourceTests(WorkspaceTestCase):
         self.assertTrue(res["found"])
         self.assertTrue(res["truncated"])
         self.assertEqual(res["content"], "0123456789")
+
+
+class EnvironmentVariableTests(WorkspaceTestCase):
+    """The masked environment-variable surface behind the sidebar's env panel.
+
+    The panel names which variables the app loaded; it never shows a value. These pin
+    that the masking happens on the Python side, so the payload the bridge hands the
+    webview carries no secret at all -- not merely a secret the UI chooses not to draw.
+    """
+
+    def _write_env(self, text):
+        path = os.path.join(self.tmp, ".env")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def test_reports_names_and_lengths_but_never_values(self):
+        path = self._write_env(
+            "OPENAI_API_KEY=sk-secret-value\nOPENAI_BASE_URL=https://api.example\n"
+        )
+        with mock.patch.dict(os.environ, {
+            "OPENAI_API_KEY": "sk-secret-value",
+            "OPENAI_BASE_URL": "https://api.example",
+        }):
+            res = ft.read_environment_variables(path)
+
+        self.assertTrue(res["success"])
+        self.assertTrue(res["found"])
+        self.assertEqual(res["filename"], ".env")
+        self.assertEqual(res["variables"], [
+            {"name": "OPENAI_API_KEY", "set": True, "length": 15},
+            {"name": "OPENAI_BASE_URL", "set": True, "length": 19},
+        ])
+        # The whole payload, at any depth: a value here would be the secret in the webview.
+        self.assertNotIn("sk-secret-value", json.dumps(res))
+
+    def test_a_name_the_environment_does_not_supply_is_reported_as_unset(self):
+        path = self._write_env("DEEPAGENTS_TEST_UNSET_NAME=v\n")
+
+        res = ft.read_environment_variables(path)
+
+        self.assertEqual(res["variables"],
+                         [{"name": "DEEPAGENTS_TEST_UNSET_NAME", "set": False, "length": 0}])
+
+    def test_a_missing_file_is_an_ordinary_answer(self):
+        res = ft.read_environment_variables(os.path.join(self.tmp, "absent.env"))
+
+        self.assertTrue(res["success"])
+        self.assertFalse(res["found"])
+        self.assertEqual(res["variables"], [])
+        self.assertEqual(res["error"], "")
+
+    def test_parses_comments_export_lines_and_duplicate_names(self):
+        path = self._write_env(
+            "# a comment\n\nOPENAI_API_KEY=one\nexport OPENAI_BASE_URL=two\nOPENAI_API_KEY=three\n"
+        )
+        with mock.patch.dict(os.environ, {
+            "OPENAI_API_KEY": "five5",
+            "OPENAI_BASE_URL": "seven77",
+        }):
+            res = ft.read_environment_variables(path)
+
+        # Last line wins is dotenv's own rule, but a name must still appear only once.
+        self.assertEqual([v["name"] for v in res["variables"]],
+                         ["OPENAI_API_KEY", "OPENAI_BASE_URL"])
+        self.assertEqual([v["length"] for v in res["variables"]], [5, 7])
+
+    def test_the_name_list_is_capped(self):
+        lines = "\n".join(
+            f"DEEPAGENTS_TEST_KEY_{i}=v" for i in range(ft.MAX_ENVIRONMENT_VARIABLES + 10)
+        )
+        path = self._write_env(lines + "\n")
+
+        res = ft.read_environment_variables(path)
+
+        self.assertEqual(len(res["variables"]), ft.MAX_ENVIRONMENT_VARIABLES)
+        self.assertEqual(res["variables"][0]["name"], "DEEPAGENTS_TEST_KEY_0")
 
 
 class RegistryContractTests(WorkspaceTestCase):
@@ -1259,7 +1434,8 @@ class FacadeContractTests(WorkspaceTestCase):
         "audit_codebase_plan_sync", "resolve_sync_plan_to_codebase",
         "resolve_sync_code_to_plan", "rollback_task_state", "PLAN_JSON_FILE",
         "BACKUP_SUBDIR", "read_preview_source", "PREVIEW_FILENAME",
-        "MAX_PREVIEW_CHARS",
+        "MAX_PREVIEW_CHARS", "read_environment_variables", "ENV_FILENAME",
+        "MAX_ENVIRONMENT_VARIABLES",
     )
 
     def test_all_public_names_resolve(self):

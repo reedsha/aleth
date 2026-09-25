@@ -40,6 +40,16 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
         "version": "1.0",
         "plan_file": clean_name,
         "title": title,
+        # A new plan opens with a Global State Summary so the context slicer has the
+        # plan's core facts to anchor on from the very first milestone.
+        "state_summary": {
+            "title": "🌍 Global State Summary",
+            "bullets": [
+                f"**Architecture:** {title} scaffolded by the Lead Architect from the initial directive.",
+                "**Current Core State:** Milestone roadmap in place; no task executed yet.",
+                "**Target Upgrade:** Execute, verify and roll back milestones from the plan tracker.",
+            ],
+        },
         "updated_at": time.time(),
         "sections": [
             {

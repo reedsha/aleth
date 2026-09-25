@@ -110,6 +110,57 @@ function planFileChips(step) {
   ).join("");
 }
 
+// Sub-steps are the indented `- [ ]` items the parser folds into their parent task
+// (tools/plan_parser.py). They are deliberately not tasks: they take no `task-N` id and
+// no slot in the progress meter, so they are rendered inside the card they belong to,
+// behind the same accordion, with a mini progress bar for the group.
+function planSubStepsHtml(subSteps) {
+  const subs = (subSteps || []).filter(s => s && String(s.title || "").trim() !== "");
+  if (subs.length === 0) return "";
+
+  const done = subs.filter(s => planStepState(s) === "completed").length;
+  const percent = Math.round((done / subs.length) * 100);
+  const rows = subs.map(sub => {
+    const subState = planStepState(sub);
+    return `
+      <div class="sub-step-row">
+        ${planStatusIcon(subState)}
+        <div class="sub-step-title${subState === "completed" ? " completed" : ""}">${planInlineMarkup(escapeHtml(String(sub.title)))}</div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <div class="sub-step-progress">
+      <div class="sub-step-progress-track"><div class="sub-step-progress-fill" style="width: ${percent}%"></div></div>
+      <div class="sub-step-progress-label">${done}/${subs.length}</div>
+    </div>
+    <div class="sub-step-list">${rows}</div>
+  `;
+}
+
+// The plan's `## 🌍 Global State Summary` block is captured by the parser into
+// `state_summary` rather than becoming a task-less section. It is the standing context
+// every milestone slice is anchored on, so it is surfaced at the top of the tree too --
+// not only in the workbench document.
+function planStateSummaryHtml(planJson) {
+  const summary = planJson && planJson.state_summary;
+  if (!summary) return "";
+
+  const bullets = (summary.bullets || [])
+    .filter(b => b !== null && b !== undefined && String(b).trim() !== "")
+    .map(b => `<div class="plan-summary-bullet">${planInlineMarkup(escapeHtml(String(b)))}</div>`)
+    .join("");
+  if (!bullets) return "";
+
+  return `
+    <div class="plan-summary-card">
+      <div class="plan-summary-header">${escapeHtml(String(summary.title || "Global State Summary"))}</div>
+      <div class="plan-summary-body">${bullets}</div>
+    </div>
+  `;
+}
+
 const PLAN_EXECUTE_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
 const PLAN_ROLLBACK_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-7.1L3 8"/></svg>';
 const PLAN_STOP_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
@@ -205,6 +256,15 @@ function renderPlanTree() {
     }));
   })();
 
+  // Standing context first, then the milestones it describes. The summary carries no
+  // tasks of its own, so it would otherwise have no representation in the tree at all.
+  const summaryHtml = planStateSummaryHtml(state.planJson);
+  if (summaryHtml) {
+    const summaryEl = document.createElement("div");
+    summaryEl.innerHTML = summaryHtml;
+    DOM.planTreeContainer.appendChild(summaryEl);
+  }
+
   sectionsToRender.forEach(section => {
     const sectionEl = document.createElement("div");
     sectionEl.className = "plan-tree-section";
@@ -223,11 +283,17 @@ function renderPlanTree() {
 
       const details = (step.details || []).filter(d => d !== null && d !== undefined && String(d).trim() !== "");
       const hasDetails = details.length > 0;
+      const subStepsHtml = planSubStepsHtml(step.sub_steps);
+      const hasSubSteps = subStepsHtml !== "";
+      // A card opens for either of the two things it can hold: its sub-step breakdown
+      // and its own detail bullets.
+      const expandable = hasDetails || hasSubSteps;
       const pills = planDomainPills(step);
       const fileChips = planFileChips(step);
       const metaHtml = (pills || fileChips) ? `<div class="task-card-meta">${pills}${fileChips}</div>` : "";
-      const detailsHtml = hasDetails ? `
+      const drawerHtml = expandable ? `
         <div class="step-details-drawer">
+          ${subStepsHtml}
           ${details.map(d => `<div class="step-detail-bullet">${planInlineMarkup(escapeHtml(String(d)))}</div>`).join("")}
         </div>
       ` : "";
@@ -238,11 +304,11 @@ function renderPlanTree() {
           <div class="step-title${stepState === "completed" ? " completed" : ""}">${planInlineMarkup(escapeHtml(step.title))}</div>
           <div class="task-card-actions">
             ${planInlineActions(step, stepState)}
-            ${hasDetails ? '<span class="step-toggle-arrow">▶</span>' : ''}
+            ${expandable ? '<span class="step-toggle-arrow">▶</span>' : ''}
           </div>
         </div>
         ${metaHtml}
-        ${detailsHtml}
+        ${drawerHtml}
       `;
 
       // Accordion toggle on row click (excluding clicks on inline action buttons)

@@ -21,6 +21,7 @@ def _empty_plan(title: str) -> Dict[str, Any]:
         "version": "1.0",
         "plan_file": get_active_plan_filename(),
         "title": title,
+        "state_summary": None,
         "updated_at": time.time(),
         "sections": [],
         "steps": [],

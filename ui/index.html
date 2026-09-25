@@ -61,7 +61,7 @@
         var required = [
           "initDOMElements", "initEventListeners", "initAutoScrollListeners", "initDockResize",
           "initWorkbench", "initCodeSurfaces", "initTerminalConsole", "initDiffPane",
-          "initPreview",
+          "initPreview", "initSidebars", "initEnvironmentPanel",
           "renderPlanTree", "openActionParamModal",
           "openRollbackModal", "handleConfirmRollback", "showToast", "handleAgentEvent"
         ];
@@ -123,6 +123,10 @@
 
   --sidebar-left-width: 250px;
   --sidebar-right-width: 320px;
+  /* Collapsed width of each pane: wide enough for the rail's own controls (a 28px
+     icon plus its padding), narrow enough to give the centre stage the space back. */
+  --sidebar-left-rail: 52px;
+  --sidebar-right-rail: 56px;
   --transition-fast: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-smooth: 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -1775,6 +1779,113 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
   content: "•";
   color: var(--accent-blue);
   flex: none;
+}
+
+/* --------------------------------------------------------------------------
+   Sub-steps
+   The parser folds indented checkboxes into their parent task, so they are part of
+   the card rather than milestones of their own. They read as a breakdown of the
+   parent: a group progress bar, then one row per sub-step.
+   -------------------------------------------------------------------------- */
+.sub-step-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.sub-step-progress-track {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.sub-step-progress-fill {
+  height: 100%;
+  background: var(--accent-blue);
+  transition: width var(--transition-fast);
+}
+
+.sub-step-progress-label {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-dim);
+}
+
+.sub-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.sub-step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* Smaller than a task's status ring so a sub-step cannot be mistaken for one. */
+.sub-step-row .step-status-icon {
+  width: 11px;
+  height: 11px;
+  min-width: 11px;
+  margin-top: 2px;
+  font-size: 7px;
+}
+
+.sub-step-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.sub-step-title.completed {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
+/* --------------------------------------------------------------------------
+   Global State Summary
+   `## 🌍 Global State Summary` is standing context, not a section, so it gets its own
+   card above the task sections instead of a section header with nothing under it.
+   -------------------------------------------------------------------------- */
+.plan-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--accent-blue);
+}
+
+.plan-summary-header {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.plan-summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-summary-bullet {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
 }
   </style>
   <style>
@@ -4001,6 +4112,350 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
   background: rgba(14, 165, 233, 0.12);
 }
   </style>
+  <style>
+/* --------------------------------------------------------------------------
+   COLLAPSIBLE SIDE PANES
+   Both sidebars are anchored, dockable panes that collapse to a narrow icon rail.
+   The rail keeps each pane's own controls reachable while the pane is out of the
+   way, and -- unlike display:none -- collapsing is a real width change, which is
+   what lets the dock beside the centre stage reflow its toolbar into the space a
+   pane gives back. The transition lives here so the two panes travel together.
+   -------------------------------------------------------------------------- */
+.sidebar,
+.right-plan-sidebar {
+  transition: width var(--transition-smooth),
+    min-width var(--transition-smooth),
+    padding var(--transition-smooth);
+}
+
+.sidebar.collapsed {
+  width: var(--sidebar-left-rail);
+  min-width: var(--sidebar-left-rail);
+  padding: 12px 8px;
+}
+
+.right-plan-sidebar.collapsed {
+  width: var(--sidebar-right-rail);
+  min-width: var(--sidebar-right-rail);
+  padding: 12px 8px;
+}
+
+/* --- Left pane, collapsed: brand and text out, icons in. ------------------- */
+.sidebar.collapsed .brand-logo-text,
+.sidebar.collapsed .brand-badge,
+.sidebar.collapsed .workspace-card,
+.sidebar.collapsed .section-title-row,
+.sidebar.collapsed .agent-item-info,
+.sidebar.collapsed .agent-status-indicator,
+.sidebar.collapsed .sidebar-tree-section,
+.sidebar.collapsed .sidebar-env-section {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar-header {
+  align-items: center;
+  padding-bottom: 12px;
+}
+
+.sidebar.collapsed .brand-row {
+  justify-content: center;
+}
+
+.sidebar.collapsed .sidebar-nav-scroll {
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.sidebar.collapsed .agent-section-block,
+.sidebar.collapsed .agent-items-list {
+  align-items: center;
+  gap: 6px;
+}
+
+/* 36px box with 4px of padding leaves exactly the 28px agent icon. */
+.sidebar.collapsed .agent-list-item {
+  justify-content: center;
+  width: 36px;
+  padding: 4px;
+  transform: none;
+}
+
+.sidebar.collapsed .agent-list-item:hover {
+  transform: none;
+}
+
+/* --- Right pane, collapsed: plan-tree actions stacked as a small rail. ----- */
+.right-plan-sidebar.collapsed .plan-title-left,
+.right-plan-sidebar.collapsed .plan-progress-card,
+.right-plan-sidebar.collapsed .plan-tree-container {
+  display: none;
+}
+
+.right-plan-sidebar.collapsed .plan-sidebar-header {
+  align-items: center;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.right-plan-sidebar.collapsed .plan-header-title-row {
+  justify-content: center;
+}
+
+.right-plan-sidebar.collapsed .plan-header-actions {
+  flex-direction: column;
+}
+
+/* --- The reveal chevron that collapses each pane. -------------------------- */
+.sidebar-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-sidebar-toggle {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.btn-sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-subtle);
+  color: #fff;
+}
+
+.btn-sidebar-toggle svg {
+  transition: transform var(--transition-smooth);
+}
+
+/* The chevron points at the edge the pane will move to. */
+.sidebar.collapsed .btn-sidebar-toggle svg {
+  transform: rotate(180deg);
+}
+
+.right-plan-sidebar.collapsed .btn-toggle-right-sidebar svg {
+  transform: rotate(180deg);
+}
+
+/* --------------------------------------------------------------------------
+   WORKSPACE TREE (left pane)
+   Rendered from the same flat listing the file explorer modal uses, grouped into
+   folders client-side, so there is no second bridge method and no name guessing.
+   -------------------------------------------------------------------------- */
+.sidebar-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  scrollbar-width: thin;
+}
+
+.tree-children {
+  padding-left: 12px;
+}
+
+.tree-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px 4px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.tree-folder-row::-webkit-details-marker {
+  display: none;
+}
+
+.tree-folder-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.tree-caret {
+  flex: none;
+  width: 8px;
+  font-size: 9px;
+  color: var(--text-dim);
+  transition: transform var(--transition-fast);
+}
+
+details[open] > .tree-folder-row > .tree-caret {
+  transform: rotate(90deg);
+}
+
+.tree-icon {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.tree-folder-row > .tree-icon {
+  color: var(--accent-blue);
+  opacity: 0.75;
+}
+
+.tree-file-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 4px;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+
+/* Aligns a root-level file with the folder names it sits beside. */
+.sidebar-tree > .tree-file-row {
+  padding-left: 16px;
+}
+
+.tree-file-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-size {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--text-dim);
+}
+
+/* --------------------------------------------------------------------------
+   ENVIRONMENT (left pane)
+   Names and a mask only: the bridge never sends a value. The reveal adds a second
+   line of what is safe to show, rather than un-masking the secret itself.
+   -------------------------------------------------------------------------- */
+.sidebar-env-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.env-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+}
+
+.env-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-amber);
+}
+
+.env-row.unset .env-dot {
+  background: #4b5563;
+}
+
+.env-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-mask {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+.env-detail {
+  display: none;
+  flex-basis: 100%;
+  padding-left: 11px;
+  font-family: var(--font-ui);
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.env-row.revealed .env-mask {
+  display: none;
+}
+
+.env-row.revealed .env-detail {
+  display: block;
+}
+
+.env-reveal {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.env-reveal:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-subtle);
+  color: #fff;
+}
+
+.env-row.revealed .env-reveal {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue-hover);
+}
+
+/* Shared empty/notice treatment for both panels. */
+.tree-empty,
+.tree-note,
+.env-empty {
+  padding: 4px;
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+  </style>
   <!-- END STYLE BUNDLE -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -4011,11 +4466,22 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
     <!-- ============================================================ -->
     <!-- 1. LEFT SIDEBAR (Expanded to 250px, Agents & Workspace)       -->
     <!-- ============================================================ -->
-    <aside class="sidebar">
+    <aside class="sidebar" id="leftSidebar">
       <div class="sidebar-header">
         <div class="brand-row">
           <span class="brand-logo-text">DEEPAGENTS</span>
-          <span class="brand-badge">STUDIO</span>
+          <div class="sidebar-head-tools">
+            <span class="brand-badge">STUDIO</span>
+            <button class="btn-sidebar-toggle" id="btnToggleLeftSidebar" type="button"
+                    aria-expanded="true" title="Collapse the agents panel"
+                    aria-label="Collapse the agents panel">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="16" rx="2"/>
+                <line x1="9.5" y1="4" x2="9.5" y2="20"/>
+                <polyline points="16 9.5 13 12 16 14.5"/>
+              </svg>
+            </button>
+          </div>
         </div>
 
         <!-- Prominent Top Workspace Card (Bug-Free Dialog) -->
@@ -4051,6 +4517,25 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
             <span class="section-count" id="countCoderAgents">2</span>
           </div>
           <div class="agent-items-list" id="sidebarCoderAgentsList"></div>
+        </div>
+
+        <!-- Section 3: WORKSPACE FILES (the same listing the Files modal reads,
+             grouped into folders in the frontend) -->
+        <div class="agent-section-block sidebar-tree-section">
+          <div class="section-title-row">
+            <span class="section-title">WORKSPACE FILES</span>
+            <span class="section-count" id="countTreeFiles">0</span>
+          </div>
+          <div class="sidebar-tree" id="sidebarTree"></div>
+        </div>
+
+        <!-- Section 4: ENVIRONMENT (names only -- values are masked in Python) -->
+        <div class="agent-section-block sidebar-env-section">
+          <div class="section-title-row">
+            <span class="section-title">ENVIRONMENT</span>
+            <span class="section-count" id="countEnvVars">0</span>
+          </div>
+          <div class="sidebar-env-list" id="sidebarEnvList"></div>
         </div>
       </div>
     </aside>
@@ -4547,6 +5032,15 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
             <span class="plan-filename" id="txtSidebarPlanName">PLAN.md</span>
           </div>
           <div class="plan-header-actions">
+            <button class="btn-plan-action btn-toggle-right-sidebar" id="btnToggleRightSidebar" type="button"
+                    aria-expanded="true" title="Collapse the plan tracker"
+                    aria-label="Collapse the plan tracker">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="16" rx="2"/>
+                <line x1="14.5" y1="4" x2="14.5" y2="20"/>
+                <polyline points="8 9.5 11 12 8 14.5"/>
+              </svg>
+            </button>
             <button class="btn-plan-action" id="btnAuditPlanSync" title="Audit Codebase & Plan Synchronization">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>
@@ -4951,7 +5445,11 @@ const state = {
   // The snapshot key the tracked-edits pane should read once the current run lands.
   lastRunDiffKey: null,
   // Whether the live preview pane is on screen.
-  previewOpen: false
+  previewOpen: false,
+  // Whether each sidebar is collapsed to its icon rail. Restored from localStorage at
+  // startup, so the workspace layout a developer chose survives a relaunch.
+  sidebarCollapsed: false,
+  planSidebarCollapsed: false
 };
 
 // DOM Cache
@@ -5032,6 +5530,16 @@ function initDOMElements() {
   DOM.sidebarCoderAgentsList = document.getElementById("sidebarCoderAgentsList");
   DOM.countMainAgents = document.getElementById("countMainAgents");
   DOM.countCoderAgents = document.getElementById("countCoderAgents");
+
+  // Collapsible side panes and the panels that live in the left one
+  DOM.leftSidebar = document.getElementById("leftSidebar");
+  DOM.rightPlanSidebar = document.getElementById("rightPlanSidebar");
+  DOM.btnToggleLeftSidebar = document.getElementById("btnToggleLeftSidebar");
+  DOM.btnToggleRightSidebar = document.getElementById("btnToggleRightSidebar");
+  DOM.sidebarTree = document.getElementById("sidebarTree");
+  DOM.countTreeFiles = document.getElementById("countTreeFiles");
+  DOM.sidebarEnvList = document.getElementById("sidebarEnvList");
+  DOM.countEnvVars = document.getElementById("countEnvVars");
 
   // Top Status Bar & Right Plan Sidebar
   DOM.txtTopActivePlanName = document.getElementById("txtTopActivePlanName");
@@ -5185,6 +5693,9 @@ async function onPyWebViewReady() {
     if (wsInfo && wsInfo.workspace_dir) {
       updateWorkspaceUI(wsInfo.workspace_dir);
     }
+    // The same payload the file explorer modal reads, grouped into folders here rather
+    // than in Python: the listing is already a flat set of workspace-relative paths.
+    renderSidebarWorkspaceTree((wsInfo && wsInfo.files) || []);
 
     // Load active plan with plan.json machine state
     const planData = await window.pywebview.api.get_active_plan();
@@ -5481,6 +5992,57 @@ function planFileChips(step) {
   ).join("");
 }
 
+// Sub-steps are the indented `- [ ]` items the parser folds into their parent task
+// (tools/plan_parser.py). They are deliberately not tasks: they take no `task-N` id and
+// no slot in the progress meter, so they are rendered inside the card they belong to,
+// behind the same accordion, with a mini progress bar for the group.
+function planSubStepsHtml(subSteps) {
+  const subs = (subSteps || []).filter(s => s && String(s.title || "").trim() !== "");
+  if (subs.length === 0) return "";
+
+  const done = subs.filter(s => planStepState(s) === "completed").length;
+  const percent = Math.round((done / subs.length) * 100);
+  const rows = subs.map(sub => {
+    const subState = planStepState(sub);
+    return `
+      <div class="sub-step-row">
+        ${planStatusIcon(subState)}
+        <div class="sub-step-title${subState === "completed" ? " completed" : ""}">${planInlineMarkup(escapeHtml(String(sub.title)))}</div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <div class="sub-step-progress">
+      <div class="sub-step-progress-track"><div class="sub-step-progress-fill" style="width: ${percent}%"></div></div>
+      <div class="sub-step-progress-label">${done}/${subs.length}</div>
+    </div>
+    <div class="sub-step-list">${rows}</div>
+  `;
+}
+
+// The plan's `## 🌍 Global State Summary` block is captured by the parser into
+// `state_summary` rather than becoming a task-less section. It is the standing context
+// every milestone slice is anchored on, so it is surfaced at the top of the tree too --
+// not only in the workbench document.
+function planStateSummaryHtml(planJson) {
+  const summary = planJson && planJson.state_summary;
+  if (!summary) return "";
+
+  const bullets = (summary.bullets || [])
+    .filter(b => b !== null && b !== undefined && String(b).trim() !== "")
+    .map(b => `<div class="plan-summary-bullet">${planInlineMarkup(escapeHtml(String(b)))}</div>`)
+    .join("");
+  if (!bullets) return "";
+
+  return `
+    <div class="plan-summary-card">
+      <div class="plan-summary-header">${escapeHtml(String(summary.title || "Global State Summary"))}</div>
+      <div class="plan-summary-body">${bullets}</div>
+    </div>
+  `;
+}
+
 const PLAN_EXECUTE_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
 const PLAN_ROLLBACK_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-7.1L3 8"/></svg>';
 const PLAN_STOP_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
@@ -5576,6 +6138,15 @@ function renderPlanTree() {
     }));
   })();
 
+  // Standing context first, then the milestones it describes. The summary carries no
+  // tasks of its own, so it would otherwise have no representation in the tree at all.
+  const summaryHtml = planStateSummaryHtml(state.planJson);
+  if (summaryHtml) {
+    const summaryEl = document.createElement("div");
+    summaryEl.innerHTML = summaryHtml;
+    DOM.planTreeContainer.appendChild(summaryEl);
+  }
+
   sectionsToRender.forEach(section => {
     const sectionEl = document.createElement("div");
     sectionEl.className = "plan-tree-section";
@@ -5594,11 +6165,17 @@ function renderPlanTree() {
 
       const details = (step.details || []).filter(d => d !== null && d !== undefined && String(d).trim() !== "");
       const hasDetails = details.length > 0;
+      const subStepsHtml = planSubStepsHtml(step.sub_steps);
+      const hasSubSteps = subStepsHtml !== "";
+      // A card opens for either of the two things it can hold: its sub-step breakdown
+      // and its own detail bullets.
+      const expandable = hasDetails || hasSubSteps;
       const pills = planDomainPills(step);
       const fileChips = planFileChips(step);
       const metaHtml = (pills || fileChips) ? `<div class="task-card-meta">${pills}${fileChips}</div>` : "";
-      const detailsHtml = hasDetails ? `
+      const drawerHtml = expandable ? `
         <div class="step-details-drawer">
+          ${subStepsHtml}
           ${details.map(d => `<div class="step-detail-bullet">${planInlineMarkup(escapeHtml(String(d)))}</div>`).join("")}
         </div>
       ` : "";
@@ -5609,11 +6186,11 @@ function renderPlanTree() {
           <div class="step-title${stepState === "completed" ? " completed" : ""}">${planInlineMarkup(escapeHtml(step.title))}</div>
           <div class="task-card-actions">
             ${planInlineActions(step, stepState)}
-            ${hasDetails ? '<span class="step-toggle-arrow">▶</span>' : ''}
+            ${expandable ? '<span class="step-toggle-arrow">▶</span>' : ''}
           </div>
         </div>
         ${metaHtml}
-        ${detailsHtml}
+        ${drawerHtml}
       `;
 
       // Accordion toggle on row click (excluding clicks on inline action buttons)
@@ -6679,6 +7256,8 @@ function handleAgentEvent(event) {
 
     case "workspace_changed":
       updateWorkspaceUI(event.workspace_dir);
+      // The workspace itself changed, so the file listing behind the tree is stale.
+      refreshSidebarWorkspaceTree();
       break;
 
     case "agents_updated":
@@ -7812,6 +8391,331 @@ function initPreview() {
 }
   </script>
   <script>
+// ui/js/sidebar.js — Collapsible side panels and the workspace file tree.
+//
+// Both panes collapse to a narrow icon rail rather than disappearing. The dock beside the
+// centre stage is a width query container, so it takes a real width change -- not
+// display:none -- to let the action toolbar reflow into the space a pane gives back. The
+// rail also keeps each pane's own controls reachable while the pane is out of the way.
+//
+// The tree is derived client-side from the same flat listing the file explorer modal uses.
+// The backend already returns every path relative to the workspace root, so grouping them
+// into folders needs no second bridge method and no guessing about which names are
+// directories -- a name only ever appears as a folder if some path has a segment below it.
+
+const SIDEBAR_LEFT_KEY = "deepagents.sidebarCollapsed";
+const SIDEBAR_RIGHT_KEY = "deepagents.planSidebarCollapsed";
+
+// A whole workspace listing is re-rendered on every change. A ceiling keeps a very large
+// workspace from turning the left pane into a multi-second render; the note says so.
+const TREE_MAX_ROWS = 300;
+
+const TREE_FOLDER_ICON =
+  '<svg class="tree-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>' +
+  "</svg>";
+
+const TREE_FILE_ICON =
+  '<svg class="tree-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" ' +
+  'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>' +
+  '<polyline points="14 2 14 8 20 8"/>' +
+  "</svg>";
+
+// ---------------------------------------------------------------------------
+// Collapse state
+// ---------------------------------------------------------------------------
+
+// A webview can refuse the store outright (private mode, a locked profile), so both the
+// read and the write are guarded: a lost preference costs one relaunch, never the panel.
+function readSidebarFlag(key) {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    return localStorage.getItem(key) === "1";
+  } catch (_err) {
+    return false;
+  }
+}
+
+function writeSidebarFlag(key, collapsed) {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(key, collapsed ? "1" : "0");
+  } catch (_err) {
+    /* the preference simply does not survive this session */
+  }
+}
+
+function applyLeftSidebarState() {
+  const collapsed = !!state.sidebarCollapsed;
+  if (DOM.leftSidebar) DOM.leftSidebar.classList.toggle("collapsed", collapsed);
+  const button = DOM.btnToggleLeftSidebar;
+  if (!button) return;
+  button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  button.title = collapsed ? "Expand the agents panel" : "Collapse the agents panel";
+}
+
+function applyRightSidebarState() {
+  const collapsed = !!state.planSidebarCollapsed;
+  if (DOM.rightPlanSidebar) DOM.rightPlanSidebar.classList.toggle("collapsed", collapsed);
+  const button = DOM.btnToggleRightSidebar;
+  if (!button) return;
+  button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  button.title = collapsed ? "Expand the plan tracker" : "Collapse the plan tracker";
+}
+
+function setLeftSidebarCollapsed(collapsed) {
+  state.sidebarCollapsed = !!collapsed;
+  writeSidebarFlag(SIDEBAR_LEFT_KEY, state.sidebarCollapsed);
+  applyLeftSidebarState();
+}
+
+function setRightSidebarCollapsed(collapsed) {
+  state.planSidebarCollapsed = !!collapsed;
+  writeSidebarFlag(SIDEBAR_RIGHT_KEY, state.planSidebarCollapsed);
+  applyRightSidebarState();
+}
+
+function toggleLeftSidebar() {
+  setLeftSidebarCollapsed(!state.sidebarCollapsed);
+}
+
+function toggleRightSidebar() {
+  setRightSidebarCollapsed(!state.planSidebarCollapsed);
+}
+
+// ---------------------------------------------------------------------------
+// Workspace tree
+// ---------------------------------------------------------------------------
+
+// Turns the flat {name, path, size} listing into a folder hierarchy. Every node keeps the
+// order the caller supplies; rendering sorts, so the tree is stable regardless of the
+// bridge's ordering.
+function buildWorkspaceTree(files) {
+  const root = { folders: [], files: [] };
+  const seen = new Map();
+
+  (files || []).forEach((entry) => {
+    const rel = String((entry && (entry.path || entry.name)) || "").replace(/\\/g, "/");
+    const parts = rel.split("/").filter(Boolean);
+    if (parts.length === 0) return;
+
+    const fileName = parts.pop();
+    let node = root;
+    let prefix = "";
+    parts.forEach((part) => {
+      prefix = prefix ? `${prefix}/${part}` : part;
+      let child = seen.get(prefix);
+      if (!child) {
+        child = { name: part, folders: [], files: [] };
+        seen.set(prefix, child);
+        node.folders.push(child);
+      }
+      node = child;
+    });
+
+    node.files.push({ name: fileName, path: rel, size: (entry && entry.size) || 0 });
+  });
+
+  return root;
+}
+
+function formatTreeFileSize(bytes) {
+  const size = Number(bytes) || 0;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// One row budget shared by the whole walk, so the cap counts what is actually rendered
+// rather than what each level would render on its own.
+function nextTreeRow(budget) {
+  if (budget.rows >= TREE_MAX_ROWS) {
+    budget.truncated = true;
+    return false;
+  }
+  budget.rows += 1;
+  return true;
+}
+
+function renderTreeContents(node, budget) {
+  let html = "";
+
+  node.folders
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach((folder) => {
+      if (!nextTreeRow(budget)) return;
+      html +=
+        "<details class=\"tree-folder\" open>" +
+        "<summary class=\"tree-folder-row\">" +
+        "<span class=\"tree-caret\">\u203a</span>" +
+        TREE_FOLDER_ICON +
+        `<span class="tree-name">${escapeHtml(folder.name)}</span>` +
+        "</summary>" +
+        `<div class="tree-children">${renderTreeContents(folder, budget)}</div>` +
+        "</details>";
+    });
+
+  node.files
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach((file) => {
+      if (!nextTreeRow(budget)) return;
+      html +=
+        `<div class="tree-file-row" title="${escapeHtml(file.path)}">` +
+        TREE_FILE_ICON +
+        `<span class="tree-name">${escapeHtml(file.name)}</span>` +
+        `<span class="tree-size">${formatTreeFileSize(file.size)}</span>` +
+        "</div>";
+    });
+
+  return html;
+}
+
+function renderSidebarWorkspaceTree(files) {
+  if (!DOM.sidebarTree) return;
+
+  const list = files || [];
+  if (DOM.countTreeFiles) DOM.countTreeFiles.textContent = String(list.length);
+
+  if (list.length === 0) {
+    DOM.sidebarTree.innerHTML =
+      '<div class="tree-empty">No files in this workspace yet.</div>';
+    return;
+  }
+
+  const budget = { rows: 0, truncated: false };
+  const html = renderTreeContents(buildWorkspaceTree(list), budget);
+  DOM.sidebarTree.innerHTML = budget.truncated
+    ? html + `<div class="tree-note">Showing the first ${TREE_MAX_ROWS} entries.</div>`
+    : html;
+}
+
+// Re-reads the listing after the workspace itself changed. bootstrap seeds the tree from
+// the workspace info it already fetched; only a later change needs a fresh call.
+async function refreshSidebarWorkspaceTree() {
+  if (!DOM.sidebarTree) return;
+  if (!(window.pywebview && window.pywebview.api && window.pywebview.api.get_workspace_info)) return;
+
+  try {
+    const info = await window.pywebview.api.get_workspace_info();
+    renderSidebarWorkspaceTree((info && info.files) || []);
+  } catch (_err) {
+    // The tree keeps its last listing; the workspace card still reports the new path.
+  }
+}
+
+function initSidebars() {
+  state.sidebarCollapsed = readSidebarFlag(SIDEBAR_LEFT_KEY);
+  state.planSidebarCollapsed = readSidebarFlag(SIDEBAR_RIGHT_KEY);
+  applyLeftSidebarState();
+  applyRightSidebarState();
+
+  if (DOM.btnToggleLeftSidebar) {
+    DOM.btnToggleLeftSidebar.addEventListener("click", toggleLeftSidebar);
+  }
+  if (DOM.btnToggleRightSidebar) {
+    DOM.btnToggleRightSidebar.addEventListener("click", toggleRightSidebar);
+  }
+}
+  </script>
+  <script>
+// ui/js/env.js — The active environment variables panel in the left sidebar.
+//
+// Names and a mask only. The bridge never sends a value: masking happens in Python, so a
+// devtools session cannot read a secret back out of the payload. The per-row reveal shows
+// what is safe to show -- whether the variable resolves, and how long its value is -- which
+// is enough to tell a set-but-empty variable from a populated one.
+
+const ENV_MASK_TEXT = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+
+const ENV_REVEAL_ICON =
+  '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+  'stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>' +
+  '<circle cx="12" cy="12" r="3"/></svg>';
+
+function envPanelHasBridge() {
+  return !!(window.pywebview && window.pywebview.api &&
+    typeof window.pywebview.api.get_environment_variables === "function");
+}
+
+function envRowMarkup(entry) {
+  const name = escapeHtml((entry && entry.name) || "");
+  const isSet = !!(entry && entry.set);
+  const length = Number(entry && entry.length) || 0;
+  const detail = isSet
+    ? `${length} character${length === 1 ? "" : "s"} \u00b7 value stays in the backend`
+    : "not set in the environment";
+
+  return (
+    `<div class="env-row ${isSet ? "set" : "unset"}" data-env-name="${name}">` +
+    '<span class="env-dot"></span>' +
+    `<span class="env-name" title="${name}">${name}</span>` +
+    `<span class="env-mask">${ENV_MASK_TEXT}</span>` +
+    `<span class="env-detail">${escapeHtml(detail)}</span>` +
+    '<button class="env-reveal" type="button" aria-expanded="false" ' +
+    'title="Show what is known about this variable">' + ENV_REVEAL_ICON + "</button>" +
+    "</div>"
+  );
+}
+
+function renderEnvironmentVariables(variables) {
+  if (!DOM.sidebarEnvList) return;
+
+  const list = variables || [];
+  if (DOM.countEnvVars) DOM.countEnvVars.textContent = String(list.length);
+
+  DOM.sidebarEnvList.innerHTML = list.length
+    ? list.map(envRowMarkup).join("")
+    : '<div class="env-empty">No environment variables are configured.</div>';
+}
+
+// One delegated listener rather than one per row: the list is re-rendered wholesale on
+// every refresh, which would otherwise leave the old rows' listeners behind.
+function handleEnvListClick(event) {
+  const target = event && event.target;
+  if (!target || typeof target.closest !== "function") return;
+
+  const button = target.closest(".env-reveal");
+  if (!button) return;
+  const row = button.closest(".env-row");
+  if (!row) return;
+
+  const revealed = row.classList.toggle("revealed");
+  button.setAttribute("aria-expanded", revealed ? "true" : "false");
+  button.title = revealed
+    ? "Hide this variable's details"
+    : "Show what is known about this variable";
+}
+
+async function refreshEnvironmentVariables() {
+  if (!DOM.sidebarEnvList) return;
+
+  if (!envPanelHasBridge()) {
+    if (DOM.countEnvVars) DOM.countEnvVars.textContent = "0";
+    DOM.sidebarEnvList.innerHTML =
+      '<div class="env-empty">The desktop app is needed to read environment variables.</div>';
+    return;
+  }
+
+  try {
+    const res = await window.pywebview.api.get_environment_variables();
+    renderEnvironmentVariables((res && res.variables) || []);
+  } catch (_err) {
+    renderEnvironmentVariables([]);
+  }
+}
+
+function initEnvironmentPanel() {
+  if (DOM.sidebarEnvList) {
+    DOM.sidebarEnvList.addEventListener("click", handleEnvListClick);
+  }
+  refreshEnvironmentVariables();
+}
+  </script>
+  <script>
 // ui/js/wire.js — DOM event wiring and application bootstrap. Loaded last.
 
 // Surfaces a startup failure that would otherwise be invisible: the packaged app
@@ -7878,6 +8782,8 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Terminal console", initTerminalConsole);
   runStartupStep("Diff pane", initDiffPane);
   runStartupStep("Live preview", initPreview);
+  runStartupStep("Sidebar panels", initSidebars);
+  runStartupStep("Environment panel", initEnvironmentPanel);
 
   // PyWebView Bridge initialization
   if (window.pywebview) {

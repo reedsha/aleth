@@ -427,3 +427,110 @@
   color: var(--accent-blue);
   flex: none;
 }
+
+/* --------------------------------------------------------------------------
+   Sub-steps
+   The parser folds indented checkboxes into their parent task, so they are part of
+   the card rather than milestones of their own. They read as a breakdown of the
+   parent: a group progress bar, then one row per sub-step.
+   -------------------------------------------------------------------------- */
+.sub-step-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.sub-step-progress-track {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.sub-step-progress-fill {
+  height: 100%;
+  background: var(--accent-blue);
+  transition: width var(--transition-fast);
+}
+
+.sub-step-progress-label {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-dim);
+}
+
+.sub-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.sub-step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* Smaller than a task's status ring so a sub-step cannot be mistaken for one. */
+.sub-step-row .step-status-icon {
+  width: 11px;
+  height: 11px;
+  min-width: 11px;
+  margin-top: 2px;
+  font-size: 7px;
+}
+
+.sub-step-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.sub-step-title.completed {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
+/* --------------------------------------------------------------------------
+   Global State Summary
+   `## 🌍 Global State Summary` is standing context, not a section, so it gets its own
+   card above the task sections instead of a section header with nothing under it.
+   -------------------------------------------------------------------------- */
+.plan-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--accent-blue);
+}
+
+.plan-summary-header {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.plan-summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-summary-bullet {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  overflow-wrap: anywhere;
+}
