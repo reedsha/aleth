@@ -29,7 +29,8 @@ from tools.file_tools import (
     resolve_sync_code_to_plan,
     rollback_task_state,
     task_diff,
-    read_preview_source
+    read_preview_source,
+    read_environment_variables
 )
 
 class BridgeAPI:
@@ -377,6 +378,18 @@ class BridgeAPI:
         except Exception as e:
             return {"success": False, "found": False, "filename": filename or "",
                     "content": "", "truncated": False, "error": str(e)}
+
+    def get_environment_variables(self):
+        """Names of the environment variables the app loaded, for the sidebar env panel.
+
+        Read-only, and masked on this side: only a name, a set flag and a character count
+        cross the bridge, so no value ever reaches the webview.
+        """
+        try:
+            return read_environment_variables()
+        except Exception as e:
+            return {"success": False, "found": False, "filename": "",
+                    "variables": [], "error": str(e)}
 
     def stop_execution(self):
         """Signals active workflow to stop and emit completion."""

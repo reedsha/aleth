@@ -39,6 +39,10 @@
 
   --sidebar-left-width: 250px;
   --sidebar-right-width: 320px;
+  /* Collapsed width of each pane: wide enough for the rail's own controls (a 28px
+     icon plus its padding), narrow enough to give the centre stage the space back. */
+  --sidebar-left-rail: 52px;
+  --sidebar-right-rail: 56px;
   --transition-fast: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-smooth: 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }

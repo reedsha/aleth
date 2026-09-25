@@ -14,12 +14,15 @@ as ``from tools.file_tools import load_plan_state`` keep working unchanged.
 """
 
 from tools.file_ops import (
+    ENV_FILENAME,
+    MAX_ENVIRONMENT_VARIABLES,
     MAX_FILE_READ_CHARS,
     MAX_PREVIEW_CHARS,
     PREVIEW_FILENAME,
     all_file_tools,
     append_to_file,
     list_workspace_files,
+    read_environment_variables,
     read_file,
     read_preview_source,
     write_file,
@@ -88,6 +91,9 @@ __all__ = [
     "read_preview_source",
     "PREVIEW_FILENAME",
     "MAX_PREVIEW_CHARS",
+    "read_environment_variables",
+    "ENV_FILENAME",
+    "MAX_ENVIRONMENT_VARIABLES",
     # recovery / audit
     "get_backup_dir",
     "backup_file_for_task",

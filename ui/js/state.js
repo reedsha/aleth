@@ -28,7 +28,11 @@ const state = {
   // The snapshot key the tracked-edits pane should read once the current run lands.
   lastRunDiffKey: null,
   // Whether the live preview pane is on screen.
-  previewOpen: false
+  previewOpen: false,
+  // Whether each sidebar is collapsed to its icon rail. Restored from localStorage at
+  // startup, so the workspace layout a developer chose survives a relaunch.
+  sidebarCollapsed: false,
+  planSidebarCollapsed: false
 };
 
 // DOM Cache

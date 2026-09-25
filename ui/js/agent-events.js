@@ -78,6 +78,8 @@ function handleAgentEvent(event) {
 
     case "workspace_changed":
       updateWorkspaceUI(event.workspace_dir);
+      // The workspace itself changed, so the file listing behind the tree is stale.
+      refreshSidebarWorkspaceTree();
       break;
 
     case "agents_updated":

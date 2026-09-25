@@ -64,6 +64,8 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Terminal console", initTerminalConsole);
   runStartupStep("Diff pane", initDiffPane);
   runStartupStep("Live preview", initPreview);
+  runStartupStep("Sidebar panels", initSidebars);
+  runStartupStep("Environment panel", initEnvironmentPanel);
 
   // PyWebView Bridge initialization
   if (window.pywebview) {

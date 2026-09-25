@@ -73,6 +73,16 @@ function initDOMElements() {
   DOM.countMainAgents = document.getElementById("countMainAgents");
   DOM.countCoderAgents = document.getElementById("countCoderAgents");
 
+  // Collapsible side panes and the panels that live in the left one
+  DOM.leftSidebar = document.getElementById("leftSidebar");
+  DOM.rightPlanSidebar = document.getElementById("rightPlanSidebar");
+  DOM.btnToggleLeftSidebar = document.getElementById("btnToggleLeftSidebar");
+  DOM.btnToggleRightSidebar = document.getElementById("btnToggleRightSidebar");
+  DOM.sidebarTree = document.getElementById("sidebarTree");
+  DOM.countTreeFiles = document.getElementById("countTreeFiles");
+  DOM.sidebarEnvList = document.getElementById("sidebarEnvList");
+  DOM.countEnvVars = document.getElementById("countEnvVars");
+
   // Top Status Bar & Right Plan Sidebar
   DOM.txtTopActivePlanName = document.getElementById("txtTopActivePlanName");
   DOM.topActivePlanBadge = document.getElementById("topActivePlanBadge");

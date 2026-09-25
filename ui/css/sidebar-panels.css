@@ -1,0 +1,342 @@
+/* --------------------------------------------------------------------------
+   COLLAPSIBLE SIDE PANES
+   Both sidebars are anchored, dockable panes that collapse to a narrow icon rail.
+   The rail keeps each pane's own controls reachable while the pane is out of the
+   way, and -- unlike display:none -- collapsing is a real width change, which is
+   what lets the dock beside the centre stage reflow its toolbar into the space a
+   pane gives back. The transition lives here so the two panes travel together.
+   -------------------------------------------------------------------------- */
+.sidebar,
+.right-plan-sidebar {
+  transition: width var(--transition-smooth),
+    min-width var(--transition-smooth),
+    padding var(--transition-smooth);
+}
+
+.sidebar.collapsed {
+  width: var(--sidebar-left-rail);
+  min-width: var(--sidebar-left-rail);
+  padding: 12px 8px;
+}
+
+.right-plan-sidebar.collapsed {
+  width: var(--sidebar-right-rail);
+  min-width: var(--sidebar-right-rail);
+  padding: 12px 8px;
+}
+
+/* --- Left pane, collapsed: brand and text out, icons in. ------------------- */
+.sidebar.collapsed .brand-logo-text,
+.sidebar.collapsed .brand-badge,
+.sidebar.collapsed .workspace-card,
+.sidebar.collapsed .section-title-row,
+.sidebar.collapsed .agent-item-info,
+.sidebar.collapsed .agent-status-indicator,
+.sidebar.collapsed .sidebar-tree-section,
+.sidebar.collapsed .sidebar-env-section {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar-header {
+  align-items: center;
+  padding-bottom: 12px;
+}
+
+.sidebar.collapsed .brand-row {
+  justify-content: center;
+}
+
+.sidebar.collapsed .sidebar-nav-scroll {
+  align-items: center;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.sidebar.collapsed .agent-section-block,
+.sidebar.collapsed .agent-items-list {
+  align-items: center;
+  gap: 6px;
+}
+
+/* 36px box with 4px of padding leaves exactly the 28px agent icon. */
+.sidebar.collapsed .agent-list-item {
+  justify-content: center;
+  width: 36px;
+  padding: 4px;
+  transform: none;
+}
+
+.sidebar.collapsed .agent-list-item:hover {
+  transform: none;
+}
+
+/* --- Right pane, collapsed: plan-tree actions stacked as a small rail. ----- */
+.right-plan-sidebar.collapsed .plan-title-left,
+.right-plan-sidebar.collapsed .plan-progress-card,
+.right-plan-sidebar.collapsed .plan-tree-container {
+  display: none;
+}
+
+.right-plan-sidebar.collapsed .plan-sidebar-header {
+  align-items: center;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.right-plan-sidebar.collapsed .plan-header-title-row {
+  justify-content: center;
+}
+
+.right-plan-sidebar.collapsed .plan-header-actions {
+  flex-direction: column;
+}
+
+/* --- The reveal chevron that collapses each pane. -------------------------- */
+.sidebar-head-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-sidebar-toggle {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.btn-sidebar-toggle:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-subtle);
+  color: #fff;
+}
+
+.btn-sidebar-toggle svg {
+  transition: transform var(--transition-smooth);
+}
+
+/* The chevron points at the edge the pane will move to. */
+.sidebar.collapsed .btn-sidebar-toggle svg {
+  transform: rotate(180deg);
+}
+
+.right-plan-sidebar.collapsed .btn-toggle-right-sidebar svg {
+  transform: rotate(180deg);
+}
+
+/* --------------------------------------------------------------------------
+   WORKSPACE TREE (left pane)
+   Rendered from the same flat listing the file explorer modal uses, grouped into
+   folders client-side, so there is no second bridge method and no name guessing.
+   -------------------------------------------------------------------------- */
+.sidebar-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  scrollbar-width: thin;
+}
+
+.tree-children {
+  padding-left: 12px;
+}
+
+.tree-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 3px 4px;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  list-style: none;
+}
+
+.tree-folder-row::-webkit-details-marker {
+  display: none;
+}
+
+.tree-folder-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.tree-caret {
+  flex: none;
+  width: 8px;
+  font-size: 9px;
+  color: var(--text-dim);
+  transition: transform var(--transition-fast);
+}
+
+details[open] > .tree-folder-row > .tree-caret {
+  transform: rotate(90deg);
+}
+
+.tree-icon {
+  flex: none;
+  color: var(--text-dim);
+}
+
+.tree-folder-row > .tree-icon {
+  color: var(--accent-blue);
+  opacity: 0.75;
+}
+
+.tree-file-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 4px;
+  border-radius: 4px;
+  color: var(--text-muted);
+}
+
+/* Aligns a root-level file with the folder names it sits beside. */
+.sidebar-tree > .tree-file-row {
+  padding-left: 16px;
+}
+
+.tree-file-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+}
+
+.tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-size {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--text-dim);
+}
+
+/* --------------------------------------------------------------------------
+   ENVIRONMENT (left pane)
+   Names and a mask only: the bridge never sends a value. The reveal adds a second
+   line of what is safe to show, rather than un-masking the secret itself.
+   -------------------------------------------------------------------------- */
+.sidebar-env-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.env-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 6px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+}
+
+.env-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-amber);
+}
+
+.env-row.unset .env-dot {
+  background: #4b5563;
+}
+
+.env-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-mask {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+.env-detail {
+  display: none;
+  flex-basis: 100%;
+  padding-left: 11px;
+  font-family: var(--font-ui);
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.env-row.revealed .env-mask {
+  display: none;
+}
+
+.env-row.revealed .env-detail {
+  display: block;
+}
+
+.env-reveal {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.env-reveal:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-subtle);
+  color: #fff;
+}
+
+.env-row.revealed .env-reveal {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue-hover);
+}
+
+/* Shared empty/notice treatment for both panels. */
+.tree-empty,
+.tree-note,
+.env-empty {
+  padding: 4px;
+  font-family: var(--font-ui);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}

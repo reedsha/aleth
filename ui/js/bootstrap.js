@@ -14,6 +14,9 @@ async function onPyWebViewReady() {
     if (wsInfo && wsInfo.workspace_dir) {
       updateWorkspaceUI(wsInfo.workspace_dir);
     }
+    // The same payload the file explorer modal reads, grouped into folders here rather
+    // than in Python: the listing is already a flat set of workspace-relative paths.
+    renderSidebarWorkspaceTree((wsInfo && wsInfo.files) || []);
 
     // Load active plan with plan.json machine state
     const planData = await window.pywebview.api.get_active_plan();

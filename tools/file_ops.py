@@ -13,7 +13,7 @@ import os
 from langchain_core.tools import tool
 
 from tools.plan_state import load_plan_state
-from tools.workspace import get_active_plan_filename, get_project_dir, walk_workspace
+from tools.workspace import PROJECT_ROOT, get_active_plan_filename, get_project_dir, walk_workspace
 
 MAX_FILE_READ_CHARS = 6000
 
@@ -138,6 +138,64 @@ def read_preview_source(filename: str = PREVIEW_FILENAME) -> dict:
     except Exception as e:
         return {"success": False, "found": False, "filename": safe, "content": "",
                 "truncated": False, "error": str(e)}
+
+
+# The app's own configuration file, loaded with ``load_dotenv()`` when the app starts.
+# Resolved against the app root rather than the process working directory, so the panel
+# reports the same variables however the app was launched.
+ENV_FILENAME = ".env"
+
+# A ceiling on how many names are reported. This is a developer's ``.env``, not the whole
+# process environment; a runaway file must not turn the sidebar into a wall of text.
+MAX_ENVIRONMENT_VARIABLES = 60
+
+
+def read_environment_variables(env_path: str = None) -> dict:
+    """Names of the variables the app loads from ``.env``, plus whether each resolves.
+
+    Never their values. ``OPENAI_API_KEY`` is one of these, so masking is done *here*,
+    on the Python side: nothing sensitive crosses the bridge into the webview, where a
+    devtools session could otherwise read it back out. The panel only needs to say which
+    names are configured and whether the environment actually supplies them, so a name, a
+    set flag and a character count are the whole payload.
+
+    An absent file is an ordinary answer (``found: False``): a checkout without a ``.env``
+    is a legitimate state, not a failure to shout about.
+    """
+    path = env_path or os.path.join(PROJECT_ROOT, ENV_FILENAME)
+    if not os.path.isfile(path):
+        return {"success": True, "found": False, "filename": ENV_FILENAME,
+                "variables": [], "error": ""}
+    try:
+        names: list[str] = []
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name = line.split("=", 1)[0].strip()
+                # ``export NAME=value`` is a valid dotenv line.
+                if name.lower().startswith("export "):
+                    name = name[len("export "):].strip()
+                if not name or name in names:
+                    continue
+                names.append(name)
+                if len(names) >= MAX_ENVIRONMENT_VARIABLES:
+                    break
+
+        variables = []
+        for name in names:
+            value = os.environ.get(name)
+            variables.append({
+                "name": name,
+                "set": bool(value),
+                "length": len(value) if value else 0,
+            })
+        return {"success": True, "found": True, "filename": ENV_FILENAME,
+                "variables": variables, "error": ""}
+    except Exception as e:
+        return {"success": False, "found": False, "filename": ENV_FILENAME,
+                "variables": [], "error": str(e)}
 
 
 # Export a bundle for easy importing
