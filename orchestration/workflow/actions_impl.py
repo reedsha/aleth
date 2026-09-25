@@ -39,12 +39,54 @@ def fix_bug_action(
     user_message: str,
 ) -> None:
     """Diagnosis -> surgical patch -> verification, ending in an Architect approval."""
+    bug_desc = action_params.get("bugDescription", "") or user_message
+    attachment = action_params.get("bugAttachment", "")
+    clean_bug = bug_desc.replace("[ACTION: FIX_BUG]", "").replace("Bug Report:", "").strip()
+
+    # Sufficiency gate, mirroring the client rule in ui/js/actions.js. The webview
+    # blocks an empty report, but the bridge is not the only way in -- a directive
+    # typed into the console reaches this same action -- so the rule is enforced here
+    # as well rather than trusting the caller. An empty report cannot be diagnosed,
+    # and spawning a Coder on one would only write an unrelated patch.
+    if not clean_bug and not attachment:
+        ctx.stream_text(
+            "software-architect",
+            "> [GATEKEEPER EVALUATION] Bug report rejected before diagnosis.\n"
+            "> Classification: Insufficient input (evidence: no description and no attachment).\n"
+            "> No Coder spawned. Describe what you observed, or attach a log or screenshot.",
+            log_type="decision",
+            delay=0.02
+        )
+        time.sleep(0.3)
+        ctx.emit_fn({
+            "type": "architect_summary",
+            "agent": "software-architect",
+            "summary": {
+                "title": "Lead Architect Bug Report Assessment",
+                "status": "Input Required",
+                "files": [],
+                "deliverables": [
+                    "Rejected an empty bug report before diagnosis began.",
+                    "No Coder was spawned and no file was written.",
+                    "Workspace state left untouched."
+                ],
+                "proposals": [
+                    "Describe the bug: what you did, what happened, what you expected.",
+                    "Attach a log or screenshot to the bug report prompt."
+                ]
+            }
+        })
+        time.sleep(0.3)
+        ctx.emit_fn({
+            "type": "workflow_complete",
+            "status": "finished",
+            "message": "Bug report needs a description before diagnosis can start."
+        })
+        return
+
     ctx.stream_text("software-architect", f"> [PHASE 1: BUG DIAGNOSIS] Architect inspecting codebase to locate bug...\n> Directive: Analyze root cause before summoning Coder.", delay=0.02)
     time.sleep(0.3)
     if ctx.should_stop(): return
-
-    bug_desc = action_params.get("bugDescription", "") or user_message
-    attachment = action_params.get("bugAttachment", "")
 
     # Inspect files
     ctx.emit_fn(tool_call(
@@ -75,7 +117,6 @@ def fix_bug_action(
         f"Inspected {target_file} ({len(curr_code)} bytes)"
     ))
 
-    clean_bug = bug_desc.replace("[ACTION: FIX_BUG]", "").replace("Bug Report:", "").strip()
     ctx.stream_text(
         "software-architect",
         f"> Diagnosis Result:\n"

@@ -1274,6 +1274,39 @@ class CoderDelegationEventTests(WorkspaceTestCase):
             "Applied surgical patch addressing: something broke.",
         )
 
+    def test_fix_bug_refuses_an_empty_report_without_spawning_a_coder(self):
+        """The client blocks an empty report; the console path has to block it too.
+
+        A directive typed into the console never passes through the webview's
+        validation, so the rule is mirrored on this side of the bridge.
+        """
+        self._seed_buggy_main()
+        events = self._collect("fix_bug", "[ACTION: FIX_BUG]")
+
+        self.assertEqual(self._types(events), [
+            "workflow_started", "architect_spawn",
+            "log", "log", "log",
+            "architect_summary", "workflow_complete",
+        ])
+        summary = events[-2]["summary"]
+        self.assertEqual(summary["title"], "Lead Architect Bug Report Assessment")
+        self.assertEqual(summary["status"], "Input Required")
+        self.assertEqual(summary["files"], [])
+        self.assertEqual(
+            events[-1]["message"],
+            "Bug report needs a description before diagnosis can start.",
+        )
+
+    def test_fix_bug_accepts_an_attachment_with_no_description(self):
+        """Either half of the client rule is enough, so the gate is not stricter here."""
+        self._seed_buggy_main()
+        events = self._collect(
+            "fix_bug", "[ACTION: FIX_BUG]", {"bugAttachment": "traceback.txt"}
+        )
+
+        self.assertIn("delegation", self._types(events))
+        self.assertEqual(events[-1]["message"], "Bug surgically diagnosed, patched, and verified.")
+
     def test_custom_directive_delegates_to_the_deep_coder(self):
         self._seed_scaffold()
         events = self._collect("custom", "add a login endpoint")
