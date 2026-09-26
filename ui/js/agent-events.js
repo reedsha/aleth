@@ -67,6 +67,32 @@ function handleAgentEvent(event) {
       break;
 
 
+    case "laya_tagging_started":
+      showTaggingPanel();
+      break;
+
+    case "laya_tagging_progress":
+      updateTaggingProgress(event.done, event.total, event.title);
+      break;
+
+    case "laya_tagging_done":
+      // The tree re-renders from the separate plan_updated event, so this only reports
+      // the outcome of the pass itself.
+      hideTaggingPanel();
+      if (event.success) {
+        const changed = Array.isArray(event.changed) ? event.changed : [];
+        // The word list is the fallback, not the intended engine: re-tagging with it only
+        // re-derives the four-keyword guess the tags already had. Name the engine that
+        // actually answered, so the result cannot be misread as the checkpoint's.
+        const engine = event.engine === "model"
+          ? "Laya checkpoint"
+          : "the word list (set LAYA_BACKEND=model to use the checkpoint)";
+        showToast(`Re-tagged ${changed.length} task${changed.length === 1 ? "" : "s"} via ${engine}`, "success");
+      } else {
+        showToast(event.error || "Re-tagging failed", "error");
+      }
+      break;
+
     case "agent_error":
       renderErrorBadge(event.agent, event.error, event.can_retry);
       break;
@@ -213,4 +239,30 @@ function renderErrorBadge(agentId, errorMsg, canRetry) {
   statusBadge.textContent = "Warning";
   statusBadge.style.borderColor = "#ef4444";
   statusBadge.style.color = "#fca5a5";
+}
+
+// The re-tagging panel is a passive read-out of the backend's progress stream. Every
+// entry point resets it from the same blank state, so a second run never inherits the
+// previous run's count, title or bar width.
+function showTaggingPanel() {
+  if (!DOM.taggingOverlay) return;
+  DOM.taggingTitle.textContent = "Tagging plan tasks";
+  DOM.taggingCount.textContent = "0 / 0";
+  DOM.taggingCurrent.textContent = "";
+  DOM.taggingFill.style.width = "0%";
+  DOM.taggingOverlay.style.display = "flex";
+}
+
+function hideTaggingPanel() {
+  if (!DOM.taggingOverlay) return;
+  DOM.taggingOverlay.style.display = "none";
+}
+
+function updateTaggingProgress(done, total, title) {
+  if (!DOM.taggingOverlay) return;
+  const completed = Number(done) || 0;
+  const count = Number(total) || 0;
+  DOM.taggingCount.textContent = `${completed} / ${count}`;
+  DOM.taggingCurrent.textContent = title || "";
+  DOM.taggingFill.style.width = `${count > 0 ? (completed / count) * 100 : 0}%`;
 }

@@ -156,6 +156,11 @@ function initEventListeners() {
   on(DOM.btnCloseCreatePlanModal, "click", closeCreatePlanModal);
   on(DOM.btnSubmitCreatePlan, "click", handleCreatePlanSubmit);
 
+  // Plan UI re-tagging. The backend call returns immediately (it starts a background
+  // thread), so the panel is shown here and then fed by the laya_tagging_* events.
+  if (DOM.btnRetagUi) DOM.btnRetagUi.addEventListener("click", handleRetagUiClick);
+  if (DOM.btnCloseTagging) DOM.btnCloseTagging.addEventListener("click", hideTaggingPanel);
+
   // Card Close [X] Buttons
   on(DOM.btnCloseArchitect, "click", () => {
     DOM.cardArchitect.style.display = "none";
@@ -295,6 +300,18 @@ function checkAllCardsClosed() {
     DOM.executionStage.style.display = "none";
     DOM.emptyStateContainer.style.display = "flex";
     DOM.emptyStateContainer.classList.remove("hidden");
+  }
+}
+
+// Fire-and-forget re-tagging of the plan's [UI] tags. The bridge method returns at once
+// and the pass streams its progress back as laya_tagging_* events, so the panel opens
+// before the call is even made and there is nothing here to await or catch.
+function handleRetagUiClick() {
+  showTaggingPanel();
+  if (window.pywebview && window.pywebview.api) {
+    window.pywebview.api.retag_plan_with_laya();
+  } else {
+    showToast("Re-tagging is available in the desktop app window", "info");
   }
 }
 

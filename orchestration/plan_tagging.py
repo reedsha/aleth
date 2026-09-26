@@ -59,6 +59,7 @@ def retag_plan(
     dry_run: bool = False,
     classify: Optional[Callable[[str], Any]] = None,
     explicit: Optional[Set[str]] = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> Dict[str, Any]:
     """Re-derives every *inferred* ``[UI]`` tag with the System 1 engine.
 
@@ -68,6 +69,10 @@ def retag_plan(
 
     ``explicit`` is the set of titles carrying a literal ``[UI]`` in the markdown; those
     are held True whatever the engine says. It is read from the active plan by default.
+
+    ``on_progress`` is called as ``(done, total, title)`` just before each title is
+    decided, on the deciding thread. The pass costs on the order of a second per title, so
+    a caller needs to be able to show that it is still moving rather than appearing hung.
 
     Returns the counts, the individual changes, and which engine answered -- enough to
     show the pass's work without re-reading the plan.
@@ -79,38 +84,43 @@ def retag_plan(
         explicit = explicit_ui_titles(_plan_markdown())
 
     plan = load_plan_state()
+    entries: List[Dict[str, Any]] = []
+    for section in plan.get("sections", []):
+        for task in section.get("tasks", []):
+            entries.extend(_entries(task))
+
     total = 0
     ui_before = 0
     ui_after = 0
     kept_explicit = 0
     changed: List[Dict[str, str]] = []
 
-    for section in plan.get("sections", []):
-        for task in section.get("tasks", []):
-            for entry in _entries(task):
-                title = (entry.get("title") or "").strip()
-                total += 1
-                was = bool(entry.get("is_ui"))
-                ui_before += was
+    for entry in entries:
+        title = (entry.get("title") or "").strip()
+        total += 1
+        if on_progress is not None:
+            on_progress(total, len(entries), title)
+        was = bool(entry.get("is_ui"))
+        ui_before += was
 
-                if title in explicit:
-                    now = True
-                    kept_explicit += 1
-                else:
-                    verdict = engine(title)
-                    now = str(getattr(verdict, "domain", "")).upper() == DOMAIN_UI
+        if title in explicit:
+            now = True
+            kept_explicit += 1
+        else:
+            verdict = engine(title)
+            now = str(getattr(verdict, "domain", "")).upper() == DOMAIN_UI
 
-                ui_after += now
-                if now != was:
-                    changed.append(
-                        {
-                            "id": entry.get("id") or "",
-                            "title": title,
-                            "was": "ui" if was else "plain",
-                            "now": "ui" if now else "plain",
-                        }
-                    )
-                entry["is_ui"] = now
+        ui_after += now
+        if now != was:
+            changed.append(
+                {
+                    "id": entry.get("id") or "",
+                    "title": title,
+                    "was": "ui" if was else "plain",
+                    "now": "ui" if now else "plain",
+                }
+            )
+        entry["is_ui"] = now
 
     if not dry_run and changed:
         save_plan_state(plan)

@@ -44,6 +44,7 @@ class BridgeAPI:
     def __init__(self):
         self._window = None
         self._execution_thread = None
+        self._tagging_thread = None
 
     def set_window(self, window):
         """Bind the webview window for pushing asynchronous events to JavaScript."""
@@ -228,22 +229,56 @@ class BridgeAPI:
         })
         return data
 
-    def retag_plan_with_laya(self, dry_run=False):
+    def retag_plan_with_laya(self):
         """
-        Re-derives the plan's inferred [UI] tags with the System 1 decision engine.
+        Starts the offline [UI] re-tagging pass in a background thread.
 
         Deliberately off the render path: System 1 answers a title in one call, which
         costs zero tokens but is not instant, so the tags are decided here and persisted
-        into plan.json and PLAN.md rather than re-decided on every draw. An explicit
-        [UI] the author wrote is left alone.
+        into plan.json and PLAN.md rather than re-decided on every draw. An explicit [UI]
+        the author wrote is left alone.
 
-        dry_run reports the change set without writing, because this rewrites the text of
-        a plan the user authors by hand.
+        The pass takes on the order of a second per title, so it reports instead of
+        blocking: progress and completion arrive on the same event channel every other
+        long action uses, and the UI shows a panel while it runs. Returns at once.
         """
+        if self._tagging_thread and self._tagging_thread.is_alive():
+            return {"status": "already_running"}
+        self._tagging_thread = threading.Thread(target=self._run_plan_tagging, daemon=True)
+        self._tagging_thread.start()
+        return {"status": "started"}
+
+    def _run_plan_tagging(self):
+        """The tagging pass's worker: emit progress, then the result and a new plan tree."""
+        self.emit_event({"type": "laya_tagging_started"})
         try:
-            return {"success": True, **retag_plan(dry_run=bool(dry_run))}
+            result = retag_plan(
+                on_progress=lambda done, total, title: self.emit_event(
+                    {
+                        "type": "laya_tagging_progress",
+                        "done": done,
+                        "total": total,
+                        "title": title,
+                    }
+                )
+            )
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            self.emit_event({"type": "laya_tagging_done", "success": False, "error": str(e)})
+            return
+
+        self.emit_event({"type": "laya_tagging_done", "success": True, **result})
+
+        # The tags changed, so the tree, the pills and the workbench all need the new
+        # payload. This is the same funnel every other plan write uses.
+        if result.get("written"):
+            data = registry.get_current_plan_data()
+            self.emit_event({
+                "type": "plan_updated",
+                "filename": data["filename"],
+                "content": data["content"],
+                "tree": data["tree"],
+                "plan_json": data.get("plan_json", {})
+            })
 
     def set_active_plan(self, filename: str):
         """Switches the active plan file, re-hydrates state, and notifies the UI."""

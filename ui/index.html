@@ -64,7 +64,8 @@
           "initPreview", "initSidebars", "initEnvironmentPanel",
           "renderPlanTree", "openActionDrawer", "closeActionDrawer",
           "setDockDrawerOpen", "isDockDrawerOpen", "repaintCodeSurfaces",
-          "openRollbackModal", "handleConfirmRollback", "showToast", "handleAgentEvent"
+          "openRollbackModal", "handleConfirmRollback", "showToast", "handleAgentEvent",
+          "handleRetagUiClick"
         ];
         var missing = required.filter(function (name) {
           return typeof window[name] !== "function";
@@ -2119,6 +2120,124 @@ cells, no lift, no gradient, no glow. */
   line-height: 1.45;
   color: var(--text-dim);
   overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------------------
+   Plan UI Re-tagging Progress
+   A user-triggered System 1 pass over the plan's [UI] tags. It is a status
+   panel, not a modal: the pass runs on a background thread and can take a second
+   per task, but the workspace must stay usable, so the overlay never captures
+   pointer events -- only the dismissible card does.
+   -------------------------------------------------------------------------- */
+.tagging-overlay {
+  position: fixed;
+  top: 64px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 200;
+}
+
+.tagging-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 400px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.tagging-spinner {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border-subtle);
+  border-top-color: var(--accent-blue);
+  animation: tagging-spin 0.8s linear infinite;
+}
+
+@keyframes tagging-spin {
+  to { transform: rotate(360deg); }
+}
+
+.tagging-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tagging-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tagging-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.tagging-close {
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+
+.tagging-close:hover {
+  color: var(--text-main);
+}
+
+.tagging-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tagging-current {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tagging-track {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+}
+
+.tagging-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent-blue);
+  transition: width var(--transition-fast);
+}
+
+.tagging-note {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-dim);
 }
   </style>
   <style>
@@ -5389,6 +5508,14 @@ details[open] > .tree-folder-row > .tree-caret {
                 <line x1="5" y1="12" x2="19" y2="12"/>
               </svg>
             </button>
+            <button class="btn-plan-action" id="btnRetagUi" type="button"
+                    title="Re-derive the plan's [UI] tags with System 1"
+                    aria-label="Re-derive the plan UI tags">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
+                <circle cx="7" cy="7" r="1.2"/>
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -5409,6 +5536,24 @@ details[open] > .tree-folder-row > .tree-caret {
         <!-- Rendered dynamically by native JS parser -->
       </div>
     </aside>
+  </div>
+
+  <!-- Plan UI re-tagging progress. Non-blocking: the backdrop ignores pointer events
+       so the workspace stays usable while the background System 1 pass runs. -->
+  <div class="tagging-overlay" id="taggingOverlay" style="display: none;" role="status" aria-live="polite">
+    <div class="tagging-card">
+      <div class="tagging-spinner" aria-hidden="true"></div>
+      <div class="tagging-body">
+        <div class="tagging-head">
+          <span class="tagging-title" id="taggingTitle">Tagging plan tasks</span>
+          <button class="tagging-close" id="btnCloseTagging" type="button" title="Hide this panel" aria-label="Hide this panel">&times;</button>
+        </div>
+        <span class="tagging-count" id="taggingCount">0 / 0</span>
+        <span class="tagging-current" id="taggingCurrent"></span>
+        <div class="tagging-track"><div class="tagging-fill" id="taggingFill" style="width: 0%;"></div></div>
+        <span class="tagging-note">System 1 answers each task in one pass. It costs no tokens and runs on this machine.</span>
+      </div>
+    </div>
   </div>
 
   <!-- ============================================================ -->
@@ -5764,6 +5909,13 @@ function initDOMElements() {
   DOM.txtPlanProgressRatio = document.getElementById("txtPlanProgressRatio");
   DOM.planProgressBarFill = document.getElementById("planProgressBarFill");
   DOM.planTreeContainer = document.getElementById("planTreeContainer");
+  DOM.btnRetagUi = document.getElementById("btnRetagUi");
+  DOM.taggingOverlay = document.getElementById("taggingOverlay");
+  DOM.taggingTitle = document.getElementById("taggingTitle");
+  DOM.taggingCount = document.getElementById("taggingCount");
+  DOM.taggingCurrent = document.getElementById("taggingCurrent");
+  DOM.taggingFill = document.getElementById("taggingFill");
+  DOM.btnCloseTagging = document.getElementById("btnCloseTagging");
 
   // Plan Management Modals (Split: Switch vs Create)
   DOM.switchPlanModalOverlay = document.getElementById("switchPlanModalOverlay");
@@ -7473,6 +7625,32 @@ function handleAgentEvent(event) {
       break;
 
 
+    case "laya_tagging_started":
+      showTaggingPanel();
+      break;
+
+    case "laya_tagging_progress":
+      updateTaggingProgress(event.done, event.total, event.title);
+      break;
+
+    case "laya_tagging_done":
+      // The tree re-renders from the separate plan_updated event, so this only reports
+      // the outcome of the pass itself.
+      hideTaggingPanel();
+      if (event.success) {
+        const changed = Array.isArray(event.changed) ? event.changed : [];
+        // The word list is the fallback, not the intended engine: re-tagging with it only
+        // re-derives the four-keyword guess the tags already had. Name the engine that
+        // actually answered, so the result cannot be misread as the checkpoint's.
+        const engine = event.engine === "model"
+          ? "Laya checkpoint"
+          : "the word list (set LAYA_BACKEND=model to use the checkpoint)";
+        showToast(`Re-tagged ${changed.length} task${changed.length === 1 ? "" : "s"} via ${engine}`, "success");
+      } else {
+        showToast(event.error || "Re-tagging failed", "error");
+      }
+      break;
+
     case "agent_error":
       renderErrorBadge(event.agent, event.error, event.can_retry);
       break;
@@ -7619,6 +7797,32 @@ function renderErrorBadge(agentId, errorMsg, canRetry) {
   statusBadge.textContent = "Warning";
   statusBadge.style.borderColor = "#ef4444";
   statusBadge.style.color = "#fca5a5";
+}
+
+// The re-tagging panel is a passive read-out of the backend's progress stream. Every
+// entry point resets it from the same blank state, so a second run never inherits the
+// previous run's count, title or bar width.
+function showTaggingPanel() {
+  if (!DOM.taggingOverlay) return;
+  DOM.taggingTitle.textContent = "Tagging plan tasks";
+  DOM.taggingCount.textContent = "0 / 0";
+  DOM.taggingCurrent.textContent = "";
+  DOM.taggingFill.style.width = "0%";
+  DOM.taggingOverlay.style.display = "flex";
+}
+
+function hideTaggingPanel() {
+  if (!DOM.taggingOverlay) return;
+  DOM.taggingOverlay.style.display = "none";
+}
+
+function updateTaggingProgress(done, total, title) {
+  if (!DOM.taggingOverlay) return;
+  const completed = Number(done) || 0;
+  const count = Number(total) || 0;
+  DOM.taggingCount.textContent = `${completed} / ${count}`;
+  DOM.taggingCurrent.textContent = title || "";
+  DOM.taggingFill.style.width = `${count > 0 ? (completed / count) * 100 : 0}%`;
 }
   </script>
   <script>
@@ -9154,6 +9358,11 @@ function initEventListeners() {
   on(DOM.btnCloseCreatePlanModal, "click", closeCreatePlanModal);
   on(DOM.btnSubmitCreatePlan, "click", handleCreatePlanSubmit);
 
+  // Plan UI re-tagging. The backend call returns immediately (it starts a background
+  // thread), so the panel is shown here and then fed by the laya_tagging_* events.
+  if (DOM.btnRetagUi) DOM.btnRetagUi.addEventListener("click", handleRetagUiClick);
+  if (DOM.btnCloseTagging) DOM.btnCloseTagging.addEventListener("click", hideTaggingPanel);
+
   // Card Close [X] Buttons
   on(DOM.btnCloseArchitect, "click", () => {
     DOM.cardArchitect.style.display = "none";
@@ -9293,6 +9502,18 @@ function checkAllCardsClosed() {
     DOM.executionStage.style.display = "none";
     DOM.emptyStateContainer.style.display = "flex";
     DOM.emptyStateContainer.classList.remove("hidden");
+  }
+}
+
+// Fire-and-forget re-tagging of the plan's [UI] tags. The bridge method returns at once
+// and the pass streams its progress back as laya_tagging_* events, so the panel opens
+// before the call is even made and there is nothing here to await or catch.
+function handleRetagUiClick() {
+  showTaggingPanel();
+  if (window.pywebview && window.pywebview.api) {
+    window.pywebview.api.retag_plan_with_laya();
+  } else {
+    showToast("Re-tagging is available in the desktop app window", "info");
   }
 }
 

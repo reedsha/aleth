@@ -92,6 +92,13 @@ function initDOMElements() {
   DOM.txtPlanProgressRatio = document.getElementById("txtPlanProgressRatio");
   DOM.planProgressBarFill = document.getElementById("planProgressBarFill");
   DOM.planTreeContainer = document.getElementById("planTreeContainer");
+  DOM.btnRetagUi = document.getElementById("btnRetagUi");
+  DOM.taggingOverlay = document.getElementById("taggingOverlay");
+  DOM.taggingTitle = document.getElementById("taggingTitle");
+  DOM.taggingCount = document.getElementById("taggingCount");
+  DOM.taggingCurrent = document.getElementById("taggingCurrent");
+  DOM.taggingFill = document.getElementById("taggingFill");
+  DOM.btnCloseTagging = document.getElementById("btnCloseTagging");
 
   // Plan Management Modals (Split: Switch vs Create)
   DOM.switchPlanModalOverlay = document.getElementById("switchPlanModalOverlay");
