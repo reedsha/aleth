@@ -155,6 +155,15 @@ class QuestionContractTests(unittest.TestCase):
     def test_the_checkpoint_is_pinned_rather_than_left_to_the_router(self):
         self.assertEqual(self._call()["model"], laya_model.DEFAULT_MODEL)
 
+    def test_the_pinned_checkpoint_is_a_name_the_router_accepts(self):
+        # ``Router.predict`` rejects anything outside its own registry, and a rejected
+        # name is swallowed by the word-list fallback -- so naming the Hugging Face
+        # repository id here would leave the model backend silently never running. That
+        # was the shipped state until it was measured against the checkpoint.
+        self.assertIn(
+            laya_model.DEFAULT_MODEL, {"english", "multilingual", "typed-decisions"}
+        )
+
     def test_an_empty_directive_is_still_a_well_formed_request(self):
         laya_model.Resolver(True, lambda: self.router).classify("")
         self.assertEqual(self.router.calls[-1]["state"], {"request": ""})

@@ -67,12 +67,15 @@ ENV_BACKEND = "LAYA_BACKEND"
 BACKEND_HEURISTIC = "heuristic"
 BACKEND_MODEL = "model"
 
-# The checkpoint these questions are written against. The package also ships
-# "multilingual" and "typed-decisions"; neither is a drop-in here, because the Router
-# selects a checkpoint by matching a question set against that checkpoint's own
-# workflow. Pinning the model keeps the choice visible instead of leaving it to the
-# router's own heuristics.
-DEFAULT_MODEL = "convaiinnovations/laya"
+# The checkpoint these questions are written against, by the name the package's Router
+# knows it by: "english" resolves to the repo root of convaiinnovations/laya (421M
+# ModernBERT-large, ~804 MB). The *repository id* is not a valid value here -- Router
+# rejects anything outside {english, multilingual, typed-decisions} -- and naming it made
+# every model decision fail into the word-list fallback without the checkpoint ever
+# running. The package also ships "multilingual" and "typed-decisions"; neither is a
+# drop-in, because these questions are English and the typed-decisions checkpoint is
+# selected by matching a question set against its own workflow.
+DEFAULT_MODEL = "english"
 
 # The questions below address the payload by name (`request`), so the state is passed
 # as a mapping under this key rather than as a bare string.
