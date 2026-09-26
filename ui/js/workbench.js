@@ -166,6 +166,39 @@ function workbenchIsEditing() {
   return !!(DOM.emptyStateContainer && DOM.emptyStateContainer.classList.contains("editing"));
 }
 
+// --- View mode: the roadmap as a tree, or the raw markdown ----------------
+// The tree is the primary view. Editing always means the source, so entering edit mode
+// switches to raw rather than leaving a textarea hidden behind the cards -- and the
+// toggle is disabled while editing, so the two states can never fight.
+function workbenchView() {
+  if (!DOM.emptyStateContainer) return "tree";
+  return DOM.emptyStateContainer.classList.contains("raw-view") ? "raw" : "tree";
+}
+
+function setWorkbenchView(view) {
+  if (!DOM.emptyStateContainer) return;
+  const raw = view === "raw";
+  DOM.emptyStateContainer.classList.toggle("raw-view", raw);
+  if (DOM.btnWorkbenchTreeView) {
+    DOM.btnWorkbenchTreeView.classList.toggle("active", !raw);
+    DOM.btnWorkbenchTreeView.setAttribute("aria-pressed", String(!raw));
+  }
+  if (DOM.btnWorkbenchRawMd) {
+    DOM.btnWorkbenchRawMd.classList.toggle("active", raw);
+    DOM.btnWorkbenchRawMd.setAttribute("aria-pressed", String(raw));
+  }
+  refreshWorkbenchChrome();
+  updateWorkbenchMeta();
+}
+
+function handleWorkbenchShowTree() {
+  setWorkbenchView("tree");
+}
+
+function handleWorkbenchShowRaw() {
+  setWorkbenchView("raw");
+}
+
 function updateWorkbenchMeta() {
   if (!DOM.txtWorkbenchMeta) return;
   const source = workbenchIsEditing() && DOM.planEditorInput
@@ -188,8 +221,13 @@ function setWorkbenchEditing(editing) {
   if (DOM.btnWorkbenchEdit) DOM.btnWorkbenchEdit.hidden = editing;
   if (DOM.btnWorkbenchSave) DOM.btnWorkbenchSave.hidden = !editing;
   if (DOM.btnWorkbenchDiscard) DOM.btnWorkbenchDiscard.hidden = !editing;
+  // The view toggle is meaningless mid-edit: editing always shows the source.
+  [DOM.btnWorkbenchTreeView, DOM.btnWorkbenchRawMd].forEach((btn) => {
+    if (btn) btn.disabled = !!editing;
+  });
 
   if (editing) {
+    setWorkbenchView("raw");
     DOM.planEditorInput.value = workbenchRendered || "";
     workbenchSaved = DOM.planEditorInput.value;
     renderWorkbenchGutter();
@@ -276,6 +314,7 @@ async function handleWorkbenchSave() {
 function initWorkbench() {
   // The first plan load renders the document itself; this settles only the chrome that
   // does not depend on plan content.
+  setWorkbenchView("tree");
   refreshWorkbenchChrome();
   updateWorkbenchDirty();
 }

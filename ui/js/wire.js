@@ -283,6 +283,8 @@ function initEventListeners() {
   on(DOM.btnWorkbenchDiscard, "click", handleWorkbenchDiscard);
   on(DOM.planEditorInput, "input", handleWorkbenchInput);
   on(DOM.planEditorInput, "scroll", syncWorkbenchGutterScroll);
+  on(DOM.btnWorkbenchTreeView, "click", handleWorkbenchShowTree);
+  on(DOM.btnWorkbenchRawMd, "click", handleWorkbenchShowRaw);
 
   // ── Dock console ──
   on(DOM.btnConsoleClear, "click", clearConsole);

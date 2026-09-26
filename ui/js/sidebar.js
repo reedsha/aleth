@@ -216,7 +216,10 @@ async function refreshSidebarWorkspaceTree() {
 
 function initSidebars() {
   state.sidebarCollapsed = readSidebarFlag(SIDEBAR_LEFT_KEY);
-  state.planSidebarCollapsed = readSidebarFlag(SIDEBAR_RIGHT_KEY);
+  // The right pane is a fixed rail now: the plan tracker it used to hold is rendered in
+  // the centre workbench, so there is nothing to expand into and the stored preference is
+  // deliberately ignored.
+  state.planSidebarCollapsed = true;
   applyLeftSidebarState();
   applyRightSidebarState();
 

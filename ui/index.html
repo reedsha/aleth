@@ -128,7 +128,7 @@
   /* Collapsed width of each pane: wide enough for the rail's own controls (a 28px
      icon plus its padding), narrow enough to give the centre stage the space back. */
   --sidebar-left-rail: 52px;
-  --sidebar-right-rail: 56px;
+  --sidebar-right-rail: 60px;
   --transition-fast: 0.18s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-smooth: 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -3912,6 +3912,43 @@ cells, no lift, no gradient, no glow. */
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* --- Dual view: the roadmap as a tree, or the raw markdown ---------------- */
+/* The tree is the primary view, so the document and its editor are hidden unless raw view
+   is on. Editing forces raw view in JS, so the two states never overlap. */
+.workbench-view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+}
+
+.wb-view-btn.active {
+  border-color: var(--accent-blue-hover);
+  color: var(--accent-blue-hover);
+}
+
+.wb-view-btn[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.plan-workbench:not(.raw-view) .workbench-doc,
+.plan-workbench:not(.raw-view) .workbench-gutter,
+.plan-workbench:not(.raw-view) .workbench-input {
+  display: none;
+}
+
+.plan-workbench.raw-view .workbench-tree-view {
+  display: none;
+}
+
+.workbench-tree-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 2px 14px;
+}
   </style>
   <style>
 /* --------------------------------------------------------------------------
@@ -4604,6 +4641,13 @@ details[open] > .tree-folder-row > .tree-caret {
   line-height: 1.5;
   color: var(--text-dim);
 }
+
+/* The right pane is a fixed 60px utility rail. The plan tracker it used to hold is
+   rendered in the centre workbench now, so there is nothing to collapse it into and the
+   chevron is retired. */
+.right-plan-sidebar .btn-toggle-right-sidebar {
+  display: none;
+}
   </style>
   <style>
 /* Settings modal (provider endpoint and model routes) and the sidebar button that opens it.
@@ -4874,6 +4918,10 @@ details[open] > .tree-folder-row > .tree-caret {
               <span class="crumb-dirty" id="crumbDirty" hidden>● unsaved</span>
             </nav>
             <div class="workbench-tools">
+              <div class="workbench-view-toggle" role="group" aria-label="Plan view">
+                <button class="wb-btn wb-view-btn active" id="btnWorkbenchTreeView" type="button" aria-pressed="true" title="Show the roadmap as a tree">&#127795; <span>Tree</span></button>
+                <button class="wb-btn wb-view-btn" id="btnWorkbenchRawMd" type="button" aria-pressed="false" title="Show the plan source">&#128196; <span>Raw MD</span></button>
+              </div>
               <span class="workbench-stat" id="txtWorkbenchStat">0/0 tasks</span>
               <button class="wb-btn" id="btnWorkbenchEdit" title="Edit the plan source">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -4894,6 +4942,22 @@ details[open] > .tree-folder-row > .tree-caret {
             </div>
           </div>
           <div class="workbench-body">
+            <!-- TREE VIEW: the roadmap as cards. This is the primary view, and where the
+                 plan tracker lives now that the right pane is a fixed rail. -->
+            <div class="workbench-tree-view" id="workbenchTreeView">
+              <div class="plan-progress-card">
+                <div class="plan-progress-labels">
+                  <span class="progress-title">Roadmap Completion</span>
+                  <span class="progress-ratio" id="txtPlanProgressRatio">0%</span>
+                </div>
+                <div class="progress-bar-track">
+                  <div class="progress-bar-fill" id="planProgressBarFill" style="width: 0%;"></div>
+                </div>
+              </div>
+              <div class="plan-tree-container" id="planTreeContainer">
+                <!-- Rendered dynamically by native JS parser -->
+              </div>
+            </div>
             <div class="workbench-gutter" id="planEditorGutter" aria-hidden="true"></div>
             <div class="workbench-doc" id="planDoc"></div>
             <textarea class="workbench-input" id="planEditorInput" spellcheck="false" aria-label="Plan source"></textarea>
@@ -5455,22 +5519,6 @@ details[open] > .tree-folder-row > .tree-caret {
             </button>
           </div>
         </div>
-
-        <!-- Progress Overview Meter -->
-        <div class="plan-progress-card">
-          <div class="plan-progress-labels">
-            <span class="progress-title">Roadmap Completion</span>
-            <span class="progress-ratio" id="txtPlanProgressRatio">0%</span>
-          </div>
-          <div class="progress-bar-track">
-            <div class="progress-bar-fill" id="planProgressBarFill" style="width: 0%;"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Native Clickable Plan Tree Container -->
-      <div class="plan-tree-container" id="planTreeContainer">
-        <!-- Rendered dynamically by native JS parser -->
       </div>
     </aside>
   </div>
@@ -5980,6 +6028,11 @@ function initDOMElements() {
   DOM.planEditorInput = document.getElementById("planEditorInput");
   DOM.txtWorkbenchPath = document.getElementById("txtWorkbenchPath");
   DOM.txtWorkbenchMeta = document.getElementById("txtWorkbenchMeta");
+
+  // Plan workbench views: the roadmap as a tree, or the raw markdown source
+  DOM.btnWorkbenchTreeView = document.getElementById("btnWorkbenchTreeView");
+  DOM.btnWorkbenchRawMd = document.getElementById("btnWorkbenchRawMd");
+  DOM.workbenchTreeView = document.getElementById("workbenchTreeView");
 
   DOM.systemStatusDot = document.getElementById("systemStatusDot");
   DOM.systemStatusLabel = document.getElementById("systemStatusLabel");
@@ -8053,6 +8106,39 @@ function workbenchIsEditing() {
   return !!(DOM.emptyStateContainer && DOM.emptyStateContainer.classList.contains("editing"));
 }
 
+// --- View mode: the roadmap as a tree, or the raw markdown ----------------
+// The tree is the primary view. Editing always means the source, so entering edit mode
+// switches to raw rather than leaving a textarea hidden behind the cards -- and the
+// toggle is disabled while editing, so the two states can never fight.
+function workbenchView() {
+  if (!DOM.emptyStateContainer) return "tree";
+  return DOM.emptyStateContainer.classList.contains("raw-view") ? "raw" : "tree";
+}
+
+function setWorkbenchView(view) {
+  if (!DOM.emptyStateContainer) return;
+  const raw = view === "raw";
+  DOM.emptyStateContainer.classList.toggle("raw-view", raw);
+  if (DOM.btnWorkbenchTreeView) {
+    DOM.btnWorkbenchTreeView.classList.toggle("active", !raw);
+    DOM.btnWorkbenchTreeView.setAttribute("aria-pressed", String(!raw));
+  }
+  if (DOM.btnWorkbenchRawMd) {
+    DOM.btnWorkbenchRawMd.classList.toggle("active", raw);
+    DOM.btnWorkbenchRawMd.setAttribute("aria-pressed", String(raw));
+  }
+  refreshWorkbenchChrome();
+  updateWorkbenchMeta();
+}
+
+function handleWorkbenchShowTree() {
+  setWorkbenchView("tree");
+}
+
+function handleWorkbenchShowRaw() {
+  setWorkbenchView("raw");
+}
+
 function updateWorkbenchMeta() {
   if (!DOM.txtWorkbenchMeta) return;
   const source = workbenchIsEditing() && DOM.planEditorInput
@@ -8075,8 +8161,13 @@ function setWorkbenchEditing(editing) {
   if (DOM.btnWorkbenchEdit) DOM.btnWorkbenchEdit.hidden = editing;
   if (DOM.btnWorkbenchSave) DOM.btnWorkbenchSave.hidden = !editing;
   if (DOM.btnWorkbenchDiscard) DOM.btnWorkbenchDiscard.hidden = !editing;
+  // The view toggle is meaningless mid-edit: editing always shows the source.
+  [DOM.btnWorkbenchTreeView, DOM.btnWorkbenchRawMd].forEach((btn) => {
+    if (btn) btn.disabled = !!editing;
+  });
 
   if (editing) {
+    setWorkbenchView("raw");
     DOM.planEditorInput.value = workbenchRendered || "";
     workbenchSaved = DOM.planEditorInput.value;
     renderWorkbenchGutter();
@@ -8163,6 +8254,7 @@ async function handleWorkbenchSave() {
 function initWorkbench() {
   // The first plan load renders the document itself; this settles only the chrome that
   // does not depend on plan content.
+  setWorkbenchView("tree");
   refreshWorkbenchChrome();
   updateWorkbenchDirty();
 }
@@ -8847,7 +8939,10 @@ async function refreshSidebarWorkspaceTree() {
 
 function initSidebars() {
   state.sidebarCollapsed = readSidebarFlag(SIDEBAR_LEFT_KEY);
-  state.planSidebarCollapsed = readSidebarFlag(SIDEBAR_RIGHT_KEY);
+  // The right pane is a fixed rail now: the plan tracker it used to hold is rendered in
+  // the centre workbench, so there is nothing to expand into and the stored preference is
+  // deliberately ignored.
+  state.planSidebarCollapsed = true;
   applyLeftSidebarState();
   applyRightSidebarState();
 
@@ -9373,6 +9468,8 @@ function initEventListeners() {
   on(DOM.btnWorkbenchDiscard, "click", handleWorkbenchDiscard);
   on(DOM.planEditorInput, "input", handleWorkbenchInput);
   on(DOM.planEditorInput, "scroll", syncWorkbenchGutterScroll);
+  on(DOM.btnWorkbenchTreeView, "click", handleWorkbenchShowTree);
+  on(DOM.btnWorkbenchRawMd, "click", handleWorkbenchShowRaw);
 
   // ── Dock console ──
   on(DOM.btnConsoleClear, "click", clearConsole);

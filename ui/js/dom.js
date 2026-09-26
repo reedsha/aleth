@@ -203,6 +203,11 @@ function initDOMElements() {
   DOM.txtWorkbenchPath = document.getElementById("txtWorkbenchPath");
   DOM.txtWorkbenchMeta = document.getElementById("txtWorkbenchMeta");
 
+  // Plan workbench views: the roadmap as a tree, or the raw markdown source
+  DOM.btnWorkbenchTreeView = document.getElementById("btnWorkbenchTreeView");
+  DOM.btnWorkbenchRawMd = document.getElementById("btnWorkbenchRawMd");
+  DOM.workbenchTreeView = document.getElementById("workbenchTreeView");
+
   DOM.systemStatusDot = document.getElementById("systemStatusDot");
   DOM.systemStatusLabel = document.getElementById("systemStatusLabel");
   DOM.toastContainer = document.getElementById("toastContainer");

@@ -339,3 +339,10 @@ details[open] > .tree-folder-row > .tree-caret {
   line-height: 1.5;
   color: var(--text-dim);
 }
+
+/* The right pane is a fixed 60px utility rail. The plan tracker it used to hold is
+   rendered in the centre workbench now, so there is nothing to collapse it into and the
+   chevron is retired. */
+.right-plan-sidebar .btn-toggle-right-sidebar {
+  display: none;
+}
