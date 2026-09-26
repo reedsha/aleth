@@ -30,8 +30,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, List, Mapping, Optional, Tuple
 
-from orchestration.workflow.templates import UI_KEYWORD_RE
-
 __all__ = [
     "INTENT_ADMIN",
     "INTENT_CODE",
@@ -50,6 +48,36 @@ __all__ = [
     "inferred_ui",
     "route_coder",
 ]
+
+
+def _ui_keyword_re() -> re.Pattern:
+    """The ``templates`` UI vocabulary, imported at call time.
+
+    ``orchestration.workflow``'s package ``__init__`` imports ``actions_impl``, which
+    imports ``agents.laya_model``, which imports this module -- so a module-level import
+    of ``orchestration.workflow.templates`` here closes a cycle and makes
+    ``import agents.laya`` fail with a partially-initialized module unless something
+    else happened to import ``orchestration`` first. Deferring the import to the call
+    site keeps this module importable on its own; ``classify`` is pure, so the cost is
+    one dict lookup per call.
+    """
+    from orchestration.workflow.templates import UI_KEYWORD_RE
+
+    return UI_KEYWORD_RE
+
+
+def __getattr__(name: str):
+    """Lazy re-export of the shared UI vocabulary (PEP 562).
+
+    ``templates.UI_KEYWORD_RE`` is imported rather than redefined, so the plan tree and
+    the template selector can never disagree about what counts as UI work, and
+    ``tests/test_laya.py`` pins that identity. Routing it through the module
+    ``__getattr__`` preserves ``laya.UI_KEYWORD_RE`` without closing the import cycle
+    described above.
+    """
+    if name == "UI_KEYWORD_RE":
+        return _ui_keyword_re()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # --- Verdict vocabulary ------------------------------------------------------
@@ -205,7 +233,7 @@ def _domain_of(lowered: str, is_ui: bool, reasons: List[str]) -> str:
     if is_ui:
         reasons.append("task carries an explicit [UI] tag")
         return DOMAIN_UI
-    ui_match = UI_KEYWORD_RE.search(lowered)
+    ui_match = _ui_keyword_re().search(lowered)
     if ui_match:
         reasons.append(f"UI keyword matched: '{ui_match.group(0)}'")
         return DOMAIN_UI
@@ -293,7 +321,7 @@ def inferred_ui(title: str, is_ui: bool = False) -> bool:
     if is_ui:
         return True
     prose = _UI_TAG_LITERAL_RE.sub(" ", title or "")
-    return bool(UI_KEYWORD_RE.search(prose.lower()))
+    return bool(_ui_keyword_re().search(prose.lower()))
 
 
 def classify(text: str, context: Optional[Mapping[str, Any]] = None) -> Verdict:

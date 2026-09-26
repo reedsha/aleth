@@ -9,6 +9,8 @@ behind ``classify`` and this file should stay green.
 """
 
 import pathlib
+import subprocess
+import sys
 import unittest
 
 from agents import laya
@@ -248,6 +250,41 @@ class DependencyTests(unittest.TestCase):
         source = pathlib.Path(laya.__file__).read_text(encoding="utf-8")
         for forbidden in ("import torch", "import transformers", "import onnxruntime"):
             self.assertNotIn(forbidden, source)
+
+
+class ImportIsolationTests(unittest.TestCase):
+    """The decision engine must import on its own, in any order.
+
+    A full ``discover`` run starts with ``test_characterization``, which imports
+    ``registry`` and so warms ``sys.modules`` before this module is touched. An import
+    cycle here is therefore invisible to the suite while
+    ``python -m unittest tests.test_laya`` fails outright. A subprocess is the only honest
+    way to pin it: it reproduces the cold cache without mutating this process's
+    ``sys.modules`` (which would hand the rest of the run duplicate module objects).
+    """
+
+    REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+    def _imports_cleanly(self, statement: str) -> None:
+        proc = subprocess.run(
+            [sys.executable, "-c", statement],
+            cwd=self.REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("ok", proc.stdout)
+
+    def test_laya_imports_with_a_cold_module_cache(self):
+        self._imports_cleanly("import agents.laya; print('ok')")
+
+    def test_plan_parser_imports_with_a_cold_module_cache(self):
+        # The same cycle entered from the parser's side rather than from Laya's, which is
+        # how it bit: ``tools.plan_parser`` lazily imports ``agents.laya.inferred_ui``.
+        self._imports_cleanly(
+            "from tools.plan_parser import parse_markdown_to_plan_dict; print('ok')"
+        )
 
 
 if __name__ == "__main__":
