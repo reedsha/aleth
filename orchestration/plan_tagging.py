@@ -30,7 +30,7 @@ agent import here would close an import cycle.
 
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from tools.plan_parser import explicit_ui_titles
+from tools.plan_parser import explicit_tags
 from tools.plan_state import load_plan_state, save_plan_state
 from tools.task_tags import UI_TAG
 
@@ -73,17 +73,19 @@ def _plan_markdown() -> str:
 def retag_plan(
     dry_run: bool = False,
     classify: Optional[Callable[[str], Any]] = None,
-    explicit: Optional[Set[str]] = None,
+    explicit: Optional[Dict[str, str]] = None,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> Dict[str, Any]:
-    """Re-derives every *inferred* ``[UI]`` tag with the System 1 engine.
+    """Re-derives every *inferred* tag with the System 1 engine.
 
     ``classify`` defaults to the ``agents.laya_model`` seam, so ``LAYA_BACKEND`` decides
     whether the checkpoint or the word list answers, and a checkpoint that is missing or
     fails falls back to the word list rather than taking the pass down.
 
-    ``explicit`` is the set of titles carrying a literal ``[UI]`` in the markdown; those
-    are held True whatever the engine says. It is read from the active plan by default.
+    ``explicit`` maps a title to the tag the markdown already carries; those are kept
+    exactly as written, whatever the engine says. It is read from the active plan by
+    default. Protecting only ``[UI]`` was not enough: a hand-written ``[CI/CD]`` was
+    re-derived like an inference and deleted.
 
     ``on_progress`` is called as ``(done, total, title)`` just before each title is
     decided, on the deciding thread. The pass costs on the order of a second per title, so
@@ -96,7 +98,7 @@ def retag_plan(
 
     engine = classify or laya_model.classify
     if explicit is None:
-        explicit = explicit_ui_titles(_plan_markdown())
+        explicit = explicit_tags(_plan_markdown())
 
     plan = load_plan_state()
     entries: List[Dict[str, Any]] = []
@@ -116,11 +118,16 @@ def retag_plan(
         if on_progress is not None:
             on_progress(total, len(entries), title)
         was = bool(entry.get("is_ui"))
+        was_tag = entry.get("tag")
         ui_before += was
 
         if title in explicit:
-            now = True
+            # The author's tag, kept verbatim. is_ui follows from it, so a hand-written
+            # [CI/CD] cannot quietly become a UI task either.
+            tag = explicit[title]
+            now = tag == UI_TAG
             kept_explicit += 1
+            entry["tag"] = tag
         else:
             verdict = engine(title)
             domain = str(getattr(verdict, "domain", "")).upper()
@@ -132,13 +139,17 @@ def retag_plan(
                 entry.pop("tag", None)
 
         ui_after += now
-        if now != was:
+        # A tag can be gained or lost without is_ui moving at all -- an api or db task is
+        # not UI before or after -- and this list is what decides whether anything gets
+        # written. Comparing only is_ui silently dropped every non-UI tag.
+        if now != was or tag != was_tag:
             changed.append(
                 {
                     "id": entry.get("id") or "",
                     "title": title,
                     "was": "ui" if was else "plain",
                     "now": "ui" if now else "plain",
+                    "tag": tag or "",
                 }
             )
         entry["is_ui"] = now

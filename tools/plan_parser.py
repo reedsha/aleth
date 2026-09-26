@@ -96,25 +96,43 @@ def _status_from_mark(mark: str) -> str:
     return "completed" if mark.lower() == "x" else ("in_progress" if mark == "-" else "pending")
 
 
-def explicit_ui_titles(content: str) -> Set[str]:
-    """Clean titles that carry a *literal* ``[UI]`` tag in the markdown.
+def explicit_tags(content: str) -> Dict[str, str]:
+    """Every leading tag the markdown actually carries, as ``{clean title: tag}``.
 
-    The parsed plan collapses an author's ``[UI]`` and one the vocabulary inferred into
-    the same ``is_ui`` boolean. That is fine for rendering and not fine for re-tagging: a
-    pass that re-derives tags would otherwise silently drop a tag a human wrote. This is
-    the record of which tags a human wrote.
+    The parsed plan collapses an author's tag and one an engine inferred into the same
+    fields. That is fine for rendering and not fine for re-tagging: a pass that re-derives
+    tags would otherwise delete a tag a human wrote. This is the record of which tags a
+    human wrote, and which one they wrote.
 
     Matched with the same checkbox and tag patterns the parser itself uses, so the two
-    cannot drift about what an explicit tag looks like. This compares titles rather than
-    lines, so a title repeated in two sections counts as explicit in both.
+    cannot drift about what a tag looks like. This compares titles rather than lines, so a
+    title repeated in two sections counts as explicit in both.
     """
-    explicit: Set[str] = set()
+    found: Dict[str, str] = {}
     for line in (content or "").splitlines():
         match = _CHECKBOX_RE.match(line.strip())
-        if not match or not _UI_TAG_RE.search(match.group(2)):
+        if not match:
             continue
-        explicit.add(_split_ui_tag(match.group(2))[0])
-    return explicit
+        raw = match.group(2)
+        clean, tag = split_tag(raw)
+        if tag is not None:
+            found[clean] = tag
+        elif _UI_TAG_RE.search(raw):
+            # A [UI] written mid-sentence rather than as a prefix still counts: the parser
+            # honours it, so re-reading must not treat it as an inference.
+            found[_UI_TAG_RE.sub("", raw, count=1).strip()] = UI_TAG
+    return found
+
+
+def explicit_ui_titles(content: str) -> Set[str]:
+    """Titles carrying a *literal* ``[UI]`` tag.
+
+    The narrow view of :func:`explicit_tags`, for callers that only care about UI. It went
+    through a phase of being the only explicit-tag record, which is why a hand-written
+    ``[CI/CD]`` was not protected from a re-tagging pass; that is what the wider function
+    is for.
+    """
+    return {title for title, tag in explicit_tags(content).items() if tag == UI_TAG}
 
 
 def _inferred_ui(title: str) -> bool:

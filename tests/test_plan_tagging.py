@@ -32,7 +32,7 @@ def _plan(tasks):
     return {"sections": [{"title": "Section", "tasks": tasks}]}
 
 
-def _task(task_id, title, is_ui=False, sub_steps=None):
+def _task(task_id, title, is_ui=False, sub_steps=None, tag=None):
     task = {
         "id": task_id,
         "title": title,
@@ -41,6 +41,10 @@ def _task(task_id, title, is_ui=False, sub_steps=None):
         "details": [],
         "files": [],
     }
+    # Only when a tag is claimed: a plan written before the vocabulary existed carries no
+    # ``tag`` key at all, which is a state worth testing as much as the tagged one.
+    if tag is not None:
+        task["tag"] = tag
     if sub_steps is not None:
         task["sub_steps"] = sub_steps
     return task
@@ -52,7 +56,7 @@ class RetagPlanTests(unittest.TestCase):
         with mock.patch.object(plan_tagging, "load_plan_state", return_value=plan), \
                 mock.patch.object(plan_tagging, "save_plan_state") as save:
             result = plan_tagging.retag_plan(
-                dry_run=dry_run, classify=classify, explicit=explicit if explicit is not None else set()
+                dry_run=dry_run, classify=classify, explicit=explicit if explicit is not None else {}
             )
         return result, save
 
@@ -83,15 +87,30 @@ class RetagPlanTests(unittest.TestCase):
 
     def test_an_explicit_tag_survives_an_engine_that_disagrees(self):
         # The engine says general; the author wrote [UI]. The author wins.
-        plan = _plan([_task("task-1", "retire the resize seam", is_ui=True)])
+        plan = _plan([_task("task-1", "retire the resize seam", is_ui=True, tag="UI")])
         result, save = self._retag(
             plan,
             _classifier({}),  # general for everything
-            explicit={"retire the resize seam"},
+            explicit={"retire the resize seam": "UI"},
         )
         self.assertTrue(plan["sections"][0]["tasks"][0]["is_ui"])
         self.assertEqual(result["kept_explicit"], 1)
         self.assertEqual(result["changed"], [])
+        save.assert_not_called()
+
+    def test_an_explicit_non_ui_tag_survives_too(self):
+        # The gap that made this wider guard necessary: an author's [CI/CD] used to be
+        # re-derived like an inference and deleted when the engine said something else.
+        plan = _plan([_task("task-1", "wire the pipeline", tag="CI/CD")])
+        result, save = self._retag(
+            plan,
+            _classifier({}),  # general for everything
+            explicit={"wire the pipeline": "CI/CD"},
+        )
+        task = plan["sections"][0]["tasks"][0]
+        self.assertEqual(task["tag"], "CI/CD")
+        self.assertFalse(task["is_ui"])
+        self.assertEqual(result["kept_explicit"], 1)
         save.assert_not_called()
 
     def test_an_inferred_false_positive_is_cleared(self):
@@ -101,6 +120,18 @@ class RetagPlanTests(unittest.TestCase):
         self.assertFalse(plan["sections"][0]["tasks"][0]["is_ui"])
         self.assertEqual(result["ui_before"], 1)
         self.assertEqual(result["ui_after"], 0)
+        save.assert_called_once()
+
+    def test_a_plan_without_tag_keys_gains_them(self):
+        # A plan written before the vocabulary existed has no ``tag`` on any task, so
+        # persisting one is a real change even when is_ui does not move -- and comparing
+        # only is_ui was exactly the bug that made every non-UI tag vanish unwritten.
+        plan = _plan([_task("task-1", "add a login endpoint")])
+        result, save = self._retag(plan, _classifier({"add a login endpoint": "API"}))
+        self.assertEqual(plan["sections"][0]["tasks"][0]["tag"], "API")
+        self.assertFalse(plan["sections"][0]["tasks"][0]["is_ui"])
+        self.assertEqual(len(result["changed"]), 1)
+        self.assertEqual(result["changed"][0]["tag"], "API")
         save.assert_called_once()
 
     def test_sub_steps_are_decided_separately_from_their_task(self):
