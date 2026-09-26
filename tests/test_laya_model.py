@@ -121,6 +121,7 @@ class GateTests(unittest.TestCase):
 
         self.assertEqual(verdict.intent, laya.INTENT_ADMIN)
         self.assertEqual(verdict.domain, laya.DOMAIN_DOCS)
+        self.assertEqual(verdict.tag, "DOCS")
         self.assertEqual(len(router.calls), 1)
 
 
@@ -145,8 +146,11 @@ class QuestionContractTests(unittest.TestCase):
             self.assertGreaterEqual(len(spec["criteria"]), 2)
 
     def test_the_criteria_key_the_domain_vocabulary(self):
+        # The coarse domains, not the twenty-five tags: see questions() for the measured
+        # reason the tag vocabulary makes a single-label choice ambiguous.
         criteria = self._call()["questions"]["domain"]["criteria"]
         self.assertIn("ui", criteria)
+        self.assertIn("general", criteria)
         self.assertTrue(all(text.strip() for text in criteria.values()))
 
     def test_the_state_carries_the_key_the_instructions_address(self):
@@ -180,6 +184,7 @@ class MappingTests(unittest.TestCase):
         verdict = self._verdict(_answers(intent="implementation", domain="api", confidence=0.91))
         self.assertEqual(verdict.intent, laya.INTENT_CODE)
         self.assertEqual(verdict.domain, laya.DOMAIN_API)
+        self.assertEqual(verdict.tag, "API")
         self.assertAlmostEqual(verdict.confidence, 0.91)
         self.assertIn("checkpoint", verdict.reasons[0])
 
@@ -191,20 +196,22 @@ class MappingTests(unittest.TestCase):
             self._verdict(_answers(domain="tests")).coder, laya.CODER_STANDARD
         )
 
-    def test_every_criteria_key_is_mapped_onto_a_distinct_domain(self):
-        criteria = laya_model.questions()
+    def test_every_criteria_key_is_mapped_onto_a_distinct_domain_and_tag(self):
+        criteria = laya_model.questions()["domain"]["criteria"]
         domains = {}
-        for label in criteria["domain"]["criteria"]:
+        for label in criteria:
             with self.subTest(label=label):
                 verdict = self._verdict(_answers(domain=label))
                 self.assertIn(f"domain={label!r}", verdict.reasons[0])
-                domains[label] = verdict.domain
+                domains[label] = (verdict.domain, verdict.tag)
 
         self.assertEqual(
             len(set(domains.values())),
             len(domains),
-            f"two labels share a domain: {domains}",
+            f"two labels share a domain or tag: {domains}",
         )
+        # The one domain with no tag of its own is the explicit "nothing fits" answer.
+        self.assertIsNone(dict(domains.values())[laya.DOMAIN_GENERAL])
 
     def test_every_intent_label_is_mapped(self):
         intents = {}
@@ -280,6 +287,7 @@ class FallbackTests(unittest.TestCase):
         resolver = laya_model.Resolver(True, lambda: router)
         verdict = resolver.classify("do the needful", {"tag": laya.UI_TAG})
 
+        self.assertEqual(verdict.tag, laya.UI_TAG)
         self.assertEqual(verdict.domain, laya.DOMAIN_UI)
         self.assertEqual(router.calls, [])
 

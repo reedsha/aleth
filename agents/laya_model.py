@@ -2,10 +2,20 @@
 
 ``agents/laya.py`` answers a directive with a hand-written word list: no model, no
 tokens, and a rule you can read. The Laya Router answers the *same* two questions --
-is this a request to change code or a request for analysis, and what part of the
-system does it concern -- with a calibrated probability instead, on a 421M-parameter
+is this a request to change code or a request for analysis, and which part of the system
+does it concern -- with a calibrated probability instead, on a 421M-parameter
 checkpoint. This module is the adapter between the two, so which engine is live is a
 deployment decision (one environment variable) rather than an edit to a call site.
+
+The second question is asked in a *coarse domain* vocabulary, and its answer is projected
+onto the plan's tag vocabulary (``agents.laya.tag_for_domain``). Asking the checkpoint for
+one of the twenty-five tags directly was measured and rejected. The tag set mixes domains
+(``FE``, ``DB``, ``API``) with work natures (``BUG``, ``HOTFIX``, ``REFACTOR``, ``SPIKE``),
+so a single-label choice over it is ambiguous, and the checkpoint falls to **5/10** on the
+hand-labelled set where the domain question scores **9/10** -- it answers ``hotfix`` for
+"fix the modal styling" and ``spike`` for "what does the plan parser do?". Rewording the
+instructions to prefer the area over the kind of change did not help (4/10).
+``tools.laya_bench`` reproduces both numbers; see :meth:`questions`.
 
 ``LAYA_BACKEND`` names the backend:
 
@@ -47,6 +57,7 @@ from agents.laya import (
     Verdict,
     classify as heuristic_classify,
     coder_for_domain,
+    tag_for_domain,
 )
 
 __all__ = [
@@ -109,6 +120,11 @@ def questions() -> Dict[str, Any]:
     engines cannot drift apart about what "analysis" or "ui" means. The criteria text
     is what the checkpoint reads, so rewording it changes accuracy even though the
     labels stay put.
+
+    The domain question deliberately offers seven coarse areas rather than the plan's
+    twenty-five tags. The tag set mixes domains with work natures, which makes a single
+    label ambiguous; offered the tags, the checkpoint answers ``hotfix`` for "fix the modal
+    styling" and scores 5/10 where this question scores 9/10 (``tools.laya_bench``).
     """
     return {
         "intent": {
@@ -228,6 +244,7 @@ class Backend:
                 f"laya checkpoint answered intent={intent_label!r}, domain={domain_label!r}",
                 f"calibrated answer confidence {confidence:.2f}",
             ),
+            tag=tag_for_domain(domain),
         )
 
 

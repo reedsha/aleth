@@ -85,6 +85,12 @@ _LABEL_BY_TAG: Dict[str, str] = {tag.upper(): label for tag, label, _ in ENTRIES
 
 UI_TAG: str = "FE"
 
+# The explicit "no tag" answer. A classifier must be able to say *nothing fits*: without
+# this option a choice over the vocabulary has to pick one, manufacturing a domain for work
+# that has none -- and a wrong tag is worse than an absent one, because the tree renders it
+# as a claim about the task.
+NOTHING: str = "none"
+
 # A leading tag is only a tag when it is bracketed at position zero and introduces the
 # title; anything later is prose that merely mentions the tag.
 _LEADING_TAG_RE = re.compile(r"^\[([^\[\]]+)\](?:[ \t]+(.*))?$")

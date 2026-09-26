@@ -31,28 +31,40 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-# (directive, expected intent, expected domain) -- hand-labelled, so accuracy means
-# something. The UI rows are the ones the four-word heuristic vocabulary drops.
+# (directive, expected intent, expected tag) -- hand-labelled, so accuracy means something.
+# Tags come from the project's own vocabulary (``tools/task_tags``): the UI rows are the
+# ones the four-word heuristic vocabulary drops, and the last row is a task with no
+# descriptive tag of its own.
 LABELLED: List[Tuple[str, str, str]] = [
-    ("make the sidebar collapse animation faster", "code", "ui"),
-    ("fix the modal styling", "code", "ui"),
-    ("add a button to the toolbar", "code", "ui"),
-    ("the preview pane shows a white screen", "code", "ui"),
-    ("tweak the header padding", "code", "ui"),
-    ("add a login endpoint", "code", "api"),
-    ("write tests for the weather API", "code", "tests"),
-    ("add a users table with a migration", "code", "db"),
-    ("refactor the whole orchestration layer", "code", "core"),
-    ("what does the plan parser actually do?", "admin", "core"),
+    ("make the sidebar collapse animation faster", "code", "FE"),
+    ("fix the modal styling", "code", "FE"),
+    ("add a button to the toolbar", "code", "FE"),
+    ("the preview pane shows a white screen", "code", "FE"),
+    ("tweak the header padding", "code", "FE"),
+    ("add a login endpoint", "code", "API"),
+    ("write tests for the weather API", "code", "TEST"),
+    ("add a users table with a migration", "code", "DB"),
+    ("refactor the whole orchestration layer", "code", "BE"),
+    ("what does the plan parser actually do?", "admin", "BE"),
 ]
 
-CLASSIFIER_PROMPT = (
-    "You are a fast intent router for a coding agent. Output ONLY compact JSON:\n"
-    '{"intent":"admin"|"code","domain":"ui"|"api"|"db"|"tests"|"docs"|"core"|"general",'
-    '"confidence":0.0-1.0}\n'
-    "admin = a question or analysis answered WITHOUT writing code. "
-    "code = needs files written or changed."
-)
+
+def classifier_prompt() -> str:
+    """The llm baseline's prompt, offering the same vocabulary the checkpoint is offered.
+
+    Built from ``tools.task_tags`` so the two columns are answering the same question --
+    otherwise the comparison measures the prompt, not the engine.
+    """
+    from tools.task_tags import NOTHING, ORDER
+
+    keys = ", ".join(f'"{tag.lower()}"' for tag in ORDER) + f', "{NOTHING}"'
+    return (
+        "You are a fast intent router for a coding agent. Output ONLY compact JSON:\n"
+        '{"intent":"admin"|"code","tag":' + keys + ",\"confidence\":0.0-1.0}\n"
+        "admin = a question or analysis answered WITHOUT writing code. "
+        "code = needs files written or changed. "
+        f'Use "{NOTHING}" when no tag fits.'
+    )
 
 
 def plan_corpus() -> List[str]:
@@ -119,7 +131,7 @@ class LlmEngine:
             "max_tokens": 120,
             "response_format": {"type": "json_object"},
             "messages": [
-                {"role": "system", "content": CLASSIFIER_PROMPT},
+                {"role": "system", "content": classifier_prompt()},
                 {"role": "user", "content": text},
             ],
         }
@@ -146,7 +158,7 @@ class LlmEngine:
             return None
         return (
             str(payload.get("intent", "")).lower(),
-            str(payload.get("domain", "")).lower(),
+            str(payload.get("tag", "")).lower(),
         )
 
     @property
@@ -176,7 +188,7 @@ def accuracy_report(llm: Optional[LlmEngine]) -> None:
 
     def via_checkpoint(text: str) -> Optional[Tuple[str, str]]:
         verdict = checkpoint.classify(text)
-        return None if verdict is None else (verdict.intent, verdict.domain.lower())
+        return None if verdict is None else (verdict.intent, (verdict.tag or "").lower())
 
     engines.append(("checkpoint", via_checkpoint))
     if llm is not None:
@@ -186,22 +198,22 @@ def accuracy_report(llm: Optional[LlmEngine]) -> None:
     print("ACCURACY -- hand-labelled set")
     print(_row("directive") + "".join(name.ljust(26) for name, _ in engines))
     hits = {name: 0 for name, _ in engines}
-    for text, want_intent, want_domain in LABELLED:
+    for text, want_intent, want_tag in LABELLED:
         cells = []
         for name, fn in engines:
             got = fn(text)
             if got is None:
                 cells.append("off-contract".ljust(26))
                 continue
-            intent, domain = got
-            mark = "OK" if domain == want_domain else "MISS"
-            hits[name] += domain == want_domain
-            cells.append(f"{intent}/{domain} {mark}".ljust(26))
+            intent, tag = got
+            mark = "OK" if tag == want_tag.lower() else "MISS"
+            hits[name] += tag == want_tag.lower()
+            cells.append(f"{intent}/{tag or 'none'} {mark}".ljust(26))
         print(_row(text) + "".join(cells))
     print()
     total = len(LABELLED)
     for name, _ in engines:
-        print(f"  {name:11} domain accuracy: {hits[name]}/{total}")
+        print(f"  {name:11} tag accuracy: {hits[name]}/{total}")
     if llm is not None:
         print(
             f"  (llm reference: {llm.tokens} tokens over {llm.calls} calls)"
@@ -215,6 +227,7 @@ def corpus_report(llm: Optional[LlmEngine], sample: int) -> None:
     checkpoint = _checkpoint_engine(verbose=False)
 
     disagreements: List[Tuple[str, str, str]] = []
+    distribution: Dict[str, int] = {}
     heuristic_ui = checkpoint_ui = 0
     checkpoint_ms = 0.0
     for title in titles:
@@ -224,22 +237,26 @@ def corpus_report(llm: Optional[LlmEngine], sample: int) -> None:
         checkpoint_ms += (time.time() - started) * 1000
         if verdict is None:
             continue
-        h_domain = h.domain.lower()
-        c_domain = verdict.domain.lower()
-        heuristic_ui += h_domain == "ui"
-        checkpoint_ui += c_domain == "ui"
-        if h_domain != c_domain:
-            disagreements.append((title, h_domain, c_domain))
+        h_tag = (h.tag or "").lower()
+        c_tag = (verdict.tag or "").lower()
+        heuristic_ui += h_tag == "fe"
+        checkpoint_ui += c_tag == "fe"
+        distribution[c_tag or "none"] = distribution.get(c_tag or "none", 0) + 1
+        if h_tag != c_tag:
+            disagreements.append((title, h_tag, c_tag))
 
     print()
     print(f"CORPUS -- this plan's own {len(titles)} task and sub-step titles")
     print(
-        f"  tagged [UI] by the heuristic: {heuristic_ui}    "
+        f"  tagged [FE] by the heuristic: {heuristic_ui}    "
         f"by the checkpoint: {checkpoint_ui}"
     )
-    print(f"  domain disagreements: {len(disagreements)}")
-    for title, h_domain, c_domain in disagreements:
-        print(f"    {_row(title)} heuristic={h_domain:8} checkpoint={c_domain}")
+    print("  tags the checkpoint chose: " + ", ".join(
+        f"{tag}={count}" for tag, count in sorted(distribution.items(), key=lambda kv: -kv[1])
+    ))
+    print(f"  tag disagreements: {len(disagreements)}")
+    for title, h_tag, c_tag in disagreements:
+        print(f"    {_row(title)} heuristic={h_tag or 'none':8} checkpoint={c_tag or 'none'}")
     if titles:
         print(f"  checkpoint cost: {checkpoint_ms / len(titles):.0f} ms/title, 0 tokens")
 
@@ -262,7 +279,7 @@ def corpus_report(llm: Optional[LlmEngine], sample: int) -> None:
 
 
 def _verdict_pair(verdict: Any) -> Tuple[str, str]:
-    return verdict.intent, verdict.domain.lower()
+    return verdict.intent, (verdict.tag or "").lower()
 
 
 def main(argv: Optional[List[str]] = None) -> int:

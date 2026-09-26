@@ -34,21 +34,10 @@ from tools.plan_parser import explicit_tags
 from tools.plan_state import load_plan_state, save_plan_state
 from tools.task_tags import UI_TAG
 
-DOMAIN_UI = "UI"
-
-# The engine answers with a coarse domain, and only these map onto the plan's tag
-# vocabulary without stretching it: the checkpoint scores 9/10 over seven classes, where
-# asking a 421M model to choose among the vocabulary's twenty-five tags would not hold
-# up. "general" deliberately maps to nothing -- untagged is a real answer, and a wrong
-# tag is worse than an absent one, because the tree would render it as a claim.
-_TAG_BY_DOMAIN = {
-    "UI": "FE",
-    "API": "API",
-    "DB": "DB",
-    "TESTS": "TEST",
-    "DOCS": "DOCS",
-    "CORE": "BE",
-}
+# The engine answers with a coarse domain; this is the table that projects it onto a tag
+# for engines that cannot name one. It lives in ``agents.laya`` -- imported at call time,
+# because ``orchestration/__init__`` imports this module and ``agents.laya`` imports
+# ``orchestration.workflow.templates``, so a module-level import here would close a cycle.
 
 
 def _entries(task: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -95,6 +84,7 @@ def retag_plan(
     show the pass's work without re-reading the plan.
     """
     from agents import laya_model
+    from agents.laya import tag_for_domain
 
     engine = classify or laya_model.classify
     if explicit is None:
@@ -130,9 +120,12 @@ def retag_plan(
             entry["tag"] = tag
         else:
             verdict = engine(title)
-            domain = str(getattr(verdict, "domain", "")).upper()
-            now = domain == DOMAIN_UI
-            tag = _TAG_BY_DOMAIN.get(domain)
+            # The engine's precise answer is its tag; a coarse domain is projected onto a
+            # tag for an engine that can only speak domains.
+            tag = getattr(verdict, "tag", None) or tag_for_domain(
+                getattr(verdict, "domain", None)
+            )
+            now = tag == UI_TAG
             if tag:
                 entry["tag"] = tag
             else:

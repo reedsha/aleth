@@ -45,8 +45,10 @@ __all__ = [
     "Verdict",
     "classify",
     "coder_for_domain",
+    "domain_for_tag",
     "inferred_ui",
     "route_coder",
+    "tag_for_domain",
 ]
 
 
@@ -111,6 +113,39 @@ DOMAIN_DB = "DB"
 DOMAIN_API = "API"
 DOMAIN_CORE = "CORE"
 DOMAIN_GENERAL = "GENERAL"
+
+
+# The bridge between the coarse domain this engine answers in and the project's tag
+# vocabulary (``tools/task_tags``). A keyword rule can honestly claim no more than a broad
+# domain, so the heuristic resolves a domain and projects it onto a tag; the checkpoint
+# answers in tags directly. Several tags share a domain, so the projection is lossy by
+# construction and the tag is always the more precise answer.
+_TAG_BY_DOMAIN = {
+    DOMAIN_UI: "FE",
+    DOMAIN_API: "API",
+    DOMAIN_DB: "DB",
+    DOMAIN_TESTS: "TEST",
+    DOMAIN_DOCS: "DOCS",
+    DOMAIN_CORE: "BE",
+}
+
+_DOMAIN_BY_TAG = {tag: domain for domain, tag in _TAG_BY_DOMAIN.items()}
+
+
+def tag_for_domain(domain: Optional[str]) -> Optional[str]:
+    """The tag a coarse domain names, or ``None`` for a domain with no tag of its own."""
+    return _TAG_BY_DOMAIN.get(domain or "")
+
+
+def domain_for_tag(tag: Optional[str]) -> str:
+    """The coarse domain a tag belongs to. A tag it does not know is core/backend work.
+
+    This is the projection the callers that route on a *domain* rather than a tag still
+    need; the tag itself is the precise answer.
+    """
+    if not tag:
+        return DOMAIN_GENERAL
+    return _DOMAIN_BY_TAG.get(tag.upper(), DOMAIN_CORE)
 
 
 # --- Evidence vocabularies ---------------------------------------------------
@@ -280,6 +315,10 @@ class Verdict:
     coder: str
     confidence: float
     reasons: Tuple[str, ...] = ()
+    # The precise answer, when the engine can name one: a tag from ``tools/task_tags``.
+    # ``domain`` is the coarse projection of it, kept for the callers that route on a
+    # domain. ``None`` means no tag fits -- a real answer, not a failure.
+    tag: Optional[str] = None
 
 
 # Domains whose work is boilerplate rather than reasoning. These are the only two a
@@ -399,4 +438,5 @@ def classify(text: str, context: Optional[Mapping[str, Any]] = None) -> Verdict:
         coder=route_coder(raw, tag=tag),
         confidence=confidence,
         reasons=tuple(reasons),
+        tag=tag_for_domain(domain),
     )
