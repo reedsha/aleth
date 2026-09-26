@@ -1,7 +1,10 @@
 import sys
-from dotenv import load_dotenv
 
-load_dotenv()
+from env_boot import load_environment
+
+# ``.env`` wins over the process environment; see env_boot.load_environment.
+for _shadowed in load_environment():
+    print(f"[Config] .env overrides the exported {_shadowed}")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--cli":

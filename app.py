@@ -2,11 +2,14 @@ import os
 import sys
 import json
 import threading
-from dotenv import load_dotenv
 import webview
 
-# Load environment configuration
-load_dotenv()
+from env_boot import load_environment
+
+# Load environment configuration. ``.env`` deliberately wins over the process
+# environment; an exported name that shadowed it is reported rather than silently used.
+for _shadowed in load_environment():
+    print(f"[Config] .env overrides the exported {_shadowed}")
 
 from registry import registry
 from tools.file_tools import (
