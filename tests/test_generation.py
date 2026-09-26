@@ -42,6 +42,49 @@ PLAN = {
 }
 
 
+class TaskTargetPathTests(unittest.TestCase):
+    def test_a_backticked_path_in_the_title_is_the_target(self):
+        task = {"title": "Upgrade AST parser (`tools/plan_parser.py`) for schema extraction"}
+        self.assertEqual(generation.task_target_path(task), "tools/plan_parser.py")
+
+    def test_the_title_beats_a_recorded_deliverable(self):
+        # `files` is also what the workflow records after a run, so a task executed by the
+        # old template path carries main.py. The author's title is the intent.
+        task = {
+            "title": "Update Architect directives in `agents/architect.py`",
+            "files": ["main.py", "test_main.py"],
+        }
+        self.assertEqual(generation.task_target_path(task), "agents/architect.py")
+
+    def test_a_path_in_the_notes_is_used_when_the_title_has_none(self):
+        task = {"title": "Harden the session handling", "details": ["Touch `api/session.py`"]}
+        self.assertEqual(generation.task_target_path(task), "api/session.py")
+
+    def test_prose_without_a_backticked_file_is_not_a_target(self):
+        # `templates` and `runner.resolve_intent` are backticked identifiers, not paths.
+        task = {"title": "Reuse the `templates` UI keyword vocabulary"}
+        self.assertIsNone(generation.task_target_path(task))
+        self.assertIsNone(generation.task_target_path({"title": "Route through `laya.classify`"}))
+
+    def test_a_declared_deliverable_is_the_last_resort(self):
+        self.assertEqual(
+            generation.task_target_path({"title": "Unnamed work", "files": ["pkg/mod.py"]}),
+            "pkg/mod.py",
+        )
+
+    def test_a_task_that_names_nothing_has_no_target(self):
+        self.assertIsNone(generation.task_target_path({"title": "Project scaffolding"}))
+
+    def test_a_windows_separator_is_normalised(self):
+        task = {"title": "Fix `tools\\plan_parser.py`"}
+        self.assertEqual(generation.task_target_path(task), "tools/plan_parser.py")
+
+    def test_the_paired_test_sits_beside_the_deliverable(self):
+        self.assertEqual(generation.paired_test_path("tools/plan_parser.py"), "tools/test_plan_parser.py")
+        self.assertEqual(generation.paired_test_path("main.py"), "test_main.py")
+        self.assertEqual(generation.paired_test_path("ui/view.html"), "ui/test_view.py")
+
+
 class BuildInstructionTests(unittest.TestCase):
     def test_it_names_the_target_file_and_language(self):
         text = generation.build_instruction("ctx", "widget.py", "Build the widget")

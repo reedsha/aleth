@@ -361,8 +361,12 @@ def next_step_action(
     # provider is configured. With no provider, or a failed call, this is byte-identical
     # to the canned code the branch wrote before the call existed.
     deliverable = templates.select(target_task.get("title", ""), target_task.get("tag"))
-    out_filename = deliverable.filename
-    out_test = deliverable.test_filename
+    # Where the task says its file belongs beats where the template would drop it. Without
+    # this a task about `tools/plan_parser.py` is "completed" by writing main.py, which
+    # makes every completed mark in the plan untrustworthy.
+    target = generation.task_target_path(target_task)
+    out_filename = target or deliverable.filename
+    out_test = generation.paired_test_path(out_filename) if target else deliverable.test_filename
     out_test_code = deliverable.test_code
     generated = generation.generate_deliverable(
         coder_id=target_coder_id,
@@ -370,6 +374,7 @@ def next_step_action(
         plan=plan_state,
         deliverable=deliverable,
         plan_file=plan_file,
+        filename=out_filename,
         # A real call can take seconds; narrate it so the wait does not read as a hang.
         # The offline path never fires this, so its event stream is unchanged.
         on_request=lambda model, prompt_chars: ctx.stream_text(

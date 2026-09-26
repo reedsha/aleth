@@ -18,12 +18,53 @@ the workflow proceeds exactly as it did before. That keeps a keyless checkout wo
 and keeps the pinned event streams meaningful.
 """
 
+import posixpath
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
 from agents.model_routing import coder_model
 from orchestration.workflow.context import slice_task_context
+
+# A deliverable is written where the *task* says it belongs, not where a template happens
+# to put it. Tasks name their file in backticks -- "Upgrade AST parser
+# (`tools/plan_parser.py`)" -- which is precise, in the author's own words, and free to
+# read. Requiring the backticks keeps prose like "the ``runner.resolve_intent`` tag" from
+# being mistaken for a path.
+_TARGET_PATH_RE = re.compile(
+    r"`([\w][\w./\\-]*\.(?:py|pyi|js|mjs|cjs|jsx|ts|tsx|css|scss|html|htm|json|sql|sh"
+    r"|yml|yaml|toml|go|rs|rb|java|kt|swift|vue|svelte))`"
+)
+
+
+def task_target_path(task: Mapping[str, Any]) -> Optional[str]:
+    """The workspace-relative file a task's deliverable belongs in, or ``None``.
+
+    Consulted in order of how deliberate the statement is: the backticked path in the
+    title, then one in the task's notes, then a declared deliverable. The title wins
+    because ``files`` is also what the workflow *records* once a task has run -- so a task
+    executed before carries the path that run wrote, wrong or not. The author's title is
+    the intent; the record is a consequence.
+
+    ``None`` means the task does not name a file, and the caller should keep whatever the
+    template chose.
+    """
+    notes = [str(d) for d in (task.get("details") or [])]
+    for text in [str(task.get("title") or "")] + notes:
+        match = _TARGET_PATH_RE.search(text)
+        if match:
+            return match.group(1).replace("\\", "/").strip("/")
+
+    declared = [str(f).strip().replace("\\", "/") for f in (task.get("files") or []) if str(f).strip()]
+    return declared[0] if declared else None
+
+
+def paired_test_path(path: str) -> str:
+    """The test file that belongs beside a deliverable: ``a/b.py`` -> ``a/test_b.py``."""
+    directory, base = posixpath.split(path)
+    stem = base.rsplit(".", 1)[0] or base
+    name = f"test_{stem}.py"
+    return f"{directory}/{name}" if directory else name
 
 # A model asked for a file often wraps it in a fence. Strip a single surrounding
 # ```lang ... ``` pair so what lands on disk is the file itself.
@@ -140,14 +181,17 @@ def generate_deliverable(
     plan: Mapping[str, Any],
     deliverable: Any,
     plan_file: str,
+    filename: Optional[str] = None,
     completer: Optional[Callable[..., Any]] = None,
     on_request: Optional[Callable[[str, int], None]] = None,
 ) -> GeneratedFile:
     """A deliverable's contents, from System 2 when available, else from the template.
 
-    ``deliverable`` is the ``templates`` NamedTuple supplying the filenames and the
-    paired test; ``completer`` defaults to :func:`orchestration.system2.complete` and is
-    injectable so the live path is testable without a network.
+    ``deliverable`` is the ``templates`` NamedTuple supplying the paired test and the
+    fallback source; ``filename`` is where the deliverable is actually being written
+    (``task_target_path``), which can differ from the template's own name. ``completer``
+    defaults to :func:`orchestration.system2.complete` and is injectable so the live path
+    is testable without a network.
 
     ``on_request`` is called as ``(model, prompt_chars)`` immediately before the request,
     and only when a request is actually made -- the caller uses it to narrate a wait that
@@ -155,6 +199,7 @@ def generate_deliverable(
     """
     from orchestration import system2
 
+    target = filename or deliverable.filename
     fallback = GeneratedFile(code=deliverable.code)
     if not system2.is_enabled():
         return fallback
@@ -165,7 +210,7 @@ def generate_deliverable(
     task_title = str(task.get("title") or "")
     task_key = str(task.get("id") or task_title)
     context_text = slice_task_context(plan, task_key)
-    instruction = build_instruction(context_text, deliverable.filename, task_title)
+    instruction = build_instruction(context_text, target, task_title)
     model = coder_model(coder_id)
 
     if on_request is not None:
