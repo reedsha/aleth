@@ -36,6 +36,7 @@ from tools.file_tools import (
     read_preview_source,
     read_environment_variables
 )
+from tools.settings import read_settings, save_settings as write_settings
 
 class BridgeAPI:
     """
@@ -446,6 +447,32 @@ class BridgeAPI:
         except Exception as e:
             return {"success": False, "found": False, "filename": "",
                     "variables": [], "error": str(e)}
+
+    def get_settings(self):
+        """The settings panel's payload: the editable names, with the key masked.
+
+        The endpoint and the three model routes are returned as text because they are not
+        secrets. ``OPENAI_API_KEY`` is returned as a set flag and a length only -- the
+        value is never put in a payload the webview can read.
+        """
+        try:
+            return read_settings()
+        except Exception as e:
+            return {"success": False, "found": False, "filename": ".env",
+                    "fields": [], "error": str(e)}
+
+    def save_settings(self, values: dict):
+        """Persists the panel's values to ``.env`` and this process, then reports the state.
+
+        Takes effect without a restart: the route and endpoint readers consult the
+        environment on every call. Names outside the allowlist are reported as ignored
+        rather than written.
+        """
+        try:
+            return write_settings(values or {})
+        except Exception as e:
+            return {"success": False, "found": False, "filename": ".env", "fields": [],
+                    "saved": [], "ignored": [], "error": str(e)}
 
     def stop_execution(self):
         """Signals active workflow to stop and emit completion."""

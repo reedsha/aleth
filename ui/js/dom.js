@@ -213,6 +213,15 @@ function initDOMElements() {
   DOM.systemStatusDot = document.getElementById("systemStatusDot");
   DOM.systemStatusLabel = document.getElementById("systemStatusLabel");
   DOM.toastContainer = document.getElementById("toastContainer");
+
+  // Settings modal (provider endpoint and model routes)
+  DOM.btnOpenSettings = document.getElementById("btnOpenSettings");
+  DOM.settingsModalOverlay = document.getElementById("settingsModalOverlay");
+  DOM.btnCloseSettingsModal = document.getElementById("btnCloseSettingsModal");
+  DOM.btnCancelSettings = document.getElementById("btnCancelSettings");
+  DOM.btnSaveSettings = document.getElementById("btnSaveSettings");
+  DOM.settingsFields = document.getElementById("settingsFields");
+  DOM.settingsStatus = document.getElementById("settingsStatus");
 }
 
 function escapeHtml(str) {

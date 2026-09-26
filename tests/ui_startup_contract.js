@@ -20,7 +20,7 @@ const MODULES = [
   "state.js", "dom.js", "bootstrap.js", "plan-tree.js", "actions.js",
   "plan-modals.js", "agents.js", "workspace.js", "agent-events.js",
   "visuals.js", "dock.js", "workbench.js", "code-surface.js", "console.js",
-  "diff-pane.js", "preview.js", "sidebar.js", "env.js", "wire.js",
+  "diff-pane.js", "preview.js", "sidebar.js", "env.js", "settings.js", "wire.js",
 ];
 
 // Mirrors tools/build_ui_bundle.py. A stylesheet that fails to load only costs
@@ -30,7 +30,7 @@ const STYLESHEETS = [
   "base.css", "sidebar.css", "stage.css", "actions.css", "plan-tree.css",
   "modals.css", "tiered-prompt-editor.css", "ui-vision.css", "audit-modal.css",
   "rollback-modal.css", "dock.css", "workbench.css", "code-surface.css",
-  "console.css", "diff-pane.css", "preview.css", "sidebar-panels.css",
+  "console.css", "diff-pane.css", "preview.css", "sidebar-panels.css", "settings.css",
 ];
 
 function makeElement(id, ctxFactory) {

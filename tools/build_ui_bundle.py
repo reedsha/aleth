@@ -56,6 +56,7 @@ JS_MODULES = [
     "preview.js",
     "sidebar.js",
     "env.js",
+    "settings.js",
     "wire.js",
 ]
 
@@ -79,6 +80,7 @@ CSS_MODULES = [
     "diff-pane.css",
     "preview.css",
     "sidebar-panels.css",
+    "settings.css",
 ]
 
 JS_BEGIN = "  <!-- BEGIN UI BUNDLE - generated from ui/js/*.js by tools/build_ui_bundle.py -->"

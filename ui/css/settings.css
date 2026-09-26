@@ -1,0 +1,128 @@
+/* Settings modal (provider endpoint and model routes) and the sidebar button that opens it.
+
+   Uses the design tokens from base.css, and the app's inline success green (#34d399) for
+   the saved state, since the palette has no green token of its own. */
+
+/* The small gear in the ENVIRONMENT section header. Deliberately not an action button:
+   the dock's six `.action-btn` elements are a pinned contract of the UI harness. */
+.section-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-left: auto;
+  margin-right: 6px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.section-icon-btn:hover {
+  color: var(--accent-blue-hover);
+  border-color: var(--accent-blue-hover);
+}
+
+.settings-modal {
+  width: min(560px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+  animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.settings-modal .modal-body {
+  overflow-y: auto;
+}
+
+.settings-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.settings-input {
+  width: 100%;
+}
+
+.settings-help {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.settings-effective {
+  color: var(--accent-blue-hover);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.settings-status {
+  min-height: 16px;
+  margin-top: 12px;
+  font-size: 12px;
+}
+
+.settings-status.success {
+  color: #34d399;
+}
+
+.settings-status.error {
+  color: var(--accent-stop);
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-btn {
+  padding: 7px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-main);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.settings-btn:hover {
+  border-color: var(--accent-blue-hover);
+}
+
+.settings-btn-primary {
+  background: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+  color: var(--bg-primary);
+  font-weight: 600;
+}
+
+.settings-btn-primary:hover {
+  background: var(--accent-blue-hover);
+  border-color: var(--accent-blue-hover);
+}
