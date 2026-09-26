@@ -72,6 +72,7 @@ __all__ = [
     "questions",
     "reset",
     "warm_up",
+    "warm_up_async",
 ]
 
 
@@ -381,6 +382,21 @@ def warm_up() -> None:
     something calls it, the first gatekeeper decision pays for the load.
     """
     _resolver().backend()
+
+
+def warm_up_async() -> threading.Thread:
+    """Starts :func:`warm_up` on a background thread and returns it.
+
+    Called once by the launcher, so the ~0.8 GB load overlaps the window opening instead
+    of being paid on the user's first click. A daemon thread on purpose: the load must
+    never hold the process open, and a machine without the checkpoint simply reports once
+    and leaves the word list in place.
+
+    The thread is returned rather than discarded so a caller -- a test, say -- can join it.
+    """
+    thread = threading.Thread(target=warm_up, name="laya-warm-up", daemon=True)
+    thread.start()
+    return thread
 
 
 def active_engine() -> str:

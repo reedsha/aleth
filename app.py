@@ -503,6 +503,12 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     debug = "--debug" in argv
 
+    # Load the Laya checkpoint in the background, so its one-off read overlaps the window
+    # opening instead of being paid on the user's first click. A no-op unless LAYA_BACKEND
+    # selects the checkpoint, and it never holds the process open.
+    from agents import laya_model
+    laya_model.warm_up_async()
+
     api = BridgeAPI()
     
     ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "index.html")

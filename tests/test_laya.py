@@ -117,6 +117,59 @@ class DomainTaggingTests(unittest.TestCase):
                 self.assertEqual(laya.classify(text).domain, expected, text)
 
 
+class PlanDriftTests(unittest.TestCase):
+    """The pre-flight that decides whether a reconciliation is worth running."""
+
+    @staticmethod
+    def _plan(status, files):
+        return {"steps": [{"id": "task-1", "title": "T", "status": status, "files": files}]}
+
+    def test_a_plan_whose_files_all_exist_is_unlikely_to_have_drifted(self):
+        report = laya.plan_drift(self._plan("completed", ["main.py"]), ["main.py"])
+        self.assertLess(report.probability, laya.DRIFT_THRESHOLD)
+        self.assertEqual(report.completed_missing, 0)
+        self.assertIn("matches", report.reasons[0])
+
+    def test_a_completed_task_missing_its_deliverable_is_strong_evidence(self):
+        report = laya.plan_drift(self._plan("completed", ["gone.py"]), [])
+        self.assertGreaterEqual(report.probability, laya.DRIFT_THRESHOLD)
+        self.assertEqual(report.completed_missing, 1)
+        self.assertIn("gone.py", report.reasons[0])
+
+    def test_a_pending_task_whose_file_exists_is_weaker_evidence(self):
+        report = laya.plan_drift(self._plan("pending", ["main.py"]), ["main.py"])
+        self.assertEqual(report.pending_existing, 1)
+        self.assertGreater(report.probability, 0.0)
+        self.assertLess(report.probability, laya.DRIFT_THRESHOLD)
+
+    def test_files_no_task_claims_are_counted_but_weighed_lightly(self):
+        report = laya.plan_drift(self._plan("completed", ["main.py"]), ["main.py", "stray.py"])
+        self.assertEqual(report.untracked, 1)
+        self.assertLess(report.probability, laya.DRIFT_THRESHOLD)
+
+    def test_the_probability_is_capped_at_one(self):
+        plan = {"steps": [
+            {"id": f"task-{i}", "title": "T", "status": "completed", "files": [f"gone{i}.py"]}
+            for i in range(6)
+        ]}
+        report = laya.plan_drift(plan, [f"stray{i}.py" for i in range(10)])
+        self.assertEqual(report.probability, 1.0)
+
+    def test_it_reads_the_nested_shape_too(self):
+        plan = {"sections": [{"title": "S", "tasks": [
+            {"id": "task-1", "title": "T", "status": "completed", "files": ["gone.py"]}
+        ]}]}
+        self.assertEqual(laya.plan_drift(plan, []).completed_missing, 1)
+
+    def test_a_plan_with_no_declared_files_is_not_treated_as_drifted(self):
+        report = laya.plan_drift(self._plan("pending", []), [])
+        self.assertEqual(report.probability, 0.0)
+
+    def test_backslashes_are_normalised(self):
+        report = laya.plan_drift(self._plan("completed", ["tools\\x.py"]), ["tools/x.py"])
+        self.assertEqual(report.completed_missing, 0)
+
+
 class UiInferenceTests(unittest.TestCase):
     """Laya's UI inference must agree with the selector it shares a vocabulary with."""
 

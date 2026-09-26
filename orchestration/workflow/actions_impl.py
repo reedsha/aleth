@@ -108,9 +108,14 @@ def fix_bug_action(
         f"Found code files: {', '.join(py_files) if py_files else 'None'}"
     ))
 
-    target_file = py_files[0] if py_files else "main.py"
-    test_file = [f for f in py_files if "test" in f]
-    test_file = test_file[0] if test_file else "test_main.py"
+    # The bug report usually names the file it is about; failing that, the first code file
+    # in the workspace, which is the diagnosis-by-inspection this replaced.
+    reported_target = generation.path_in_text(clean_bug)
+    target_file = reported_target or (py_files[0] if py_files else "main.py")
+    test_file = generation.paired_test_path(target_file) if reported_target else ""
+    if not test_file:
+        test_file = [f for f in py_files if "test" in f]
+        test_file = test_file[0] if test_file else "test_main.py"
 
     # Read target file
     ctx.emit_fn(tool_call(
@@ -169,7 +174,9 @@ def fix_bug_action(
     backup_file_for_task("bugfix", target_file)
     time.sleep(0.2)
 
-    # Surgical patch
+    # Surgical patch. Written by System 2 when it is available -- it is the only thing here
+    # that can reason about the reported cause -- and by the local patch below when it is
+    # not, so the offline behaviour is unchanged.
     patched_code = curr_code
     if "def run" in patched_code:
         patched_code = patched_code.replace(
@@ -179,12 +186,31 @@ def fix_bug_action(
     else:
         patched_code = f"# Bugfix Applied: {clean_bug[:60]}\n" + patched_code
 
+    generated = generation.generate_code(
+        coder_id=target_coder_id,
+        filename=target_file,
+        context_text=(
+            f"Bug report:\n{clean_bug}\n\n"
+            f"Current contents of `{target_file}`:\n{curr_code}"
+        ),
+        task_title=f"Fix bug in {target_file}",
+        plan_file=ctx.plan_file,
+        fallback_code=patched_code,
+        on_request=lambda model, prompt_chars: ctx.stream_text(
+            target_coder_id,
+            f"> System 2 request: {model} is patching `{target_file}` "
+            f"from the report and the current file ({prompt_chars:,} prompt chars)...",
+            log_type="decision",
+            delay=0.02,
+        ),
+    )
+
     ctx.emit_fn(tool_call(
         target_coder_id, "write_file", {"filename": target_file},
         f"Applying surgical bug patch to {target_file}"
     ))
     time.sleep(0.3)
-    write_file.invoke({"filename": target_file, "content": patched_code})
+    write_file.invoke({"filename": target_file, "content": generated.code})
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Successfully patched {target_file}"
@@ -613,10 +639,27 @@ def custom_action(
     time.sleep(0.3)
 
     deliverable = templates.custom_engine(user_message)
-    filename = deliverable.filename
-    test_filename = deliverable.test_filename
-    code_content = deliverable.code
+    # The directive may name the file; otherwise the template's name stands, as before.
+    target = generation.path_in_text(user_message)
+    filename = target or deliverable.filename
+    test_filename = generation.paired_test_path(filename) if target else deliverable.test_filename
     test_content = deliverable.test_code
+    generated = generation.generate_code(
+        coder_id=target_coder_id,
+        filename=filename,
+        context_text=user_message,
+        task_title=user_message,
+        plan_file=ctx.plan_file,
+        fallback_code=deliverable.code,
+        on_request=lambda model, prompt_chars: ctx.stream_text(
+            target_coder_id,
+            f"> System 2 request: {model} is writing `{filename}` "
+            f"from the directive ({prompt_chars:,} prompt chars)...",
+            log_type="decision",
+            delay=0.02,
+        ),
+    )
+    code_content = generated.code
     backup_file_for_task("custom", filename)
     ctx.stream_text(target_coder_id, f"> Writing custom code solution to `{filename}`...", delay=0.02)
     write_file.invoke({"filename": filename, "content": code_content})

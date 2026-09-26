@@ -11,11 +11,13 @@ from typing import Any, Dict
 
 from orchestration.workflow.context import WorkflowContext
 from orchestration.workflow.events import tool_call, tool_result
+from agents import laya as laya_gate
 from agents.laya import inferred_ui
 from tools.file_tools import (
     audit_codebase_plan_sync,
     compile_plan_json_to_markdown,
     list_workspace_files,
+    load_plan_state,
     save_plan_state,
 )
 from tools.shell_tools import execute_restricted_command
@@ -156,10 +158,27 @@ def analyze_action(ctx: WorkflowContext) -> None:
         "Comparing workspace modules against plan.json deliverables"
     ))
     time.sleep(0.3)
-    audit_res = audit_codebase_plan_sync()
+    # Pre-flight: System 1 estimates how far the plan and the code have drifted from the
+    # paths just listed, so the reconciliation is only paid for when it is likely to have
+    # something to say. The tool_call/tool_result pair is emitted either way -- only the
+    # verdict differs -- so the console reads the same shape and no event is gained or lost.
+    drift = laya_gate.plan_drift(load_plan_state(), file_names)
+    if drift.probability >= laya_gate.DRIFT_THRESHOLD:
+        audit_res = audit_codebase_plan_sync()
+        audit_detail = audit_res["summary"]
+    else:
+        # The report the rest of this action reads. It carries the pre-flight verdict rather
+        # than a reconciliation that was deliberately not run, so every later mention of the
+        # sync status stays truthful instead of quoting a scan that never happened.
+        audit_detail = (
+            f"Pre-flight: plan drift unlikely ({drift.probability:.0%}). "
+            f"{drift.reasons[0][:1].upper()}{drift.reasons[0][1:]}; "
+            f"full reconciliation not needed."
+        )
+        audit_res = {"summary": audit_detail, "in_sync": True}
     ctx.emit_fn(tool_result(
         "software-architect", "audit_codebase_plan_sync",
-        audit_res["summary"]
+        audit_detail
     ))
     time.sleep(0.2)
 

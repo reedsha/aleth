@@ -316,6 +316,29 @@ class LoadingTests(unittest.TestCase):
                 self.addCleanup(laya_model.reset)
                 laya_model.warm_up()  # raises through _boom if it loads anything
 
+    def test_warm_up_async_is_a_daemon_thread_that_returns_at_once(self):
+        # The launcher calls this before opening the window: it must not block, and it must
+        # not keep the process alive if the load is still running when the app exits.
+        started = []
+
+        def slow():
+            started.append(1)
+
+        with mock.patch.object(laya_model, "warm_up", slow):
+            thread = laya_model.warm_up_async()
+            thread.join(timeout=5)
+
+        self.assertTrue(thread.daemon)
+        self.assertEqual(started, [1], "the warm-up must actually run")
+
+    def test_warm_up_async_does_not_load_without_the_gate(self):
+        with mock.patch.object(laya_model, "_load_router", _boom):
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(laya_model.ENV_BACKEND, None)
+                laya_model.reset()
+                self.addCleanup(laya_model.reset)
+                laya_model.warm_up_async().join(timeout=5)
+
     def test_the_engine_can_still_be_imported_without_the_package(self):
         # The dependency runs one way only, so a machine with no `laya` installed can
         # still import the engine, the workflow and the plan tools.

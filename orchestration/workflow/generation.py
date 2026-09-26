@@ -49,14 +49,23 @@ def task_target_path(task: Mapping[str, Any]) -> Optional[str]:
     ``None`` means the task does not name a file, and the caller should keep whatever the
     template chose.
     """
-    notes = [str(d) for d in (task.get("details") or [])]
-    for text in [str(task.get("title") or "")] + notes:
-        match = _TARGET_PATH_RE.search(text)
-        if match:
-            return match.group(1).replace("\\", "/").strip("/")
+    for text in [str(task.get("title") or "")] + [str(d) for d in (task.get("details") or [])]:
+        found = path_in_text(text)
+        if found:
+            return found
 
     declared = [str(f).strip().replace("\\", "/") for f in (task.get("files") or []) if str(f).strip()]
     return declared[0] if declared else None
+
+
+def path_in_text(text: str) -> Optional[str]:
+    """The first backticked source path in ``text``, normalised, or ``None``.
+
+    Shared by the plan-task target and by the two free-form paths -- a bug report and a
+    custom directive -- which have no task to read a title from.
+    """
+    match = _TARGET_PATH_RE.search(str(text or ""))
+    return match.group(1).replace("\\", "/").strip("/") if match else None
 
 
 def paired_test_path(path: str) -> str:
@@ -174,43 +183,42 @@ def build_system_prompt(coder_id: str, plan_file: str) -> str:
     return resolve_prompt_variables(spec["system_prompt"], plan_file) + _DIRECT_MODE_DIRECTIVE
 
 
-def generate_deliverable(
+def generate_code(
     *,
     coder_id: str,
-    task: Mapping[str, Any],
-    plan: Mapping[str, Any],
-    deliverable: Any,
+    filename: str,
+    context_text: str,
+    task_title: str,
     plan_file: str,
-    filename: Optional[str] = None,
+    fallback_code: str,
     completer: Optional[Callable[..., Any]] = None,
     on_request: Optional[Callable[[str, int], None]] = None,
 ) -> GeneratedFile:
-    """A deliverable's contents, from System 2 when available, else from the template.
+    """One file's contents, from System 2 when available, else the caller's fallback.
 
-    ``deliverable`` is the ``templates`` NamedTuple supplying the paired test and the
-    fallback source; ``filename`` is where the deliverable is actually being written
-    (``task_target_path``), which can differ from the template's own name. ``completer``
-    defaults to :func:`orchestration.system2.complete` and is injectable so the live path
-    is testable without a network.
+    The general seam behind every action that writes code. ``context_text`` is whatever
+    the Coder needs to see -- a plan slice for a roadmap task, a bug report and the current
+    file for a patch, a directive for a custom request -- so this function stays about the
+    call rather than about where its input came from.
 
-    ``on_request`` is called as ``(model, prompt_chars)`` immediately before the request,
-    and only when a request is actually made -- the caller uses it to narrate a wait that
-    can last seconds. The offline path never triggers it, so its output is unchanged.
+    ``fallback_code`` is what is written when System 2 is off, unreachable, or did not
+    return a whole file. That is what keeps the offline behaviour of every action exactly
+    as it was, byte for byte.
+
+    ``completer`` defaults to :func:`orchestration.system2.complete` and is injectable so
+    the live path is testable without a network. ``on_request`` is called as
+    ``(model, prompt_chars)`` immediately before a request is actually made, so a caller
+    can narrate a wait that can last seconds; the offline path never triggers it.
     """
     from orchestration import system2
 
-    target = filename or deliverable.filename
-    fallback = GeneratedFile(code=deliverable.code)
     if not system2.is_enabled():
-        return fallback
+        return GeneratedFile(code=fallback_code)
 
     if completer is None:
         completer = system2.complete
 
-    task_title = str(task.get("title") or "")
-    task_key = str(task.get("id") or task_title)
-    context_text = slice_task_context(plan, task_key)
-    instruction = build_instruction(context_text, target, task_title)
+    instruction = build_instruction(context_text, filename, task_title)
     model = coder_model(coder_id)
 
     if on_request is not None:
@@ -223,20 +231,20 @@ def generate_deliverable(
             user=instruction,
         )
     except Exception as exc:  # the completer contract is "return None"; stay safe anyway
-        return GeneratedFile(code=deliverable.code, error=str(exc))
+        return GeneratedFile(code=fallback_code, error=str(exc))
 
     if completion is None:
-        return GeneratedFile(code=deliverable.code, error="no completion")
+        return GeneratedFile(code=fallback_code, error="no completion")
 
     if getattr(completion, "finish_reason", "") == "length":
         # A partial answer is a partial file: it looks like real output and is quietly
         # broken, so the template is the safer deliverable. The error is reported so the
         # budget can be seen to be the cause.
-        return GeneratedFile(code=deliverable.code, error="truncated completion")
+        return GeneratedFile(code=fallback_code, error="truncated completion")
 
     code = strip_code_fence(getattr(completion, "text", "") or "")
     if not code:
-        return GeneratedFile(code=deliverable.code, error="empty completion")
+        return GeneratedFile(code=fallback_code, error="empty completion")
 
     return GeneratedFile(
         code=code,
@@ -244,4 +252,35 @@ def generate_deliverable(
         model=getattr(completion, "model", ""),
         prompt_tokens=getattr(completion, "prompt_tokens", 0) or 0,
         completion_tokens=getattr(completion, "completion_tokens", 0) or 0,
+    )
+
+
+def generate_deliverable(
+    *,
+    coder_id: str,
+    task: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    deliverable: Any,
+    plan_file: str,
+    filename: Optional[str] = None,
+    completer: Optional[Callable[..., Any]] = None,
+    on_request: Optional[Callable[[str, int], None]] = None,
+) -> GeneratedFile:
+    """A roadmap task's deliverable: the plan slice, handed to :func:`generate_code`.
+
+    ``deliverable`` is the ``templates`` NamedTuple whose source is the fallback;
+    ``filename`` is where the deliverable is actually written (``task_target_path``),
+    which can differ from the template's own name.
+    """
+    task_title = str(task.get("title") or "")
+    task_key = str(task.get("id") or task_title)
+    return generate_code(
+        coder_id=coder_id,
+        filename=filename or deliverable.filename,
+        context_text=slice_task_context(plan, task_key),
+        task_title=task_title,
+        plan_file=plan_file,
+        fallback_code=deliverable.code,
+        completer=completer,
+        on_request=on_request,
     )

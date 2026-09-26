@@ -28,7 +28,7 @@ token saving that exists right now.
 
 import re
 from dataclasses import dataclass
-from typing import Any, List, Mapping, Optional, Tuple
+from typing import Any, Iterable, List, Mapping, Optional, Tuple
 
 __all__ = [
     "INTENT_ADMIN",
@@ -47,8 +47,11 @@ __all__ = [
     "coder_for_domain",
     "domain_for_tag",
     "inferred_ui",
+    "plan_drift",
     "route_coder",
     "tag_for_domain",
+    "DRIFT_THRESHOLD",
+    "DriftReport",
 ]
 
 
@@ -321,6 +324,27 @@ class Verdict:
     tag: Optional[str] = None
 
 
+# How likely the plan and the code have drifted, and the evidence behind the number.
+# ``probability`` is a coarse band, not a calibrated figure: it exists to answer "is a
+# reconciliation worth doing at all", and a wrong answer costs only that question.
+DRIFT_THRESHOLD = 0.5
+
+
+@dataclass(frozen=True)
+class DriftReport:
+    """One pre-flight verdict: how far the plan and the code have diverged.
+
+    The counts are the three ways a plan goes stale, kept separately so a caller can say
+    *why* rather than only *how much*.
+    """
+
+    probability: float
+    completed_missing: int = 0
+    pending_existing: int = 0
+    untracked: int = 0
+    reasons: Tuple[str, ...] = ()
+
+
 # Domains whose work is boilerplate rather than reasoning. These are the only two a
 # junior Coder is the right choice for, per the Architect's routing directive.
 _STANDARD_CODER_DOMAINS = (DOMAIN_TESTS, DOMAIN_DOCS)
@@ -375,6 +399,79 @@ def inferred_ui(title: str) -> bool:
     """
     prose = _UI_TAG_LITERAL_RE.sub(" ", title or "")
     return bool(_ui_keyword_re().search(prose.lower()))
+
+
+def plan_drift(plan: Mapping[str, Any], disk_files: Iterable[str]) -> "DriftReport":
+    """How likely the plan and the code have drifted, from paths already collected.
+
+    System 1's pre-flight for the plan/code reconciliation. The full audit walks the
+    workspace and diffs it against every task; this compares only the paths a caller has
+    already listed, so it can be asked *before* deciding to spend anything more on the
+    question -- which is the whole point of checking first.
+
+    The three signals are the three ways a plan goes stale, weighted by how strong each
+    one is. A completed task whose deliverable is absent is a fact that contradicts the
+    plan; a pending task whose file already exists is a reasonable hint; an unclaimed file
+    is merely a sign that something was built outside the roadmap.
+    """
+    disk = {str(f).replace("\\", "/").strip() for f in (disk_files or []) if str(f).strip()}
+
+    completed_missing: List[str] = []
+    pending_existing: List[str] = []
+    claimed = set()
+
+    for task in _plan_tasks(plan):
+        files = [str(f).replace("\\", "/").strip() for f in (task.get("files") or []) if str(f).strip()]
+        claimed.update(files)
+        status = task.get("status")
+        if status == "completed":
+            completed_missing.extend(f for f in files if f not in disk)
+        elif status in ("pending", "in_progress"):
+            pending_existing.extend(f for f in files if f in disk)
+
+    untracked = [f for f in disk if f not in claimed]
+
+    probability = min(
+        1.0,
+        0.5 * min(len(completed_missing), 2)
+        + 0.25 * min(len(pending_existing), 2)
+        + 0.05 * min(len(untracked), 4),
+    )
+
+    reasons: List[str] = []
+    if completed_missing:
+        reasons.append(
+            f"{len(completed_missing)} completed task file(s) are absent: {completed_missing[0]}"
+        )
+    if pending_existing:
+        reasons.append(
+            f"{len(pending_existing)} pending task file(s) already exist: {pending_existing[0]}"
+        )
+    if untracked:
+        reasons.append(f"{len(untracked)} file(s) belong to no task: {untracked[0]}")
+    if not reasons:
+        reasons.append("every task file matches what the code holds")
+
+    return DriftReport(
+        probability=probability,
+        completed_missing=len(completed_missing),
+        pending_existing=len(pending_existing),
+        untracked=len(untracked),
+        reasons=tuple(reasons),
+    )
+
+
+def _plan_tasks(plan: Mapping[str, Any]) -> List[Mapping[str, Any]]:
+    """Every task in a plan, from the flat view when it has one and the nested one otherwise."""
+    steps = [t for t in (plan.get("steps") or []) if isinstance(t, Mapping)]
+    if steps:
+        return steps
+    return [
+        t
+        for section in (plan.get("sections") or [])
+        for t in (section.get("tasks") or [])
+        if isinstance(t, Mapping)
+    ]
 
 
 def classify(text: str, context: Optional[Mapping[str, Any]] = None) -> Verdict:
