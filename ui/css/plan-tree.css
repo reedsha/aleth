@@ -142,7 +142,6 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  scrollbar-width: thin;
 }
 
 .plan-tree-section {

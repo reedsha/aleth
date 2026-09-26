@@ -161,6 +161,34 @@ body {
   width: 100vw;
   overflow: hidden;
 }
+
+/* --------------------------------------------------------------------------
+   SCROLLBARS — dark IDE theme
+   WebView2 honours ::-webkit-scrollbar over the standard scrollbar-* properties,
+   so the theme is stated once here and every scroll container inherits it: a
+   #121212 track, a #2a2d32 grip, #3e4249 under the pointer. Neutral greys only --
+   the accent palette is reserved for state, so a scrollbar never glows. The
+   thumb's border is the track colour, which insets the grip inside its lane.
+   -------------------------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: #121212;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2d32;
+  border: 2px solid #121212;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3e4249;
+}
   </style>
   <style>
 /* --------------------------------------------------------------------------
@@ -756,17 +784,9 @@ body {
   font-size: 12px;
   line-height: 1.6;
   color: #cbd5e1;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
-}
-
-.card-logs-container::-webkit-scrollbar {
-  width: 5px;
-}
-
-.card-logs-container::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
+  /* No scrollbar rule here: the shared dark theme in ui/css/base.css owns it.
+     A scrollbar-width or scrollbar-color declaration would override that theme
+     for this one pane and leave the console on the light default. */
 }
 
 .log-stream-content {
@@ -1495,7 +1515,6 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
   display: flex;
   flex-direction: column;
   gap: 14px;
-  scrollbar-width: thin;
 }
 
 .plan-tree-section {
@@ -4261,7 +4280,6 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
   overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 11px;
-  scrollbar-width: thin;
 }
 
 .tree-children {

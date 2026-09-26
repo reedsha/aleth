@@ -146,7 +146,6 @@
   overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 11px;
-  scrollbar-width: thin;
 }
 
 .tree-children {

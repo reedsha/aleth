@@ -346,17 +346,9 @@
   font-size: 12px;
   line-height: 1.6;
   color: #cbd5e1;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
-}
-
-.card-logs-container::-webkit-scrollbar {
-  width: 5px;
-}
-
-.card-logs-container::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 4px;
+  /* No scrollbar rule here: the shared dark theme in ui/css/base.css owns it.
+     A scrollbar-width or scrollbar-color declaration would override that theme
+     for this one pane and leave the console on the light default. */
 }
 
 .log-stream-content {

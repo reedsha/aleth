@@ -78,3 +78,31 @@ body {
   overflow: hidden;
 }
 
+/* --------------------------------------------------------------------------
+   SCROLLBARS — dark IDE theme
+   WebView2 honours ::-webkit-scrollbar over the standard scrollbar-* properties,
+   so the theme is stated once here and every scroll container inherits it: a
+   #121212 track, a #2a2d32 grip, #3e4249 under the pointer. Neutral greys only --
+   the accent palette is reserved for state, so a scrollbar never glows. The
+   thumb's border is the track colour, which insets the grip inside its lane.
+   -------------------------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: #121212;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2d32;
+  border: 2px solid #121212;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3e4249;
+}
+
