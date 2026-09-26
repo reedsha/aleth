@@ -25,8 +25,6 @@ const state = {
   selectedAction: null,
   targetTaskId: null,
   targetTaskTitle: null,
-  // The snapshot key the tracked-edits pane should read once the current run lands.
-  lastRunDiffKey: null,
   // Whether the live preview pane is on screen.
   previewOpen: false,
   // Whether each sidebar is collapsed to its icon rail. Restored from localStorage at

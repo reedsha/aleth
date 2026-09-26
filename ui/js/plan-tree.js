@@ -174,7 +174,6 @@ function planStateSummaryHtml(planJson) {
 const PLAN_EXECUTE_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="6 4 20 12 6 20 6 4"/></svg>';
 const PLAN_ROLLBACK_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2.6-7.1L3 8"/></svg>';
 const PLAN_STOP_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>';
-const PLAN_DIFF_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>';
 
 // One state, one affordance, drawn inline on the card so a task can be acted on without
 // opening anything. The bridge has no per-task stop -- only the global one -- so the
@@ -185,10 +184,9 @@ function planInlineActions(step, stepState) {
     return `<button class="btn-inline-execute" data-task-id="${escapeHtml(step.id)}" data-task-title="${escapeHtml(step.title)}" title="Execute this specific task">${PLAN_EXECUTE_ICON}<span>Execute</span></button>`;
   }
   if (stepState === "completed") {
-    // A completed task has snapshots on disk, so its real edits can be read back; the
-    // Diff affordance sits beside Rollback because both act on the same recorded state.
-    return `<button class="btn-inline-diff" data-task-id="${escapeHtml(step.id)}" title="View the file edits this task recorded">${PLAN_DIFF_ICON}<span>Diff</span></button>` +
-      `<button class="btn-inline-rollback" data-task-id="${escapeHtml(step.id)}" title="Roll this completed task back to pending">${PLAN_ROLLBACK_ICON}<span>Rollback</span></button>`;
+    // A completed task can be rolled back to pending; that is the only action its
+    // recorded snapshot state is still needed for.
+    return `<button class="btn-inline-rollback" data-task-id="${escapeHtml(step.id)}" title="Roll this completed task back to pending">${PLAN_ROLLBACK_ICON}<span>Rollback</span></button>`;
   }
   if (stepState === "in_progress") {
     if (state.isExecuting) {
@@ -325,7 +323,6 @@ function renderPlanTree() {
       itemEl.addEventListener("click", (e) => {
         if (e.target.closest(".btn-inline-execute") ||
             e.target.closest(".btn-inline-rollback") ||
-            e.target.closest(".btn-inline-diff") ||
             e.target.closest(".btn-inline-stop")) return;
         itemEl.classList.toggle("expanded");
       });
@@ -348,15 +345,6 @@ function renderPlanTree() {
         rollbackBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           openRollbackModal(step);
-        });
-      }
-
-      // Inline diff button click handler
-      const diffBtn = itemEl.querySelector(".btn-inline-diff");
-      if (diffBtn) {
-        diffBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          openDiffPane(step.id);
         });
       }
 

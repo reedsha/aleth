@@ -62,7 +62,6 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Plan workbench", initWorkbench);
   runStartupStep("Code surfaces", initCodeSurfaces);
   runStartupStep("Terminal console", initTerminalConsole);
-  runStartupStep("Diff pane", initDiffPane);
   runStartupStep("Live preview", initPreview);
   runStartupStep("Sidebar panels", initSidebars);
   runStartupStep("Environment panel", initEnvironmentPanel);
@@ -285,9 +284,8 @@ function initEventListeners() {
   on(DOM.planEditorInput, "input", handleWorkbenchInput);
   on(DOM.planEditorInput, "scroll", syncWorkbenchGutterScroll);
 
-  // ── Dock console & tracked-edits pane ──
+  // ── Dock console ──
   on(DOM.btnConsoleClear, "click", clearConsole);
-  on(DOM.btnDiffPaneClose, "click", closeDiffPane);
 
   // ── Live preview ──
   on(DOM.btnTogglePreview, "click", togglePreview);

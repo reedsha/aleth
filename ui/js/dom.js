@@ -189,13 +189,6 @@ function initDOMElements() {
   DOM.btnPreviewRetry = document.getElementById("btnPreviewRetry");
   DOM.btnPreviewClose = document.getElementById("btnPreviewClose");
 
-  // Tracked-edits pane (the stage's right-hand editor split)
-  DOM.diffPane = document.getElementById("diffPane");
-  DOM.diffPaneTitle = document.getElementById("diffPaneTitle");
-  DOM.diffPaneStat = document.getElementById("diffPaneStat");
-  DOM.diffPaneBody = document.getElementById("diffPaneBody");
-  DOM.btnDiffPaneClose = document.getElementById("btnDiffPaneClose");
-
   // Plan Workbench (centre stage: the active plan as a read/write document)
   DOM.crumbWorkspace = document.getElementById("crumbWorkspace");
   DOM.crumbPlanFile = document.getElementById("crumbPlanFile");
