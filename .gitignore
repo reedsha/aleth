@@ -6,6 +6,10 @@ __pycache__/
 # Local secrets
 .env
 
-# Runtime workspace output: plans, generated code and task backups are produced
-# by running the app, not authored by hand.
+# Runtime workspace output: generated code and task backups are produced by running
+# the app, not authored by hand.
 my_project_workspace/
+
+# The plan's derived machine state. The roadmap itself (PLAN.md) is tracked on purpose --
+# it is the project's own document -- but plan.json is rewritten from it by the app.
+/plan.json

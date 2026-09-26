@@ -31,7 +31,7 @@ agent import here would close an import cycle.
 from typing import Any, Callable, Dict, List, Optional, Set
 
 from tools.plan_parser import explicit_tags
-from tools.plan_state import load_plan_state, save_plan_state
+from tools.plan_state import load_plan_state, read_plan_markdown, save_plan_state
 from tools.task_tags import UI_TAG
 
 # The engine answers with a coarse domain; this is the table that projects it onto a tag
@@ -46,17 +46,8 @@ def _entries(task: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _plan_markdown() -> str:
-    """The active plan's markdown, or ``""`` when it cannot be read."""
-    import os
-
-    from tools.workspace import get_active_plan_filename, get_project_dir
-
-    path = os.path.join(get_project_dir(), get_active_plan_filename())
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except OSError:
-        return ""
+    """The active plan's markdown, read from the plan directory."""
+    return read_plan_markdown()
 
 
 def retag_plan(

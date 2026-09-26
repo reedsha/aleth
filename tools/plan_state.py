@@ -13,7 +13,12 @@ from typing import Any, Dict, List, Optional
 
 from tools.plan_parser import compile_plan_json_to_markdown, parse_markdown_to_plan_dict
 from tools.task_tags import UI_TAG
-from tools.workspace import get_active_plan_filename, get_plan_json_path, get_project_dir
+from tools.workspace import (
+    get_active_plan_filename,
+    get_plan_dir,
+    get_plan_json_path,
+    get_plan_markdown_path,
+)
 
 
 def _fold_ui_flag(entry: Dict[str, Any]) -> None:
@@ -83,7 +88,9 @@ def _hydrate_from_markdown(plan_md_path: str, plan_json_path: str) -> Optional[D
         with open(plan_md_path, "r", encoding="utf-8") as f:
             content = f.read()
         plan_dict = parse_markdown_to_plan_dict(content, get_active_plan_filename())
-        with open(plan_json_path, "w", encoding="utf-8") as f:
+        # newline="\n" on purpose: the plan directory is the repository, and the default
+        # Windows text write would put CRLF into a document that is version-controlled.
+        with open(plan_json_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(plan_dict, f, indent=2)
         return plan_dict
     except Exception as e:
@@ -98,8 +105,8 @@ def load_plan_state(force_sync: bool = False) -> Dict[str, Any]:
     Detects external disk edits to PLAN.md: If PLAN.md is newer than plan.json,
     re-hydrates plan.json using markdown-it-py AST parser.
     """
-    base_dir = get_project_dir()
-    plan_md_path = os.path.join(base_dir, get_active_plan_filename())
+    base_dir = get_plan_dir()
+    plan_md_path = get_plan_markdown_path()
     plan_json_path = get_plan_json_path()
 
     md_exists = os.path.exists(plan_md_path)
@@ -132,13 +139,35 @@ def load_plan_state(force_sync: bool = False) -> Dict[str, Any]:
     return _empty_plan("Project Plan")
 
 
+def read_plan_markdown() -> str:
+    """The active plan's markdown as text, or ``""`` when it is not on disk.
+
+    The plan lives in the plan directory rather than the code workspace, so callers that
+    need its text ask here instead of reaching for the workspace file tool.
+    """
+    try:
+        with open(get_plan_markdown_path(), "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def write_plan_markdown(content: str) -> str:
+    """Writes the active plan's markdown into the plan directory."""
+    path = get_plan_markdown_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(content)
+    return path
+
+
 def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Persists updated machine state to plan.json and instantly compiles back to PLAN.md.
     Recalculates all progress metrics automatically.
     """
-    base_dir = get_project_dir()
-    plan_md_path = os.path.join(base_dir, get_active_plan_filename())
+    base_dir = get_plan_dir()
+    plan_md_path = get_plan_markdown_path()
     plan_json_path = get_plan_json_path()
 
     # Flatten steps from sections to ensure consistency
@@ -168,7 +197,7 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
 
     # 1. Write plan.json
     try:
-        with open(plan_json_path, "w", encoding="utf-8") as f:
+        with open(plan_json_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(plan_dict, f, indent=2)
     except Exception as e:
         print(f"[DualSync] Failed writing plan.json: {e}")
@@ -176,7 +205,7 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
     # 2. Compile and write PLAN.md
     try:
         compiled_md = compile_plan_json_to_markdown(plan_dict)
-        with open(plan_md_path, "w", encoding="utf-8") as f:
+        with open(plan_md_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(compiled_md)
     except Exception as e:
         print(f"[DualSync] Failed compiling to PLAN.md: {e}")

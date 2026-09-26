@@ -22,6 +22,18 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_DIR = os.path.join(PROJECT_ROOT, "my_project_workspace")
 os.makedirs(PROJECT_DIR, exist_ok=True)
 
+# Where the *plan* lives: the active markdown plan and its derived ``plan.json``.
+#
+# Deliberately separate from ``PROJECT_DIR``. The roadmap is the user's own document and
+# belongs in the repository, where it is under version control; ``PROJECT_DIR`` is the
+# sandbox that generated code, deliverables and backups land in, and it is gitignored. A
+# plan kept in the gitignored sandbox has no history, and one kept in the repository is a
+# file the user can edit, diff and revert like any other.
+#
+# Mutable so the test suite can point it at a throwaway directory: the suite must never
+# read or write the real roadmap.
+PLAN_DIR = PROJECT_ROOT
+
 # Dynamic Active Plan File
 ACTIVE_PLAN_FILE = "PLAN.md"
 PLAN_JSON_FILE = "plan.json"
@@ -35,12 +47,21 @@ IGNORE_DIRS = {
     ".pytest_cache", ".idea", ".vscode", ".gemini"
 }
 
-# Workspace-root markdown documents that describe the project but are not plans.
-# They stay readable in the file explorer, but every root ``.md`` is otherwise offered
-# as a switchable plan, and selecting one makes the Dual-Sync engine try to compile a
-# non-plan document -- surfacing as a blank plan tree with every action locked.
-# Compared case-insensitively against the bare filename.
-NON_PLAN_MD_FILES = {"progress.md", "readme.md", "changelog.md"}
+# Documents that describe the project but are not plans. They stay readable in the file
+# explorer, but every ``.md`` in the plan directory is otherwise offered as a switchable
+# plan, and selecting one makes the Dual-Sync engine try to compile a non-plan document --
+# surfacing as a blank plan tree with every action locked. Compared case-insensitively
+# against the bare filename.
+#
+# The plan directory is the repository root, which is where the project's own documents
+# live too, so they are listed here rather than left to be offered as roadmaps.
+NON_PLAN_MD_FILES = {
+    "progress.md",
+    "readme.md",
+    "changelog.md",
+    "handoff.md",
+    "deepagents_studio_overhaul_roadmap.md",
+}
 
 
 def get_project_dir() -> str:
@@ -69,6 +90,32 @@ def get_active_plan_filename() -> str:
     return ACTIVE_PLAN_FILE
 
 
+def get_plan_dir() -> str:
+    """Return the absolute path of the directory the plan files live in."""
+    global PLAN_DIR
+    return os.path.abspath(PLAN_DIR)
+
+
+def set_plan_dir(new_path: str) -> str:
+    """Point the plan at a different directory and re-hydrate state from it.
+
+    Used by the test suite, which must work against a throwaway plan rather than the real
+    roadmap. Imported lazily for the same circular-import reason as ``set_project_dir``.
+    """
+    global PLAN_DIR
+    abs_path = os.path.abspath(new_path)
+    os.makedirs(abs_path, exist_ok=True)
+    PLAN_DIR = abs_path
+    from tools.plan_state import load_plan_state
+    load_plan_state(force_sync=True)
+    return abs_path
+
+
+def get_plan_markdown_path() -> str:
+    """Absolute path of the active markdown plan."""
+    return os.path.join(get_plan_dir(), get_active_plan_filename())
+
+
 def set_active_plan_filename(filename: str) -> str:
     """Dynamically sets the active .md plan file path in memory and re-hydrates state."""
     global ACTIVE_PLAN_FILE
@@ -84,18 +131,18 @@ def set_active_plan_filename(filename: str) -> str:
 
 
 def get_plan_json_path() -> str:
-    """Returns the absolute path to plan.json in the current workspace."""
-    return os.path.join(get_project_dir(), PLAN_JSON_FILE)
+    """Returns the absolute path to plan.json, beside the active plan file."""
+    return os.path.join(get_plan_dir(), PLAN_JSON_FILE)
 
 
 def list_plan_files() -> list[str]:
-    """Finds all `.md` plan files in the current workspace directory.
+    """Finds all `.md` plan files in the plan directory.
 
     Project documents that are not roadmaps (see ``NON_PLAN_MD_FILES``) are skipped:
-    an arbitrary ``.md`` in the workspace root is a plan candidate, so a stray
+    an arbitrary ``.md`` in the plan directory is a plan candidate, so a stray
     tracker or README would otherwise be offered as a switchable plan.
     """
-    base_dir = get_project_dir()
+    base_dir = get_plan_dir()
     if not os.path.exists(base_dir):
         return []
     md_files = []

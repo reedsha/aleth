@@ -179,27 +179,36 @@ class TaskSliceTests(unittest.TestCase):
 
 class RealPlanSliceTests(unittest.TestCase):
     def test_the_slice_is_far_smaller_than_the_whole_plan(self):
-        # Reads the real workspace plan through the normal loader. This is the contract the
-        # slicer exists for: the full documents are ~11,755 tokens and the slice is ~150.
-        from tools.plan_state import load_plan_state
-        from tools.workspace import get_project_dir
+        # Deliberately read-only, and deliberately not through ``load_plan_state``: the plan
+        # directory holds the user's own roadmap, and loading it can hydrate plan.json on
+        # disk. A measurement is not allowed to rewrite the thing it measures, so the
+        # markdown is parsed in memory and the machine state is read as text.
+        from tools.plan_parser import parse_markdown_to_plan_dict
+        from tools.plan_state import read_plan_markdown
+        from tools.workspace import (
+            get_active_plan_filename,
+            get_plan_json_path,
+            get_plan_markdown_path,
+        )
 
-        plan = load_plan_state()
+        if not os.path.isfile(get_plan_markdown_path()):
+            self.skipTest("no plan markdown in the plan directory")
+        if not os.path.isfile(get_plan_json_path()):
+            self.skipTest("no plan.json beside the plan markdown")
+
+        markdown = read_plan_markdown()
+        with open(get_plan_json_path(), encoding="utf-8") as f:
+            plan_json = f.read()
+
+        plan = parse_markdown_to_plan_dict(markdown, get_active_plan_filename())
         steps = plan.get("steps") or []
         if not steps:
-            self.skipTest("the workspace plan carries no steps to slice")
+            self.skipTest("the plan carries no steps to slice")
 
         task_id = steps[0].get("id") or steps[0].get("title")
         slice_text = slice_task_context(plan, task_id)
 
-        base_dir = get_project_dir()
-        plan_md_name = plan.get("plan_file") or "PLAN.md"
-        with open(os.path.join(base_dir, plan_md_name), encoding="utf-8") as f:
-            plan_md = f.read()
-        with open(os.path.join(base_dir, "plan.json"), encoding="utf-8") as f:
-            plan_json = f.read()
-
-        full = len(plan_md) + len(plan_json)
+        full = len(markdown) + len(plan_json)
         self.assertLess(
             len(slice_text),
             full / 10,

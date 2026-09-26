@@ -19,6 +19,7 @@ from unittest import mock
 
 from tools import file_tools as ft
 from tools.task_tags import UI_TAG
+from tools.workspace import get_plan_dir, set_plan_dir
 from orchestration.workflow import templates
 
 PLAN_MD = """# Project Plan: Demo
@@ -285,16 +286,22 @@ class WorkspaceTestCase(unittest.TestCase):
 
     def setUp(self):
         self._orig_dir = ft.get_project_dir()
+        self._orig_plan_dir = get_plan_dir()
         self._orig_plan = ft.get_active_plan_filename()
         self._snapshot = {}
         for name in self._SNAPSHOT_FILES:
-            path = os.path.join(self._orig_dir, name)
+            path = os.path.join(self._orig_plan_dir, name)
             if os.path.isfile(path):
                 with open(path, "rb") as fh:
                     self._snapshot[name] = fh.read()
 
         self.tmp = tempfile.mkdtemp(prefix="deepagents_chartest_")
         ft.set_project_dir(self.tmp)
+        # The plan lives in its own directory, separate from the code workspace, and the
+        # real one is the user's roadmap. Point it at the throwaway directory so the suite
+        # never reads or writes that document -- and snapshot it above in case a test
+        # escapes the sandbox anyway.
+        set_plan_dir(self.tmp)
         ft.set_active_plan_filename("PLAN.md")
 
         # System 2 is enabled by default once a provider is configured, which would make
@@ -305,10 +312,11 @@ class WorkspaceTestCase(unittest.TestCase):
         self.addCleanup(env_patcher.stop)
 
     def tearDown(self):
+        set_plan_dir(self._orig_plan_dir)
         ft.set_project_dir(self._orig_dir)
         ft.set_active_plan_filename(self._orig_plan)
         for name in self._SNAPSHOT_FILES:
-            path = os.path.join(self._orig_dir, name)
+            path = os.path.join(self._orig_plan_dir, name)
             if name in self._snapshot:
                 with open(path, "wb") as fh:
                     fh.write(self._snapshot[name])

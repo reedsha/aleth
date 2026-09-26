@@ -37,6 +37,7 @@ from tools.file_tools import (
     read_environment_variables
 )
 from tools.settings import read_settings, save_settings as write_settings
+from tools.plan_state import write_plan_markdown
 
 class BridgeAPI:
     """
@@ -321,7 +322,9 @@ class BridgeAPI:
     def save_plan_content(self, filename: str, content: str):
         """Saves edited markdown directly back to the active plan file and syncs plan.json."""
         clean_name = set_active_plan_filename(filename)
-        write_file.invoke({"filename": clean_name, "content": content})
+        # The plan lives in the plan directory, not the code workspace, so it is written
+        # with the plan-aware helper rather than the workspace file tool.
+        write_plan_markdown(content)
         parsed = parse_markdown_to_plan_dict(content, clean_name)
         saved = save_plan_state(parsed)
         data = {

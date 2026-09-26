@@ -12,12 +12,11 @@ import os
 import time
 from typing import Any, Dict
 
-from tools.file_ops import read_file
 from tools.plan_parser import compile_plan_json_to_markdown
-from tools.plan_state import load_plan_state, save_plan_state
+from tools.plan_state import load_plan_state, read_plan_markdown, save_plan_state
 from tools.workspace import (
     get_active_plan_filename,
-    get_project_dir,
+    get_plan_markdown_path,
     list_plan_files,
     set_active_plan_filename,
 )
@@ -156,13 +155,12 @@ def read_current_plan() -> Dict[str, Any]:
     """Fetches the active plan state from plan.json and PLAN.md."""
     active_name = get_active_plan_filename()
     plan_state = load_plan_state()
-    content = read_file.invoke({"filename": active_name})
+    content = read_plan_markdown()
 
     # Only consider a plan truly missing if the .md file doesn't exist on disk.
     # Never revert the active plan just because parsing returned zero steps --
     # that would undo a freshly-made plan switch (race condition).
-    plan_path = os.path.join(get_project_dir(), active_name)
-    file_on_disk = os.path.isfile(plan_path)
+    file_on_disk = os.path.isfile(get_plan_markdown_path())
     exists = file_on_disk and "does not exist yet" not in content
 
     if not file_on_disk:
@@ -171,7 +169,7 @@ def read_current_plan() -> Dict[str, Any]:
         if available:
             active_name = set_active_plan_filename(available[0])
             plan_state = load_plan_state(force_sync=True)
-            content = read_file.invoke({"filename": active_name})
+            content = read_plan_markdown()
             exists = True
 
     return {
