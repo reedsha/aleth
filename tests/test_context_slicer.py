@@ -24,7 +24,6 @@ def _task(
     title,
     status="pending",
     section="1. General",
-    is_ui=False,
     sub_steps=None,
     details=None,
     files=None,
@@ -35,7 +34,6 @@ def _task(
         "section": section,
         "title": title,
         "status": status,
-        "is_ui": is_ui,
         "details": list(details or []),
         "files": list(files or []),
         "sub_steps": list(sub_steps or []),
@@ -47,12 +45,11 @@ def _task(
     return task
 
 
-def _sub_step(sub_id, title, status="pending", is_ui=False, details=None, files=None, tag="__absent__"):
+def _sub_step(sub_id, title, status="pending", details=None, files=None, tag="__absent__"):
     sub = {
         "id": sub_id,
         "title": title,
         "status": status,
-        "is_ui": is_ui,
         "details": list(details or []),
         "files": list(files or []),
     }
@@ -99,7 +96,7 @@ class TaskSliceTests(unittest.TestCase):
             files=["orchestration/workflow/context.py", "tests/test_context_slicer.py"],
             sub_steps=[
                 _sub_step("task-1-sub-1", "Render the standing summary", status="completed"),
-                _sub_step("task-1-sub-2", "Render the target line slice", status="pending", is_ui=True),
+                _sub_step("task-1-sub-2", "Render the target line slice", status="pending", tag="FE"),
             ],
         )
         other = _task("task-2", "An unrelated task title", section="3. Other")
@@ -118,7 +115,7 @@ class TaskSliceTests(unittest.TestCase):
         self.assertIn("[x]", slice_text)  # completed sub-step
         self.assertIn("Render the target line slice", slice_text)
         self.assertIn("[ ]", slice_text)  # pending sub-step
-        self.assertIn("[UI]", slice_text)  # the inferred UI flag survives
+        self.assertIn("[FE]", slice_text)  # the sub-step's tag survives
         # Its detail notes and declared deliverables.
         self.assertIn("Keep the functions pure", slice_text)
         self.assertIn("Never truncate a task", slice_text)

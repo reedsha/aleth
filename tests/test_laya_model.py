@@ -278,7 +278,7 @@ class FallbackTests(unittest.TestCase):
     def test_an_explicit_ui_tag_never_reaches_the_checkpoint(self):
         router = FakeRouter(payload=_answers(intent="analysis", domain="general"))
         resolver = laya_model.Resolver(True, lambda: router)
-        verdict = resolver.classify("do the needful", {"is_ui": True})
+        verdict = resolver.classify("do the needful", {"tag": laya.UI_TAG})
 
         self.assertEqual(verdict.domain, laya.DOMAIN_UI)
         self.assertEqual(router.calls, [])

@@ -3,7 +3,7 @@
 Two contracts matter here and both are about not damaging a plan a human wrote:
 
 * a ``dry_run`` must not write, whatever it finds;
-* an explicit ``[UI]`` the author typed must survive an engine that disagrees, because a
+* an explicit tag the author typed must survive an engine that disagrees, because a
   re-derivation pass is not entitled to delete a fact a person asserted.
 """
 
@@ -12,6 +12,7 @@ from unittest import mock
 
 from orchestration import plan_tagging
 from tools.plan_parser import explicit_ui_titles
+from tools.task_tags import UI_TAG
 
 
 class _Verdict:
@@ -32,12 +33,11 @@ def _plan(tasks):
     return {"sections": [{"title": "Section", "tasks": tasks}]}
 
 
-def _task(task_id, title, is_ui=False, sub_steps=None, tag=None):
+def _task(task_id, title, sub_steps=None, tag=None):
     task = {
         "id": task_id,
         "title": title,
         "status": "pending",
-        "is_ui": is_ui,
         "details": [],
         "files": [],
     }
@@ -63,7 +63,7 @@ class RetagPlanTests(unittest.TestCase):
     def test_a_title_the_engine_calls_ui_is_tagged(self):
         plan = _plan([_task("task-1", "build the expander panel")])
         result, save = self._retag(plan, _classifier({"build the expander panel": "UI"}))
-        self.assertTrue(plan["sections"][0]["tasks"][0]["is_ui"])
+        self.assertEqual(plan["sections"][0]["tasks"][0]["tag"], UI_TAG)
         self.assertEqual(result["ui_after"], 1)
         self.assertEqual(len(result["changed"]), 1)
         save.assert_called_once()
@@ -79,7 +79,7 @@ class RetagPlanTests(unittest.TestCase):
         self.assertEqual(len(result["changed"]), 1)
 
     def test_nothing_is_written_when_nothing_changed(self):
-        plan = _plan([_task("task-1", "add a login endpoint", is_ui=False)])
+        plan = _plan([_task("task-1", "add a login endpoint")])
         result, save = self._retag(plan, _classifier({}))
         save.assert_not_called()
         self.assertEqual(result["changed"], [])
@@ -87,13 +87,13 @@ class RetagPlanTests(unittest.TestCase):
 
     def test_an_explicit_tag_survives_an_engine_that_disagrees(self):
         # The engine says general; the author wrote [UI]. The author wins.
-        plan = _plan([_task("task-1", "retire the resize seam", is_ui=True, tag="FE")])
+        plan = _plan([_task("task-1", "retire the resize seam", tag=UI_TAG)])
         result, save = self._retag(
             plan,
             _classifier({}),  # general for everything
-            explicit={"retire the resize seam": "FE"},
+            explicit={"retire the resize seam": UI_TAG},
         )
-        self.assertTrue(plan["sections"][0]["tasks"][0]["is_ui"])
+        self.assertEqual(plan["sections"][0]["tasks"][0]["tag"], UI_TAG)
         self.assertEqual(result["kept_explicit"], 1)
         self.assertEqual(result["changed"], [])
         save.assert_not_called()
@@ -109,27 +109,27 @@ class RetagPlanTests(unittest.TestCase):
         )
         task = plan["sections"][0]["tasks"][0]
         self.assertEqual(task["tag"], "CI/CD")
-        self.assertFalse(task["is_ui"])
+        self.assertNotEqual(task["tag"], UI_TAG)
         self.assertEqual(result["kept_explicit"], 1)
         save.assert_not_called()
 
     def test_an_inferred_false_positive_is_cleared(self):
-        # Marked UI by the word list, but no author tag: re-derivation may drop it.
-        plan = _plan([_task("task-1", "remove code-level diff inspection views", is_ui=True)])
+        # Carries the UI tag, but no author wrote it: re-derivation may drop it.
+        plan = _plan([_task("task-1", "remove code-level diff inspection views", tag=UI_TAG)])
         result, save = self._retag(plan, _classifier({}))
-        self.assertFalse(plan["sections"][0]["tasks"][0]["is_ui"])
+        self.assertIsNone(plan["sections"][0]["tasks"][0].get("tag"))
         self.assertEqual(result["ui_before"], 1)
         self.assertEqual(result["ui_after"], 0)
         save.assert_called_once()
 
     def test_a_plan_without_tag_keys_gains_them(self):
         # A plan written before the vocabulary existed has no ``tag`` on any task, so
-        # persisting one is a real change even when is_ui does not move -- and comparing
-        # only is_ui was exactly the bug that made every non-UI tag vanish unwritten.
+        # persisting one is a real change -- comparing only the UI flag was exactly the
+        # bug that made every non-UI tag vanish unwritten.
         plan = _plan([_task("task-1", "add a login endpoint")])
         result, save = self._retag(plan, _classifier({"add a login endpoint": "API"}))
         self.assertEqual(plan["sections"][0]["tasks"][0]["tag"], "API")
-        self.assertFalse(plan["sections"][0]["tasks"][0]["is_ui"])
+        self.assertNotEqual(plan["sections"][0]["tasks"][0]["tag"], UI_TAG)
         self.assertEqual(len(result["changed"]), 1)
         self.assertEqual(result["changed"][0]["tag"], "API")
         save.assert_called_once()
@@ -151,9 +151,9 @@ class RetagPlanTests(unittest.TestCase):
             plan, _classifier({"build the plan tree view": "UI", "add a view toggle": "CORE"})
         )
         subs = plan["sections"][0]["tasks"][0]["sub_steps"]
-        self.assertFalse(plan["sections"][0]["tasks"][0]["is_ui"])
-        self.assertTrue(subs[0]["is_ui"])
-        self.assertFalse(subs[1]["is_ui"])
+        self.assertIsNone(plan["sections"][0]["tasks"][0].get("tag"))
+        self.assertEqual(subs[0]["tag"], UI_TAG)
+        self.assertEqual(subs[1]["tag"], "BE")
         self.assertEqual(result["total"], 3)
 
     def test_the_engine_that_answered_is_reported(self):

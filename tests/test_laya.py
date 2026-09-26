@@ -16,6 +16,7 @@ import unittest
 from agents import laya
 from orchestration.workflow import templates
 from tools import plan_parser
+from tools.task_tags import UI_TAG
 
 
 class GatekeeperIntentTests(unittest.TestCase):
@@ -95,8 +96,8 @@ class VerdictShapeTests(unittest.TestCase):
             laya.classify("explain the architecture"),
         )
 
-    def test_the_context_flag_marks_the_domain(self):
-        verdict = laya.classify("do the needful", {"is_ui": True})
+    def test_the_context_tag_marks_the_domain(self):
+        verdict = laya.classify("do the needful", {"tag": UI_TAG})
         self.assertEqual(verdict.domain, laya.DOMAIN_UI)
 
 
@@ -119,25 +120,40 @@ class DomainTaggingTests(unittest.TestCase):
 class UiInferenceTests(unittest.TestCase):
     """Laya's UI inference must agree with the selector it shares a vocabulary with."""
 
-    def test_ui_inference_matches_the_template_selector(self):
-        titles = [
+    def test_the_selector_follows_the_parser_stamp(self):
+        # UI wording is decided once, by the parser, and recorded as the tag; the
+        # selector then reads that tag. This pins both halves: what the wording rule
+        # decides, and that the selector honours the stamp it produces.
+        ui_titles = [
             "Dashboard view",
-            "Build a weather API",
             "Design the interface",
+            "Dashboard views",
+            "Public interfaces",
+        ]
+        plain_titles = [
+            "Build a weather API",
             "Code review",
             "Refactor the scoreboard",
             "Project scaffolding and runtime dependencies",
         ]
-        for title in titles:
+        for title in ui_titles:
             with self.subTest(title=title):
-                selects_ui = templates.select(title, False).filename == "ui_view.html"
-                self.assertEqual(laya.inferred_ui(title), selects_ui, title)
+                self.assertTrue(laya.inferred_ui(title), title)
+                self.assertEqual(templates.select(title, UI_TAG).filename, "ui_view.html", title)
+        for title in plain_titles:
+            with self.subTest(title=title):
+                self.assertFalse(laya.inferred_ui(title), title)
+                self.assertNotEqual(templates.select(title, None).filename, "ui_view.html", title)
 
     def test_the_ui_vocabulary_is_shared_not_duplicated(self):
         self.assertIs(laya.UI_KEYWORD_RE, templates.UI_KEYWORD_RE)
 
     def test_an_explicit_tag_beats_the_vocabulary(self):
-        self.assertTrue(laya.inferred_ui("refactor the parser", is_ui=True))
+        # The wording alone says no; the tag is what makes it UI, and the parser honours
+        # the tag before the wording rule ever runs.
+        self.assertFalse(laya.inferred_ui("refactor the parser"))
+        task = self._one_task("## 1. Build\n- [ ] [FE] Refactor the parser\n")
+        self.assertEqual(task["tag"], UI_TAG)
 
     def test_a_word_that_merely_contains_a_keyword_is_not_ui(self):
         self.assertFalse(laya.inferred_ui("Build a weather API"))
@@ -166,20 +182,20 @@ class UiInferenceTests(unittest.TestCase):
     def test_the_parser_stamps_the_inferred_tag_during_hydration(self):
         """The tree and the delegation path must not disagree about a UI task."""
         task = self._one_task("## 1. Build\n- [ ] Build the dashboard view\n")
-        self.assertTrue(task["is_ui"])
+        self.assertEqual(task["tag"], UI_TAG)
 
     def test_the_parser_leaves_a_plain_task_alone(self):
         task = self._one_task("## 1. Build\n- [ ] Build the plan parser\n")
-        self.assertFalse(task["is_ui"])
+        self.assertIsNone(task["tag"])
 
     def test_the_parser_does_not_duplicate_an_explicit_tag(self):
         task = self._one_task("## 1. Build\n- [ ] [UI] Wire the backend\n")
-        self.assertTrue(task["is_ui"])
+        self.assertEqual(task["tag"], UI_TAG)
         self.assertEqual(task["title"], "Wire the backend")
 
     def test_the_parser_does_not_tag_a_task_that_describes_the_tag(self):
         task = self._one_task("## 1. Build\n- [ ] Wire zero-token `[UI]` tagging\n")
-        self.assertFalse(task["is_ui"])
+        self.assertIsNone(task["tag"])
         self.assertEqual(task["title"], "Wire zero-token `[UI]` tagging")
 
     def test_an_inferred_tag_is_written_out_and_survives_a_compile_cycle(self):
@@ -216,7 +232,7 @@ class CoderRoutingTests(unittest.TestCase):
         )
 
     def test_an_explicit_ui_tag_routes_deep(self):
-        self.assertEqual(laya.route_coder("Do the thing", is_ui=True), laya.CODER_DEEP)
+        self.assertEqual(laya.route_coder("Do the thing", tag=UI_TAG), laya.CODER_DEEP)
 
     def test_the_legacy_substring_quirk_is_documented_not_fixed_here(self):
         # "score" contains "core", so the legacy test routes this deep. Preserved on

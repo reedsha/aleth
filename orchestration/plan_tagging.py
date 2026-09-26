@@ -1,8 +1,8 @@
-"""Offline System 1 tagging: decide every task's ``[UI]`` flag once, and persist it.
+"""Offline System 1 tagging: decide every task's tag once, and persist it.
 
-The ``[UI]`` tag is not cosmetic. It is the ``[UI] `` prefix in the plan markdown, the
-``is_ui`` field in ``plan.json``, and the input to three separate decisions: the domain
-pill the plan tree draws, ``templates.select`` (which deliverable a task compiles to) and
+A tag is not cosmetic. It is the ``[TAG] `` prefix in the plan markdown, the ``tag``
+field in ``plan.json``, and the input to three separate decisions: the domain pill the
+plan tree draws, ``templates.select`` (which deliverable a task compiles to) and
 ``route_coder`` (the deep or the standard Coder). One wrong tag changes what gets built.
 
 The four-keyword word list in ``agents/laya.py`` is the wrong engine for deciding it: on a
@@ -18,10 +18,10 @@ one with the other:
 
 Two rules make it safe to run over a plan a human authored:
 
-* an explicit ``[UI]`` is never cleared -- a re-tagging pass must not drop a fact someone
+* an explicit tag is never cleared -- a re-tagging pass must not drop a fact someone
   asserted on purpose, so only *inferred* tags are re-derived;
-* it defaults to ``dry_run`` behaviour at the caller's discretion, because it rewrites the
-  text of that file, and that should be inspectable before it is trusted.
+* it defaults to ``dry_run`` behaviour at the caller's discretion, because it rewrites
+  the text of that file, and that should be inspectable before it is trusted.
 
 Nothing here imports ``agents`` at module scope: ``orchestration/__init__`` imports this
 module, and ``agents.laya`` imports ``orchestration.workflow.templates``, so a module-level
@@ -117,12 +117,12 @@ def retag_plan(
         total += 1
         if on_progress is not None:
             on_progress(total, len(entries), title)
-        was = bool(entry.get("is_ui"))
         was_tag = entry.get("tag")
+        was = was_tag == UI_TAG
         ui_before += was
 
         if title in explicit:
-            # The author's tag, kept verbatim. is_ui follows from it, so a hand-written
+            # The author's tag, kept verbatim. UI-ness follows from it, so a hand-written
             # [CI/CD] cannot quietly become a UI task either.
             tag = explicit[title]
             now = tag == UI_TAG
@@ -139,9 +139,9 @@ def retag_plan(
                 entry.pop("tag", None)
 
         ui_after += now
-        # A tag can be gained or lost without is_ui moving at all -- an api or db task is
-        # not UI before or after -- and this list is what decides whether anything gets
-        # written. Comparing only is_ui silently dropped every non-UI tag.
+        # A tag can be gained or lost without the UI flag moving at all -- an api or db
+        # task is not UI before or after -- and this list is what decides whether
+        # anything gets written. Comparing only UI-ness silently dropped every non-UI tag.
         if now != was or tag != was_tag:
             changed.append(
                 {
@@ -152,7 +152,6 @@ def retag_plan(
                     "tag": tag or "",
                 }
             )
-        entry["is_ui"] = now
 
     if not dry_run and changed:
         save_plan_state(plan)

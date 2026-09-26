@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from orchestration.workflow.context import WorkflowContext
 from orchestration.workflow.events import tool_call, tool_result
+from agents.laya import inferred_ui
 from tools.file_tools import (
     audit_codebase_plan_sync,
     compile_plan_json_to_markdown,
@@ -18,6 +19,7 @@ from tools.file_tools import (
     save_plan_state,
 )
 from tools.shell_tools import execute_restricted_command
+from tools.task_tags import UI_TAG
 
 
 def update_plan_action(
@@ -62,7 +64,9 @@ def update_plan_action(
             "section": target_sec.get("title"),
             "title": new_task_title,
             "status": "pending",
-            "is_ui": any(k in new_task_title.lower() for k in ["[ui]", "ui", "frontend", "view", "interface"]),
+            # The same inference the parser uses, so a task added here is tagged exactly as
+            # it would be had it been read from the markdown -- one vocabulary, one rule.
+            "tag": UI_TAG if inferred_ui(new_task_title) else None,
             "details": [f"Added via Architect Administrative Bypass: {clean_inst[:60]}"],
             "files": []
         }
@@ -239,7 +243,7 @@ def recommend_action(ctx: WorkflowContext, plan_state: Dict[str, Any]) -> None:
     rec_proposals = []
     if next_task:
         rec_proposals.append(f"Execute immediate next task: '{next_task.get('title')}'")
-        if next_task.get("is_ui"):
+        if next_task.get("tag") == UI_TAG:
             rec_proposals.append("Prepare visual mockup/screenshot reference for UI task.")
         rec_proposals.append("Review file dependencies before generating code.")
     else:

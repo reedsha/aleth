@@ -66,6 +66,20 @@ def _ui_keyword_re() -> re.Pattern:
     return UI_KEYWORD_RE
 
 
+def _ui_tag() -> str:
+    """The canonical UI tag, imported at call time.
+
+    ``tools.task_tags`` is the vocabulary's single definition, but importing it at module
+    scope would make this module pull in the whole ``tools`` package (and, through its
+    ``__init__``, the tool runtimes) just to compare one string. Call-time import costs a
+    dict lookup and keeps ``agents.laya`` importable on its own -- the same reason the UI
+    keyword regex is imported lazily.
+    """
+    from tools.task_tags import UI_TAG
+
+    return UI_TAG
+
+
 def __getattr__(name: str):
     """Lazy re-export of the shared UI vocabulary (PEP 562).
 
@@ -73,10 +87,12 @@ def __getattr__(name: str):
     the template selector can never disagree about what counts as UI work, and
     ``tests/test_laya.py`` pins that identity. Routing it through the module
     ``__getattr__`` preserves ``laya.UI_KEYWORD_RE`` without closing the import cycle
-    described above.
+    described above. ``UI_TAG`` is re-exported the same way for the same reason.
     """
     if name == "UI_KEYWORD_RE":
         return _ui_keyword_re()
+    if name == "UI_TAG":
+        return _ui_tag()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
@@ -229,9 +245,9 @@ def _has_code_artifact(raw: str) -> bool:
     return bool(_CODE_DECL_RE.search(raw))
 
 
-def _domain_of(lowered: str, is_ui: bool, reasons: List[str]) -> str:
-    if is_ui:
-        reasons.append("task carries an explicit [UI] tag")
+def _domain_of(lowered: str, tag: Optional[str], reasons: List[str]) -> str:
+    if tag == _ui_tag():
+        reasons.append("task carries the UI tag")
         return DOMAIN_UI
     ui_match = _ui_keyword_re().search(lowered)
     if ui_match:
@@ -271,15 +287,15 @@ class Verdict:
 _STANDARD_CODER_DOMAINS = (DOMAIN_TESTS, DOMAIN_DOCS)
 
 
-def route_coder(text: str, is_ui: bool = False) -> str:
+def route_coder(text: str, tag: Optional[str] = None) -> str:
     """Picks the Coder for a *plan task*, reproducing today's rule exactly.
 
-    ``next_step_action`` routes deep iff the task is tagged UI or its title contains
+    ``next_step_action`` routes deep iff the task carries the UI tag or its title contains
     "core" -- a bare substring test, so "score" and "encore" route deep as well. That
-    quirk is preserved on purpose: wiring Laya in must not move a single existing
+    quirk is preserved on purpose: swapping the engine must not move a single existing
     delegation, and both ends of it are pinned by the characterization suite.
     """
-    if is_ui or "core" in (text or "").lower():
+    if tag == _ui_tag() or "core" in (text or "").lower():
         return CODER_DEEP
     return CODER_STANDARD
 
@@ -308,18 +324,16 @@ def coder_for_domain(domain: str) -> str:
 _UI_TAG_LITERAL_RE = re.compile(r"\[ui\]", re.IGNORECASE)
 
 
-def inferred_ui(title: str, is_ui: bool = False) -> bool:
-    """Whether a task should carry the ``[UI]`` tag in the plan tree.
+def inferred_ui(title: str) -> bool:
+    """Whether a title should carry the UI tag on the strength of its wording.
 
-    An explicit tag always wins; otherwise the vocabulary shared with
-    ``templates.select`` decides, so a task can never be tagged in the tree yet
-    rendered as a plain module on the delegation path.
+    Used by the parser on a plan line that carries no tag at all, so a task can never be
+    drawn as a plain module in the tree while the delegation path treats it as a UI task.
+    An explicit tag is recognised *before* this runs and is never overridden.
 
-    Every other part of a title counts, including backticked paths: a task that names
+    Every part of a title counts, including backticked paths: a task that names
     ``ui/js/sidebar.js`` is UI work however it is punctuated.
     """
-    if is_ui:
-        return True
     prose = _UI_TAG_LITERAL_RE.sub(" ", title or "")
     return bool(_ui_keyword_re().search(prose.lower()))
 
@@ -327,17 +341,17 @@ def inferred_ui(title: str, is_ui: bool = False) -> bool:
 def classify(text: str, context: Optional[Mapping[str, Any]] = None) -> Verdict:
     """Decides what a directive is asking for, and who should handle it.
 
-    ``context`` is optional and currently reads only ``is_ui``, so the same function
-    serves a free-form Gatekeeper message and a plan task's title. The rules are
-    ordered by how decisive their evidence is; the first one that fires wins and its
-    reason is recorded on the verdict.
+    ``context`` is optional and reads only the task's ``tag``, so the same function serves
+    a free-form Gatekeeper message and a plan task's line. The rules are ordered by how
+    decisive their evidence is; the first one that fires wins and its reason is recorded
+    on the verdict.
     """
     raw = (text or "").strip()
     lowered = raw.lower()
-    is_ui = bool((context or {}).get("is_ui", False))
+    tag = (context or {}).get("tag")
 
     reasons: List[str] = []
-    domain = _domain_of(lowered, is_ui, reasons)
+    domain = _domain_of(lowered, tag, reasons)
 
     code_hits = _hits(_CODE_VERB_RE, lowered)
     admin_hits = _hits(_ADMIN_RE, lowered)
@@ -382,7 +396,7 @@ def classify(text: str, context: Optional[Mapping[str, Any]] = None) -> Verdict:
     return Verdict(
         intent=intent,
         domain=domain,
-        coder=route_coder(raw, is_ui=is_ui),
+        coder=route_coder(raw, tag=tag),
         confidence=confidence,
         reasons=tuple(reasons),
     )

@@ -7,8 +7,10 @@ the workflow's control flow, and they can be tested without driving a whole
 workflow.
 """
 
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 import re
+
+from tools.task_tags import UI_TAG
 
 
 # Matched on word boundaries. A bare substring test sent any task whose title merely
@@ -157,14 +159,19 @@ def custom_engine(message: str) -> Deliverable:
     )
 
 
-def select(task_title: str, is_ui: bool) -> Deliverable:
+def select(task_title: str, tag: Optional[str] = None) -> Deliverable:
     """Picks the template matching a task's declared shape.
+
+    The task's domain tag decides the UI case. The title is deliberately not re-inspected
+    for UI wording: the parser already turns a UI-shaped title into the tag, so a second
+    inference here would be a second source of truth -- one that could pick the HTML view
+    while the plan tree draws no pill, which is exactly the drift this replaced.
 
     Order is significant: a UI task beats the weather keyword, and anything
     unmatched falls through to the generic engine.
     """
     lowered = task_title.lower()
-    if is_ui or _UI_KEYWORD_RE.search(lowered):
+    if tag == UI_TAG:
         return ui_view()
     if "weather" in lowered:
         return weather_api()

@@ -73,12 +73,12 @@ function openActionDrawer(actionType, extraParams = {}) {
       if (targetTask) {
         state.targetTaskId = targetTask.id;
         state.targetTaskTitle = targetTask.title;
-        DOM.paramTargetBadge.textContent = targetTask.is_ui ? "UI Task" : "Pending";
+        DOM.paramTargetBadge.textContent = isUiTask(targetTask) ? "UI Task" : "Pending";
         DOM.paramTargetTitle.textContent = targetTask.title;
         DOM.paramTargetTaskCard.style.display = "flex";
 
         // Multimodal UI Vision Section (Module 6)
-        if (targetTask.is_ui && DOM.paramUiVisionSection) {
+        if (isUiTask(targetTask) && DOM.paramUiVisionSection) {
           DOM.paramUiVisionSection.style.display = "block";
         }
       }
@@ -180,8 +180,7 @@ async function handleActionParamConfirm() {
   } else if (actionType === "next_step") {
     const taskName = state.targetTaskTitle || "top pending task";
     const targetTask = state.targetTaskId ? state.planTree.find(t => t.id === state.targetTaskId) : null;
-    if (targetTask && targetTask.is_ui) {
-      actionParams.isUi = true;
+    if (targetTask && isUiTask(targetTask)) {
       if (DOM.inputUiImageAttachment && DOM.inputUiImageAttachment.files && DOM.inputUiImageAttachment.files.length > 0) {
         actionParams.uiImagePath = DOM.inputUiImageAttachment.files[0].name;
       }

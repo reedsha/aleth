@@ -127,11 +127,9 @@ def _status_mark(status: Any) -> str:
 
 
 def _task_prefix(task: Mapping[str, Any]) -> str:
-    """The ``[TAG] `` a plan line carries, falling back to ``[UI]`` for the inferred flag."""
+    """The ``[TAG] `` a plan line carries, or nothing when the task has no tag."""
     tag = task.get("tag")
-    if tag:
-        return f"[{tag}] "
-    return "[UI] " if task.get("is_ui") else ""
+    return f"[{tag}] " if tag else ""
 
 
 def _deliverables_line(files: Sequence[str]) -> str:

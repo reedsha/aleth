@@ -61,7 +61,6 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "section": "1. Architecture & Setup",
                         "title": "Initial specification and requirements formulation",
                         "status": "completed",
-                        "is_ui": False,
                         "details": [
                             f'Lead Architect: Defined scope for "{idea_clean[:80]}"',
                             f"Dynamic Plan: `{clean_name}`"
@@ -73,7 +72,6 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "section": "1. Architecture & Setup",
                         "title": "Project scaffolding and runtime dependencies",
                         "status": "pending",
-                        "is_ui": False,
                         "details": [],
                         "files": []
                     }
@@ -88,7 +86,6 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "section": "2. Core Implementation",
                         "title": "Build core domain models and application logic",
                         "status": "pending",
-                        "is_ui": False,
                         "details": ["Assigned: `coder-deep` (complex algorithms & backend logic)"],
                         "files": []
                     },
@@ -97,7 +94,6 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "section": "2. Core Implementation",
                         "title": "Implement service endpoints and controllers",
                         "status": "pending",
-                        "is_ui": False,
                         "details": [],
                         "files": []
                     },
@@ -106,7 +102,6 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "section": "2. Core Implementation",
                         "title": "Implement data validation and error handling",
                         "status": "pending",
-                        "is_ui": False,
                         "details": [],
                         "files": []
                     }
@@ -121,7 +116,6 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "section": "3. Testing & Verification",
                         "title": "Construct automated test suite with pytest",
                         "status": "pending",
-                        "is_ui": False,
                         "details": ["Assigned: `coder-standard` (tests & documentation)"],
                         "files": []
                     },
@@ -130,7 +124,6 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "section": "3. Testing & Verification",
                         "title": "Verify functionality via restricted shell execution",
                         "status": "pending",
-                        "is_ui": False,
                         "details": [],
                         "files": []
                     },
@@ -139,7 +132,6 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "section": "3. Testing & Verification",
                         "title": "Deliverable audit and deployment readiness check",
                         "status": "pending",
-                        "is_ui": False,
                         "details": [],
                         "files": []
                     }

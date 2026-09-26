@@ -24,7 +24,7 @@ from agents import laya as laya_gate
 # ``LAYA_BACKEND=model`` opts the checkpoint in, so this call site reads the same either way.
 from agents import laya_model
 from agents.model_routing import architect_model, coder_model
-from orchestration.workflow import templates
+from orchestration.workflow import generation, templates
 from orchestration.workflow.context import WorkflowContext
 from orchestration.workflow.events import tool_call, tool_result
 from tools.file_tools import (
@@ -36,6 +36,7 @@ from tools.file_tools import (
     write_file,
 )
 from tools.shell_tools import execute_restricted_command
+from tools.task_tags import UI_TAG
 
 
 def fix_bug_action(
@@ -305,8 +306,9 @@ def next_step_action(
         ctx.emit_fn({"type": "workflow_complete", "status": "finished", "message": "All steps complete."})
         return
 
-    # MODULE 6: Multimodal UI Task Handling
-    is_ui_task = target_task.get("is_ui", False) or action_params.get("isUi", False)
+    # MODULE 6: Multimodal UI Task Handling. UI-ness is the task's tag -- one field -- so
+    # the pill the tree draws and the delegation path cannot disagree about it.
+    ui_task = target_task.get("tag") == UI_TAG
     ui_image = action_params.get("uiImagePath") or action_params.get("attachment")
 
     ctx.stream_text(
@@ -316,10 +318,10 @@ def next_step_action(
         f"> Status: Pending -> Preparing execution context...",
         delay=0.02
     )
-    if is_ui_task:
+    if ui_task:
         ctx.stream_text(
             "software-architect",
-            f"> \U0001f3a8 [MULTIMODAL UI TASK DETECTED] Tag: [UI]\n"
+            f"> \U0001f3a8 [MULTIMODAL UI TASK DETECTED] Tag: [{target_task.get('tag')}]\n"
             f"> Reference Image: {os.path.basename(ui_image) if ui_image else 'Wireframe & dark glassmorphic styling guide'}\n"
             f"> Injecting UI layout and accessibility directives into Coder payload.",
             log_type="decision",
@@ -327,7 +329,7 @@ def next_step_action(
         )
 
     # Delegate to Coder (routing rule owned by the System 1 decision engine)
-    target_coder_id = laya_gate.route_coder(target_task.get("title", ""), is_ui=is_ui_task)
+    target_coder_id = laya_gate.route_coder(target_task.get("title", ""), tag=target_task.get("tag"))
     target_coder = coder_agents.get(target_coder_id, {
         "id": target_coder_id,
         "name": target_coder_id,
@@ -354,12 +356,31 @@ def next_step_action(
     })
     time.sleep(0.3)
 
-    # Generate code for the task
-    deliverable = templates.select(target_task.get("title", ""), is_ui_task)
+    # Generate code for the task. The template supplies the shape -- the filenames and
+    # the paired test -- while System 2 supplies the main deliverable's contents when a
+    # provider is configured. With no provider, or a failed call, this is byte-identical
+    # to the canned code the branch wrote before the call existed.
+    deliverable = templates.select(target_task.get("title", ""), target_task.get("tag"))
     out_filename = deliverable.filename
     out_test = deliverable.test_filename
-    out_code = deliverable.code
     out_test_code = deliverable.test_code
+    generated = generation.generate_deliverable(
+        coder_id=target_coder_id,
+        task=target_task,
+        plan=plan_state,
+        deliverable=deliverable,
+        plan_file=plan_file,
+        # A real call can take seconds; narrate it so the wait does not read as a hang.
+        # The offline path never fires this, so its event stream is unchanged.
+        on_request=lambda model, prompt_chars: ctx.stream_text(
+            target_coder_id,
+            f"> System 2 request: {model} is writing `{out_filename}` "
+            f"from a {prompt_chars:,}-char task slice (no plan dump)...",
+            log_type="decision",
+            delay=0.02,
+        ),
+    )
+    out_code = generated.code
 
     ctx.stream_text(target_coder_id, f"> Creating snapshot backup of deliverables for rollback safety...", delay=0.02)
     backup_file_for_task(target_task.get("id"), out_filename)
@@ -416,6 +437,21 @@ def next_step_action(
         "plan_json": saved_plan
     })
 
+    coder_deliverables = [
+        f"Constructed `{out_filename}`.",
+        f"Created test suite `{out_test}`.",
+        f"Updated active plan `{plan_file}` (marked task completed)."
+    ]
+    # Only a real call has a cost to report, so the offline path's payload is unchanged.
+    if generated.used_llm:
+        coder_deliverables.append(generated.usage_line())
+    elif generated.error:
+        # A real call was attempted and did not yield a whole file, so the deliverable fell
+        # back to the template. Saying so keeps that from looking like the offline path.
+        coder_deliverables.append(
+            f"System 2 did not return a complete file ({generated.error}); wrote the template deliverable."
+        )
+
     ctx.emit_fn({
         "type": "coder_summary",
         "agent": target_coder_id,
@@ -423,11 +459,7 @@ def next_step_action(
             "title": f"Task Completed: {target_task.get('title')}",
             "status": "Implemented",
             "files": [out_filename, out_test],
-            "deliverables": [
-                f"Constructed `{out_filename}`.",
-                f"Created test suite `{out_test}`.",
-                f"Updated active plan `{plan_file}` (marked task completed)."
-            ]
+            "deliverables": coder_deliverables
         }
     })
     time.sleep(0.3)

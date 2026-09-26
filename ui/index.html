@@ -6238,35 +6238,35 @@ function renderFallbackDemoData() {
           id: "sec-1",
           title: "1. Architecture & Setup",
           tasks: [
-            { id: "task-1", title: "Formulate system roadmap and data models", status: "completed", is_ui: false, details: ["Lead Architect: Defined requirements", "Dynamic plan: PLAN.md"] },
-            { id: "task-2", title: "Scaffold project environment", status: "completed", is_ui: false, details: ["Assigned: coder-deep", "Created: main.py"] }
+            { id: "task-1", title: "Formulate system roadmap and data models", status: "completed", details: ["Lead Architect: Defined requirements", "Dynamic plan: PLAN.md"] },
+            { id: "task-2", title: "Scaffold project environment", status: "completed", details: ["Assigned: coder-deep", "Created: main.py"] }
           ]
         },
         {
           id: "sec-2",
           title: "2. Core Implementation",
           tasks: [
-            { id: "task-3", title: "Build weather service REST endpoints", status: "pending", is_ui: false, details: ["Assigned: coder-deep", "File: weather_api.py"] },
-            { id: "task-4", title: "Build weather UI dashboard", status: "pending", is_ui: true, details: ["Frontend visualization component"] },
-            { id: "task-5", title: "Implement query caching and validation", status: "pending", is_ui: false, details: [] }
+            { id: "task-3", title: "Build weather service REST endpoints", status: "pending", details: ["Assigned: coder-deep", "File: weather_api.py"] },
+            { id: "task-4", title: "Build weather UI dashboard", status: "pending", tag: "FE", details: ["Frontend visualization component"] },
+            { id: "task-5", title: "Implement query caching and validation", status: "pending", details: [] }
           ]
         },
         {
           id: "sec-3",
           title: "3. Testing & Verification",
           tasks: [
-            { id: "task-6", title: "Construct automated pytest suite", status: "pending", is_ui: false, details: ["Assigned: coder-standard", "File: test_weather_api.py"] },
+            { id: "task-6", title: "Construct automated pytest suite", status: "pending", details: ["Assigned: coder-standard", "File: test_weather_api.py"] },
             { id: "task-7", title: "Audit deliverables and deployment readiness", status: "pending", details: [] }
           ]
         }
       ],
       steps: [
-        { id: "task-1", section: "1. Architecture & Setup", title: "Formulate system roadmap and data models", status: "completed", is_ui: false, details: [] },
-        { id: "task-2", section: "1. Architecture & Setup", title: "Scaffold project environment", status: "completed", is_ui: false, details: [] },
-        { id: "task-3", section: "2. Core Implementation", title: "Build weather service REST endpoints", status: "pending", is_ui: false, details: [] },
-        { id: "task-4", section: "2. Core Implementation", title: "Build weather UI dashboard", status: "pending", is_ui: true, details: [] },
-        { id: "task-5", section: "2. Core Implementation", title: "Implement query caching and validation", status: "pending", is_ui: false, details: [] },
-        { id: "task-6", section: "3. Testing & Verification", title: "Construct automated pytest suite", status: "pending", is_ui: false, details: [] },
+        { id: "task-1", section: "1. Architecture & Setup", title: "Formulate system roadmap and data models", status: "completed", details: [] },
+        { id: "task-2", section: "1. Architecture & Setup", title: "Scaffold project environment", status: "completed", details: [] },
+        { id: "task-3", section: "2. Core Implementation", title: "Build weather service REST endpoints", status: "pending", details: [] },
+        { id: "task-4", section: "2. Core Implementation", title: "Build weather UI dashboard", status: "pending", tag: "FE", details: [] },
+        { id: "task-5", section: "2. Core Implementation", title: "Implement query caching and validation", status: "pending", details: [] },
+        { id: "task-6", section: "3. Testing & Verification", title: "Construct automated pytest suite", status: "pending", details: [] },
         { id: "task-7", section: "3. Testing & Verification", title: "Audit deliverables and deployment readiness", status: "pending", details: [] }
       ]
     }
@@ -6389,13 +6389,21 @@ function planStatusIcon(stepState) {
   return '<div class="step-status-icon pending"></div>';
 }
 
+// The plan's UI tag, from the vocabulary in tools/task_tags.py. UI-ness is the tag and
+// nothing else -- the boolean (`is_ui`) a plan file used to carry is gone, so the tree
+// and the delegation path read the same field and cannot disagree.
+const UI_TAG = "FE";
+
+function isUiTask(step) {
+  return !!step && step.tag === UI_TAG;
+}
+
 // Domain pills are drawn only from data the plan actually carries. `tag` is the plan's
-// own tag vocabulary (tools/task_tags.py); `is_ui` is the boolean it grew out of and is
-// still honoured, so a plan written before the vocabulary existed keeps its pill.
+// own tag vocabulary (tools/task_tags.py).
 // A tag outside the coloured set below falls back to the base pill, which is a complete
 // style rather than a broken one -- the tree never invents a domain for a task.
 function planDomainPills(step) {
-  const tag = step.tag || (step.is_ui ? "UI" : "");
+  const tag = step.tag || "";
   if (!tag) return "";
   const slug = tag.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   return `<span class="task-domain-pill pill-${slug}">${escapeHtml(tag)}</span>`;
@@ -6769,12 +6777,12 @@ function openActionDrawer(actionType, extraParams = {}) {
       if (targetTask) {
         state.targetTaskId = targetTask.id;
         state.targetTaskTitle = targetTask.title;
-        DOM.paramTargetBadge.textContent = targetTask.is_ui ? "UI Task" : "Pending";
+        DOM.paramTargetBadge.textContent = isUiTask(targetTask) ? "UI Task" : "Pending";
         DOM.paramTargetTitle.textContent = targetTask.title;
         DOM.paramTargetTaskCard.style.display = "flex";
 
         // Multimodal UI Vision Section (Module 6)
-        if (targetTask.is_ui && DOM.paramUiVisionSection) {
+        if (isUiTask(targetTask) && DOM.paramUiVisionSection) {
           DOM.paramUiVisionSection.style.display = "block";
         }
       }
@@ -6876,8 +6884,7 @@ async function handleActionParamConfirm() {
   } else if (actionType === "next_step") {
     const taskName = state.targetTaskTitle || "top pending task";
     const targetTask = state.targetTaskId ? state.planTree.find(t => t.id === state.targetTaskId) : null;
-    if (targetTask && targetTask.is_ui) {
-      actionParams.isUi = true;
+    if (targetTask && isUiTask(targetTask)) {
       if (DOM.inputUiImageAttachment && DOM.inputUiImageAttachment.files && DOM.inputUiImageAttachment.files.length > 0) {
         actionParams.uiImagePath = DOM.inputUiImageAttachment.files[0].name;
       }
@@ -7132,17 +7139,17 @@ async function handleCreatePlanSubmit() {
           {
             id: "sec-1",
             title: "1. Architecture & Setup",
-            tasks: [{ id: "task-1", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", is_ui: false, details: [] }]
+            tasks: [{ id: "task-1", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", details: [] }]
           },
           {
             id: "sec-2",
             title: "2. Core Implementation",
-            tasks: [{ id: "task-2", title: "Build core application modules", status: "pending", is_ui: false, details: [] }]
+            tasks: [{ id: "task-2", title: "Build core application modules", status: "pending", details: [] }]
           }
         ],
         steps: [
-          { id: "task-1", section: "1. Architecture & Setup", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", is_ui: false, details: [] },
-          { id: "task-2", section: "2. Core Implementation", title: "Build core application modules", status: "pending", is_ui: false, details: [] }
+          { id: "task-1", section: "1. Architecture & Setup", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", details: [] },
+          { id: "task-2", section: "2. Core Implementation", title: "Build core application modules", status: "pending", details: [] }
         ]
       }
     });

@@ -144,35 +144,35 @@ function renderFallbackDemoData() {
           id: "sec-1",
           title: "1. Architecture & Setup",
           tasks: [
-            { id: "task-1", title: "Formulate system roadmap and data models", status: "completed", is_ui: false, details: ["Lead Architect: Defined requirements", "Dynamic plan: PLAN.md"] },
-            { id: "task-2", title: "Scaffold project environment", status: "completed", is_ui: false, details: ["Assigned: coder-deep", "Created: main.py"] }
+            { id: "task-1", title: "Formulate system roadmap and data models", status: "completed", details: ["Lead Architect: Defined requirements", "Dynamic plan: PLAN.md"] },
+            { id: "task-2", title: "Scaffold project environment", status: "completed", details: ["Assigned: coder-deep", "Created: main.py"] }
           ]
         },
         {
           id: "sec-2",
           title: "2. Core Implementation",
           tasks: [
-            { id: "task-3", title: "Build weather service REST endpoints", status: "pending", is_ui: false, details: ["Assigned: coder-deep", "File: weather_api.py"] },
-            { id: "task-4", title: "Build weather UI dashboard", status: "pending", is_ui: true, details: ["Frontend visualization component"] },
-            { id: "task-5", title: "Implement query caching and validation", status: "pending", is_ui: false, details: [] }
+            { id: "task-3", title: "Build weather service REST endpoints", status: "pending", details: ["Assigned: coder-deep", "File: weather_api.py"] },
+            { id: "task-4", title: "Build weather UI dashboard", status: "pending", tag: "FE", details: ["Frontend visualization component"] },
+            { id: "task-5", title: "Implement query caching and validation", status: "pending", details: [] }
           ]
         },
         {
           id: "sec-3",
           title: "3. Testing & Verification",
           tasks: [
-            { id: "task-6", title: "Construct automated pytest suite", status: "pending", is_ui: false, details: ["Assigned: coder-standard", "File: test_weather_api.py"] },
+            { id: "task-6", title: "Construct automated pytest suite", status: "pending", details: ["Assigned: coder-standard", "File: test_weather_api.py"] },
             { id: "task-7", title: "Audit deliverables and deployment readiness", status: "pending", details: [] }
           ]
         }
       ],
       steps: [
-        { id: "task-1", section: "1. Architecture & Setup", title: "Formulate system roadmap and data models", status: "completed", is_ui: false, details: [] },
-        { id: "task-2", section: "1. Architecture & Setup", title: "Scaffold project environment", status: "completed", is_ui: false, details: [] },
-        { id: "task-3", section: "2. Core Implementation", title: "Build weather service REST endpoints", status: "pending", is_ui: false, details: [] },
-        { id: "task-4", section: "2. Core Implementation", title: "Build weather UI dashboard", status: "pending", is_ui: true, details: [] },
-        { id: "task-5", section: "2. Core Implementation", title: "Implement query caching and validation", status: "pending", is_ui: false, details: [] },
-        { id: "task-6", section: "3. Testing & Verification", title: "Construct automated pytest suite", status: "pending", is_ui: false, details: [] },
+        { id: "task-1", section: "1. Architecture & Setup", title: "Formulate system roadmap and data models", status: "completed", details: [] },
+        { id: "task-2", section: "1. Architecture & Setup", title: "Scaffold project environment", status: "completed", details: [] },
+        { id: "task-3", section: "2. Core Implementation", title: "Build weather service REST endpoints", status: "pending", details: [] },
+        { id: "task-4", section: "2. Core Implementation", title: "Build weather UI dashboard", status: "pending", tag: "FE", details: [] },
+        { id: "task-5", section: "2. Core Implementation", title: "Implement query caching and validation", status: "pending", details: [] },
+        { id: "task-6", section: "3. Testing & Verification", title: "Construct automated pytest suite", status: "pending", details: [] },
         { id: "task-7", section: "3. Testing & Verification", title: "Audit deliverables and deployment readiness", status: "pending", details: [] }
       ]
     }

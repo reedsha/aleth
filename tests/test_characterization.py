@@ -18,6 +18,7 @@ import unittest
 from unittest import mock
 
 from tools import file_tools as ft
+from tools.task_tags import UI_TAG
 from orchestration.workflow import templates
 
 PLAN_MD = """# Project Plan: Demo
@@ -85,9 +86,9 @@ class PlanParserTests(unittest.TestCase):
     def test_ui_tag_is_detected_and_stripped(self):
         steps = ft.parse_markdown_to_plan_dict(PLAN_MD)["steps"]
         ui_task = steps[3]
-        self.assertTrue(ui_task["is_ui"])
+        self.assertEqual(ui_task["tag"], UI_TAG)
         self.assertEqual(ui_task["title"], "Dashboard view")
-        self.assertFalse(steps[0]["is_ui"])
+        self.assertIsNone(steps[0]["tag"])
 
     def test_deliverables_are_kept_as_raw_detail_text(self):
         # NOTE (pre-existing behavior, deliberately preserved): the parser's file
@@ -122,11 +123,11 @@ class PlanParserTests(unittest.TestCase):
             "title": "Round Trip",
             "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
                 {"id": "task-1", "section": "1. S", "title": "Alpha", "status": "completed",
-                 "is_ui": False, "details": ["note one"], "files": ["alpha.py", "shared.py"]},
+                 "details": ["note one"], "files": ["alpha.py", "shared.py"]},
                 {"id": "task-2", "section": "1. S", "title": "Beta", "status": "pending",
-                 "is_ui": False, "details": [], "files": ["beta.py"]},
+                 "details": [], "files": ["beta.py"]},
                 {"id": "task-3", "section": "1. S", "title": "Gamma", "status": "in_progress",
-                 "is_ui": True, "details": ["Assigned: coder-deep"], "files": ["gamma.py"]},
+                 "tag": "FE", "details": ["Assigned: coder-deep"], "files": ["gamma.py"]},
             ]}],
         }
 
@@ -134,8 +135,8 @@ class PlanParserTests(unittest.TestCase):
         reparsed = ft.parse_markdown_to_plan_dict(compiled, "PLAN.md")
 
         self.assertEqual(
-            [("t", s["title"], s["status"], s["is_ui"], s["details"], s["files"]) for s in reparsed["steps"]],
-            [("t", s["title"], s["status"], s["is_ui"], s["details"], s["files"]) for s in original["sections"][0]["tasks"]],
+            [("t", s["title"], s["status"], s.get("tag"), s["details"], s["files"]) for s in reparsed["steps"]],
+            [("t", s["title"], s["status"], s.get("tag"), s["details"], s["files"]) for s in original["sections"][0]["tasks"]],
         )
         # A second compile must be byte-identical, so the round-trip has converged.
         self.assertEqual(ft.compile_plan_json_to_markdown(reparsed), compiled)
@@ -181,8 +182,8 @@ class PlanParserTests(unittest.TestCase):
 
         reparsed = ft.parse_markdown_to_plan_dict(compiled, "PLAN.md")
         self.assertEqual(
-            [(s["title"], s["status"], s["is_ui"]) for s in reparsed["steps"]],
-            [(s["title"], s["status"], s["is_ui"]) for s in original["steps"]],
+            [(s["title"], s["status"], s["tag"]) for s in reparsed["steps"]],
+            [(s["title"], s["status"], s["tag"]) for s in original["steps"]],
         )
         self.assertEqual([len(s["details"]) for s in reparsed["steps"]],
                          [len(s["details"]) for s in original["steps"]])
@@ -267,9 +268,9 @@ class PlanParserTests(unittest.TestCase):
         md = "# P\n\n## 1. S\n- [ ] Wire Laya zero-token `[UI]` task tagging into the parser\n- [ ] [FE] Dashboard view\n"
         steps = ft.parse_markdown_to_plan_dict(md, "P.md")["steps"]
 
-        self.assertFalse(steps[0]["is_ui"])
+        self.assertIsNone(steps[0]["tag"])
         self.assertEqual(steps[0]["title"], "Wire Laya zero-token `[UI]` task tagging into the parser")
-        self.assertTrue(steps[1]["is_ui"])
+        self.assertEqual(steps[1]["tag"], UI_TAG)
         self.assertEqual(steps[1]["title"], "Dashboard view")
 
 
@@ -295,6 +296,13 @@ class WorkspaceTestCase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="deepagents_chartest_")
         ft.set_project_dir(self.tmp)
         ft.set_active_plan_filename("PLAN.md")
+
+        # System 2 is enabled by default once a provider is configured, which would make
+        # these structural tests depend on the developer's shell and reach the network.
+        # Pin the offline path for every workspace test; the live path has its own tests.
+        env_patcher = mock.patch.dict(os.environ, {"DEEPAGENTS_SYSTEM2": "0"})
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
 
     def tearDown(self):
         ft.set_project_dir(self._orig_dir)
@@ -472,9 +480,9 @@ class PlanStateTests(WorkspaceTestCase):
             "title": "Round Trip",
             "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
                 {"id": "task-1", "section": "1. S", "title": "Alpha", "status": "completed",
-                 "is_ui": False, "details": ["note one"], "files": ["alpha.py"]},
+                 "details": ["note one"], "files": ["alpha.py"]},
                 {"id": "task-2", "section": "1. S", "title": "Beta", "status": "pending",
-                 "is_ui": False, "details": [], "files": ["beta.py"]},
+                 "details": [], "files": ["beta.py"]},
             ]}],
         })
 
@@ -520,15 +528,15 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
                 "tasks": [
                     {
                         "id": "task-1", "section": "1. Setup", "title": "Has its file",
-                        "status": "completed", "is_ui": False, "details": [], "files": ["kept.py"],
+                        "status": "completed", "details": [], "files": ["kept.py"],
                     },
                     {
                         "id": "task-2", "section": "1. Setup", "title": "Missing its file",
-                        "status": "completed", "is_ui": False, "details": [], "files": ["gone.py"],
+                        "status": "completed", "details": [], "files": ["gone.py"],
                     },
                     {
                         "id": "task-3", "section": "1. Setup", "title": "Pending but built",
-                        "status": "pending", "is_ui": False, "details": [], "files": ["built.py"],
+                        "status": "pending", "details": [], "files": ["built.py"],
                     },
                 ],
             }],
@@ -565,7 +573,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
             "title": "Clean",
             "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
                 {"id": "task-1", "section": "1. S", "title": "Done", "status": "completed",
-                 "is_ui": False, "details": [], "files": ["only.py"]},
+                 "details": [], "files": ["only.py"]},
             ]}],
         })
         ft.write_file.invoke({"filename": "only.py", "content": "x\n"})
@@ -610,7 +618,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
             "title": "RB",
             "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
                 {"id": "task-1", "section": "1. S", "title": "Rollback me", "status": "completed",
-                 "is_ui": False, "details": [], "files": ["restored.py", "flaky.py"]},
+                 "details": [], "files": ["restored.py", "flaky.py"]},
             ]}],
         })
 
@@ -1155,13 +1163,13 @@ class CoderDelegationEventTests(WorkspaceTestCase):
             "title": "UI Demo",
             "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
                 {"id": "task-1", "section": "1. S", "title": "Dashboard view", "status": "pending",
-                 "is_ui": True, "details": [], "files": []},
+                 "tag": "FE", "details": [], "files": []},
             ]}],
         })
         events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
 
         logs = [e["text"] for e in events if e["type"] == "log"]
-        self.assertIn("> \U0001f3a8 [MULTIMODAL UI TASK DETECTED] Tag: [UI]\n", logs)
+        self.assertIn("> \U0001f3a8 [MULTIMODAL UI TASK DETECTED] Tag: [FE]\n", logs)
         self.assertIn("> Reference Image: Wireframe & dark glassmorphic styling guide\n", logs)
 
         # UI tasks are routed to the deep coder and get the HTML deliverable.
@@ -1181,7 +1189,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
             "title": "Done",
             "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
                 {"id": "task-1", "section": "1. S", "title": "Only", "status": "completed",
-                 "is_ui": False, "details": [], "files": ["only.py"]},
+                 "details": [], "files": ["only.py"]},
             ]}],
         })
         events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
@@ -1414,11 +1422,16 @@ class WorkflowTemplateTests(unittest.TestCase):
 
     Byte-for-byte equality with the pre-refactor literals was verified once during
     the extraction; these assertions keep the shapes and the parameterisation honest.
+
+    The selector reads the task's *tag* for the UI case and no longer re-inspects the
+    title. The parser already turns UI wording into the tag, so a second inference here
+    would be a second source of truth -- one that could pick the HTML view while the plan
+    tree draws no pill. The wording rules themselves are pinned in ``test_laya.py``.
     """
 
-    def test_ui_task_selects_the_html_view(self):
+    def test_a_ui_tag_selects_the_html_view(self):
         for title in ["Dashboard view", "Build frontend", "UI polish"]:
-            deliverable = templates.select(title, False)
+            deliverable = templates.select(title, UI_TAG)
             self.assertEqual(
                 (deliverable.filename, deliverable.test_filename),
                 ("ui_view.html", "test_ui_view.py"),
@@ -1426,25 +1439,21 @@ class WorkflowTemplateTests(unittest.TestCase):
             self.assertTrue(deliverable.code.startswith("<!DOCTYPE html>"))
             self.assertTrue(deliverable.code.endswith("</html>"))
 
-    def test_ui_flag_beats_the_weather_keyword(self):
-        self.assertEqual(templates.select("weather api service", True).filename, "ui_view.html")
-        self.assertEqual(templates.select("weather api service", False).filename, "weather_api.py")
+    def test_the_ui_tag_beats_the_weather_keyword(self):
+        self.assertEqual(templates.select("weather api service", UI_TAG).filename, "ui_view.html")
+        self.assertEqual(templates.select("weather api service", None).filename, "weather_api.py")
 
-    def test_ui_keywords_match_only_whole_words(self):
-        # "ui" used to be matched as a bare substring, so any title merely containing
-        # the letters routed to the HTML template: "Build a weather API" became a
-        # dashboard because of the "ui" in "build", and "Code review" because of the
-        # "view" in "review". The weather keyword must now win for that title.
-        self.assertEqual(templates.select("Build a weather API", False).filename, "weather_api.py")
-        self.assertEqual(templates.select("Code review", False).filename, "main.py")
-
-    def test_ui_keywords_still_match_plurals(self):
-        # Word boundaries must not cost the common plurals.
-        self.assertEqual(templates.select("Dashboard views", False).filename, "ui_view.html")
-        self.assertEqual(templates.select("Public interfaces", False).filename, "ui_view.html")
+    def test_an_untagged_title_is_not_re_inspected_for_ui_words(self):
+        # The selector keys off the tag alone now. A title whose wording reads as UI is
+        # the parser's business, and it has already stamped the tag by the time a
+        # deliverable is selected; re-deciding here is what let the two disagree.
+        self.assertEqual(templates.select("Build a weather API", None).filename, "weather_api.py")
+        self.assertEqual(templates.select("Code review", None).filename, "main.py")
+        self.assertEqual(templates.select("Dashboard views", None).filename, "main.py")
+        self.assertEqual(templates.select("Public interfaces", None).filename, "main.py")
 
     def test_weather_task_selects_the_fastapi_service(self):
-        deliverable = templates.select("weather forecast service", False)
+        deliverable = templates.select("weather forecast service", None)
         self.assertEqual(
             (deliverable.filename, deliverable.test_filename),
             ("weather_api.py", "test_weather_api.py"),
@@ -1453,7 +1462,7 @@ class WorkflowTemplateTests(unittest.TestCase):
         self.assertIn("client = TestClient(app)", deliverable.test_code)
 
     def test_unmatched_task_falls_back_to_the_generic_engine(self):
-        deliverable = templates.select("Wire up telemetry", False)
+        deliverable = templates.select("Wire up telemetry", None)
         self.assertEqual((deliverable.filename, deliverable.test_filename), ("main.py", "test_main.py"))
         self.assertTrue(deliverable.code.startswith("# Generated module for task: Wire up telemetry\n"))
         self.assertIn('"task": "Wire up telemetry"', deliverable.code)

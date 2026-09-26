@@ -12,7 +12,39 @@ import time
 from typing import Any, Dict, List, Optional
 
 from tools.plan_parser import compile_plan_json_to_markdown, parse_markdown_to_plan_dict
+from tools.task_tags import UI_TAG
 from tools.workspace import get_active_plan_filename, get_plan_json_path, get_project_dir
+
+
+def _fold_ui_flag(entry: Dict[str, Any]) -> None:
+    """Folds a legacy ``is_ui`` boolean into the entry's ``tag``, in place.
+
+    plan.json written before the tag vocabulary existed carries ``is_ui`` and no ``tag``.
+    There is one representation of a task's domain now, not two, so an old file is read up
+    rather than dropped: a true flag becomes the UI tag, and the key itself is removed so
+    the next save writes the new shape.
+    """
+    if not isinstance(entry, dict) or "is_ui" not in entry:
+        return
+    was_ui = bool(entry.pop("is_ui"))
+    if was_ui and not entry.get("tag"):
+        entry["tag"] = UI_TAG
+
+
+def _migrate_legacy_ui_flag(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Applies :func:`_fold_ui_flag` to every task and sub-step in a loaded plan."""
+    if not isinstance(plan_dict, dict):
+        return plan_dict
+    for section in plan_dict.get("sections") or []:
+        for task in section.get("tasks") or []:
+            _fold_ui_flag(task)
+            for sub_step in task.get("sub_steps") or []:
+                _fold_ui_flag(sub_step)
+    for task in plan_dict.get("steps") or []:
+        _fold_ui_flag(task)
+        for sub_step in task.get("sub_steps") or []:
+            _fold_ui_flag(sub_step)
+    return plan_dict
 
 
 def _empty_plan(title: str) -> Dict[str, Any]:
@@ -91,11 +123,11 @@ def load_plan_state(force_sync: bool = False) -> Dict[str, Any]:
     if md_exists and (not json_exists or force_sync or different_file or os.path.getmtime(plan_md_path) > os.path.getmtime(plan_json_path)):
         plan_dict = _hydrate_from_markdown(plan_md_path, plan_json_path)
         if plan_dict is not None:
-            return plan_dict
+            return _migrate_legacy_ui_flag(plan_dict)
 
     # Case 3: Load directly from plan.json
     if cached_json is not None:
-        return cached_json
+        return _migrate_legacy_ui_flag(cached_json)
 
     return _empty_plan("Project Plan")
 

@@ -92,13 +92,21 @@ function planStatusIcon(stepState) {
   return '<div class="step-status-icon pending"></div>';
 }
 
+// The plan's UI tag, from the vocabulary in tools/task_tags.py. UI-ness is the tag and
+// nothing else -- the boolean (`is_ui`) a plan file used to carry is gone, so the tree
+// and the delegation path read the same field and cannot disagree.
+const UI_TAG = "FE";
+
+function isUiTask(step) {
+  return !!step && step.tag === UI_TAG;
+}
+
 // Domain pills are drawn only from data the plan actually carries. `tag` is the plan's
-// own tag vocabulary (tools/task_tags.py); `is_ui` is the boolean it grew out of and is
-// still honoured, so a plan written before the vocabulary existed keeps its pill.
+// own tag vocabulary (tools/task_tags.py).
 // A tag outside the coloured set below falls back to the base pill, which is a complete
 // style rather than a broken one -- the tree never invents a domain for a task.
 function planDomainPills(step) {
-  const tag = step.tag || (step.is_ui ? "UI" : "");
+  const tag = step.tag || "";
   if (!tag) return "";
   const slug = tag.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   return `<span class="task-domain-pill pill-${slug}">${escapeHtml(tag)}</span>`;

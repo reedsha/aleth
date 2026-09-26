@@ -74,17 +74,17 @@ async function handleCreatePlanSubmit() {
           {
             id: "sec-1",
             title: "1. Architecture & Setup",
-            tasks: [{ id: "task-1", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", is_ui: false, details: [] }]
+            tasks: [{ id: "task-1", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", details: [] }]
           },
           {
             id: "sec-2",
             title: "2. Core Implementation",
-            tasks: [{ id: "task-2", title: "Build core application modules", status: "pending", is_ui: false, details: [] }]
+            tasks: [{ id: "task-2", title: "Build core application modules", status: "pending", details: [] }]
           }
         ],
         steps: [
-          { id: "task-1", section: "1. Architecture & Setup", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", is_ui: false, details: [] },
-          { id: "task-2", section: "2. Core Implementation", title: "Build core application modules", status: "pending", is_ui: false, details: [] }
+          { id: "task-1", section: "1. Architecture & Setup", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", details: [] },
+          { id: "task-2", section: "2. Core Implementation", title: "Build core application modules", status: "pending", details: [] }
         ]
       }
     });

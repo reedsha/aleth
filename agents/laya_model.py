@@ -317,9 +317,9 @@ class Resolver:
         self, text: str, context: Optional[Mapping[str, Any]] = None
     ) -> Verdict:
         """The seam: the checkpoint when it is live, the word list otherwise."""
-        # An explicit [UI] tag is a fact about the task, not a judgement, so it never
-        # reaches the checkpoint: the engine already knows the answer.
-        if (context or {}).get("is_ui"):
+        # An explicit tag is a fact about the task, not a judgement, so it never reaches
+        # the checkpoint: the engine already knows the answer.
+        if (context or {}).get("tag"):
             return heuristic_classify(text, context)
 
         backend = self.backend()

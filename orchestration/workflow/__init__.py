@@ -5,6 +5,7 @@ Modules
 events          the frontend event wire format (tool_call / tool_result pairs)
 context         the per-run dependencies handed down to an action
 templates       canned deliverable source written by the coder delegation path
+generation      fills a deliverable's contents from a real System 2 call when configured
 actions_admin   administrative-bypass intents, resolved without a coder
 actions_impl    implementation intents, which may write code through a coder
 runner          intent resolution, action dispatch and failure handling
@@ -15,6 +16,7 @@ from orchestration.workflow import (
     actions_impl,
     context,
     events,
+    generation,
     runner,
     templates,
 )
@@ -26,6 +28,7 @@ __all__ = [
     "actions_impl",
     "context",
     "events",
+    "generation",
     "runner",
     "templates",
     "WorkflowContext",
