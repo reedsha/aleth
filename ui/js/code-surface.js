@@ -73,6 +73,10 @@ function codeSurfaceHighlight(text) {
 // too little to fit another glyph, which is 7.2px wide at this size.
 const CODE_SURFACE_FRAGMENT_SLACK = 0.5;
 
+// One painter per field the highlight layer was built for, so a surface can be repainted
+// on demand -- see repaintCodeSurfaces below.
+const CODE_SURFACE_PAINTERS = [];
+
 // Wraps one textarea in its highlight layer and returns the painters that keep the two
 // in step. Returns null on anything unexpected: the field must stay fully usable as a
 // plain textarea rather than half-enhanced.
@@ -145,6 +149,7 @@ function buildCodeSurface(textarea) {
   textarea.addEventListener("scroll", syncScroll);
   textarea.addEventListener("focus", paint);
   paint();
+  CODE_SURFACE_PAINTERS.push(paint);
   watchCodeSurfaceDialog(textarea, paint);
   return true;
 }
@@ -168,5 +173,16 @@ function initCodeSurfaces() {
   const fields = document.querySelectorAll(".modal-textarea-input");
   for (let i = 0; i < fields.length; i++) {
     buildCodeSurface(fields[i]);
+  }
+}
+
+// Repaints every built surface. A field inside a hidden surface measures as zero width,
+// and the code that opens the surface resets the field's value -- which raises no event --
+// so a surface that is revealed by a route the watcher above cannot see needs this. The
+// docked command drawer is one: it raises a class on the dock, not a display of its own,
+// and it resets its fields even when it is already open.
+function repaintCodeSurfaces() {
+  for (let i = 0; i < CODE_SURFACE_PAINTERS.length; i++) {
+    CODE_SURFACE_PAINTERS[i]();
   }
 }

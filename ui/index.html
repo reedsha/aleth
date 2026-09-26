@@ -62,7 +62,8 @@
           "initDOMElements", "initEventListeners", "initAutoScrollListeners", "initDockResize",
           "initWorkbench", "initCodeSurfaces", "initTerminalConsole", "initDiffPane",
           "initPreview", "initSidebars", "initEnvironmentPanel",
-          "renderPlanTree", "openActionParamModal",
+          "renderPlanTree", "openActionDrawer", "closeActionDrawer",
+          "setDockDrawerOpen", "isDockDrawerOpen", "repaintCodeSurfaces",
           "openRollbackModal", "handleConfirmRollback", "showToast", "handleAgentEvent"
         ];
         var missing = required.filter(function (name) {
@@ -1188,20 +1189,233 @@ cells, no lift, no gradient, no glow. */
 /* The plan tree's inline task actions (execute, rollback, stop) and its domain pills are
    styled with the task card itself, in plan-tree.css. */
 
-/* Action Parameter Modal Styling
-The dialog is squared off and opaque like the rest of the studio chrome; its inputs
-carry the editor surface (see .modal-textarea-input in modals.css). */
-.action-param-card {
-  width: 100%;
-  max-width: 580px;
+/* --------------------------------------------------------------------------
+   DOCKED COMMAND DRAWER
+   The parameter form of whichever action is active in the strip above it. It used
+   to be a centred overlay over the centre stage; it is a dock pane now, opening
+   flush under that strip, and the dock takes a taller floor while it is open (see
+   .bottom-dock.drawer-open in ui/css/dock.css).
+   -------------------------------------------------------------------------- */
+.action-drawer-panel {
+  /* The card's 8px column gap would otherwise hold the drawer off the strip above it.
+     The spacing below it is kept, so the drawer and that strip read as one control. */
+  margin-top: -8px;
+  height: 184px;
+  flex: none;
+  display: none;
+  flex-direction: column;
+  min-width: 0;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
+  border-radius: 0 0 4px 4px;
+  overflow: hidden;
+}
+
+.bottom-dock.drawer-open .action-drawer-panel {
+  display: flex;
+}
+
+/* The button whose form is open is the one the drawer hangs from, so the open state is
+   marked on the button itself: an accent frame, no glow. The :hover variant is needed
+   because .action-btn.primary-action:hover is more specific than a bare .active. */
+.action-btn.active,
+.action-btn.active:hover {
+  background: rgba(14, 165, 233, 0.14);
+  border-color: var(--accent-blue);
+  color: var(--text-main);
+}
+
+.drawer-head {
+  flex: none;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.drawer-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.drawer-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.drawer-subtitle {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Names the intent the gatekeeper routes, so it is technical data and takes the mono face. */
+.drawer-badge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.drawer-head-actions {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The pane's commit row, mirroring the head: the whole form sits above these buttons. */
+.drawer-foot {
+  flex: none;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 0 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* The dialog's primary/secondary buttons keep their colours; only the geometry changes,
+   from a stacked modal footer to a toolbar row. The selector is scoped to the drawer
+   because ui/css/modals.css is bundled after this file and .btn-dialog-primary has the
+   same specificity (0,1,0), so a bare .drawer-action-btn would lose flex/padding and
+   font-size to it, and a 13px label would spill out of the 24px button. */
+.action-drawer-panel .drawer-action-btn {
+  flex: none;
+  height: 24px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  border-radius: 3px;
+}
+
+.drawer-close {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.drawer-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-subtle);
+  color: var(--text-main);
+}
+
+/* The drawer keeps its height and scrolls its fields: it is a fixed strip of the dock,
+   not a box that grows over the workbench. */
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 14px;
+  padding: 10px 12px;
+  overflow-y: auto;
+}
+
+/* Context on the left, the field being written on the right: what the field is answered
+   against is the directive and the targeted task. */
+.drawer-context {
+  flex: 0 0 330px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.drawer-inputs {
+  flex: 1;
+  min-width: 0;
+  /* The bug report and the constraints are both directives, so on a dock wide enough to
+     hold them side by side they sit as two fields; a single field keeps the full width
+     because a display:none section is not a grid item. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  align-items: start;
+  gap: 10px;
+}
+
+.drawer-directive {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* The sections keep their own framing; only the spacing between them is tightened for the
+   drawer's height. */
+.action-drawer-panel .param-target-task-card,
+.action-drawer-panel .param-bug-section,
+.action-drawer-panel .param-ui-vision-section {
+  margin-bottom: 8px;
+}
+
+.drawer-context > :last-child,
+.drawer-inputs > :last-child {
+  margin-bottom: 0;
+}
+
+/* The field is the drawer's editor surface, not a box that resizes past the panel: the
+   height is fixed and the field scrolls its own text, so a long report cannot push the
+   panel over the workbench. */
+.action-drawer-panel .modal-textarea-input {
+  height: 72px;
+  min-height: 0;
+  resize: none;
+}
+
+/* The bug report is the one form with two fields and an attachment, so its framing is
+   tightened to keep it inside the drawer's height. */
+.action-drawer-panel .param-bug-section {
+  padding: 9px 10px;
+  gap: 6px;
+}
+
+/* A reference image is context here, not the subject of the pane. */
+.action-drawer-panel .ui-image-preview-card {
+  max-height: 76px;
+}
+
+/* Mirrors the strip's own collapse below: the subtitle and then the side column go once
+   the dock is too narrow to carry them. */
+@container (max-width: 860px) {
+  .drawer-subtitle {
+    display: none;
+  }
+
+  .drawer-context {
+    flex-basis: 250px;
+  }
+}
+
+@container (max-width: 620px) {
+  .drawer-body {
+    flex-direction: column;
+  }
+
+  .drawer-context {
+    flex: none;
+  }
 }
 
 .param-header-title {
@@ -2008,34 +2222,6 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
   background: rgba(0, 0, 0, 0.22);
 }
 
-.action-param-card .modal-footer {
-  padding: 20px 28px 24px 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(0, 0, 0, 0.25);
-}
-
-.action-param-card .modal-footer .btn-dialog-primary,
-.action-param-card .modal-footer .btn-dialog-secondary {
-  flex: 1;
-  max-width: 210px;
-  min-width: 150px;
-  height: 42px;
-  padding: 0 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: var(--radius-md);
-  box-sizing: border-box;
-  text-align: center;
-  transition: all var(--transition-fast);
-}
 
 .btn-dialog-secondary {
   flex: 1;
@@ -3253,6 +3439,16 @@ carry the editor surface (see .modal-textarea-input in modals.css). */
 
 .bottom-dock .action-dock-card {
   max-width: none;
+}
+
+/* The command drawer is a pane of this dock, so the dock keeps a floor of its own while
+   one is open. It is 240 (this file's default) plus the drawer's own 184, and the drawer
+   cancels the card's 8px column gap with a negative margin, so opening one grows the dock
+   by exactly the drawer's height and the console below keeps the size it had. min-height
+   wins over the height the seam drag sets inline, so a dock dragged down still opens the
+   drawer whole and returns to exactly that dragged height once the drawer closes. */
+.bottom-dock.drawer-open {
+  min-height: 424px;
 }
   </style>
   <style>
@@ -4900,6 +5096,120 @@ details[open] > .tree-folder-row > .tree-caret {
 
             </div>
 
+            <!-- Docked command drawer: the parameter form for whichever action is
+                 active in the strip above. It is a dock pane rather than a floating
+                 overlay, so it opens flush under that strip and the dock takes a
+                 taller floor while it is open (see .bottom-dock.drawer-open in
+                 ui/css/dock.css). -->
+            <div class="action-drawer-panel" id="actionDrawerPanel" role="region" aria-label="Action parameters">
+              <div class="drawer-head">
+                <span class="drawer-icon" id="paramModalIcon">⚡</span>
+                <span class="drawer-title" id="paramModalTitle">Execute Next Step</span>
+                <span class="drawer-subtitle" id="paramModalSubtitle">Architect Gatekeeper Parameter Configuration</span>
+                <span class="drawer-badge" id="paramActionTypeBadge">Intent Routing</span>
+                <span class="drawer-head-actions">
+                  <button class="drawer-close" id="btnCloseParamModal" type="button" title="Close the command drawer" aria-label="Close the command drawer">&times;</button>
+                </span>
+              </div>
+
+              <div class="drawer-body">
+                <div class="drawer-context">
+                  <!-- Target Task Card (Shown for Next Step or Inline Tasks) -->
+                  <div class="param-target-task-card" id="paramTargetTaskCard" style="display: none;">
+                    <span class="target-label">TARGETED TASK:</span>
+                    <div class="target-title-row">
+                      <span class="target-badge" id="paramTargetBadge">Pending</span>
+                      <span class="target-title" id="paramTargetTitle">Task title</span>
+                    </div>
+                  </div>
+
+                  <!-- Multimodal UI Vision Section (Shown for [UI] tasks) -->
+                  <div class="param-ui-vision-section" id="paramUiVisionSection" style="display: none;">
+                    <div class="ui-vision-header">
+                      <span class="ui-vision-badge">🎨 MULTIMODAL UI TASK</span>
+                      <span class="ui-vision-subtitle">Reference Mockup / Wireframe Upload</span>
+                    </div>
+                    <p class="ui-vision-desc">Upload a wireframe, screenshot, or design mockup. The Architect and Coder will incorporate layout, hierarchy, and styling constraints directly into code generation.</p>
+                    <div class="bug-upload-row">
+                      <label class="btn-secondary btn-upload-attachment" for="inputUiImageAttachment">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
+                          <circle cx="9" cy="9" r="2"/>
+                          <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                        </svg>
+                        <span>Upload Design Reference</span>
+                      </label>
+                      <input type="file" id="inputUiImageAttachment" accept="image/*" style="display: none;">
+                      <span class="attachment-name" id="lblUiAttachmentName">No image selected</span>
+                    </div>
+                    <div class="ui-image-preview-card" id="uiImagePreviewCard" style="display: none;">
+                      <img id="imgUiPreview" src="" alt="Reference Preview">
+                      <button class="btn-remove-preview" id="btnRemoveUiPreview" type="button" title="Remove image">&times;</button>
+                    </div>
+                  </div>
+
+                  <div class="drawer-directive">
+                    <span class="preset-label">ARCHITECT GATEKEEPER DIRECTIVE</span>
+                    <p class="preset-desc" id="paramPresetDescription">Architect evaluates task requirements, analyzes workspace state, and delegates implementation to specialized Coder sub-agents.</p>
+                  </div>
+                </div>
+
+                <div class="drawer-inputs">
+                  <!-- Bug Fix Specific Section (Required input for Fix Bug) -->
+                  <div class="param-bug-section" id="paramBugSection" style="display: none;">
+                    <label class="modal-input-label">
+                      BUG DESCRIPTION / ERROR LOGS <span class="required-star">*Required</span>
+                    </label>
+                    <textarea 
+                      class="modal-textarea-input" 
+                      id="inputBugDescription" 
+                      rows="3" 
+                      placeholder="Paste error logs, stack trace, or describe the expected vs actual behavior..."></textarea>
+
+                    <div class="bug-upload-row">
+                      <label class="btn-secondary btn-upload-attachment" for="inputBugAttachment">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                        </svg>
+                        <span>Attach Screenshot / Reference</span>
+                      </label>
+                      <input type="file" id="inputBugAttachment" accept="image/*,.log,.txt" style="display: none;">
+                      <span class="attachment-name" id="lblAttachmentName">No file attached</span>
+                    </div>
+                    <div class="bug-validation-msg" id="bugValidationMsg" style="display: none;">
+                      ⚠️ Bug description or screenshot is strictly required to proceed.
+                    </div>
+                  </div>
+
+                  <!-- Custom Instructions Field (Available for ALL actions) -->
+                  <div class="param-instructions-section">
+                    <label class="modal-input-label" id="lblActionCustomInstructions">
+                      CUSTOM INSTRUCTIONS / CONSTRAINTS (OPTIONAL)
+                    </label>
+                    <textarea 
+                      class="modal-textarea-input" 
+                      id="inputActionCustomInstructions" 
+                      rows="3" 
+                      placeholder="Append custom constraints, code style rules, specific libraries, or context to this action..."></textarea>
+                    <div class="custom-validation-msg" id="customValidationMsg" style="display: none;">
+                      ⚠️ Custom directive instruction is required to proceed.
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- The pane's commit row: the whole form sits above these buttons. -->
+              <div class="drawer-foot">
+                <button class="btn-dialog-secondary drawer-action-btn" id="btnCancelParamModal" type="button">Cancel</button>
+                <button class="btn-dialog-primary drawer-action-btn" id="btnConfirmActionParam" type="button">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                  </svg>
+                  <span id="btnConfirmActionText">Execute Action</span>
+                </button>
+              </div>
+            </div>
+
             <!-- Bottom Status Row (Read-Only Status, Progress & Stop) -->
             <div class="action-dock-bottom-row">
               <div class="dock-status-left">
@@ -5099,120 +5409,6 @@ details[open] > .tree-folder-row > .tree-caret {
         <!-- Rendered dynamically by native JS parser -->
       </div>
     </aside>
-  </div>
-
-  <!-- ============================================================ -->
-  <!-- MODAL: ACTION PARAMETER & CUSTOM INSTRUCTIONS MODAL          -->
-  <!-- ============================================================ -->
-  <div class="modal-overlay" id="actionParamModalOverlay" style="display: none;">
-    <div class="action-param-card">
-      <div class="modal-header">
-        <div class="param-header-title">
-          <div class="param-icon-badge" id="paramModalIcon">⚡</div>
-          <div class="param-title-meta">
-            <h3 id="paramModalTitle">Execute Next Step</h3>
-            <span class="param-subtitle" id="paramModalSubtitle">Architect Gatekeeper Parameter Configuration</span>
-          </div>
-        </div>
-        <button class="modal-close-btn" id="btnCloseParamModal">&times;</button>
-      </div>
-
-      <div class="modal-body">
-        <!-- Target Task Card (Shown for Next Step or Inline Tasks) -->
-        <div class="param-target-task-card" id="paramTargetTaskCard" style="display: none;">
-          <span class="target-label">TARGETED TASK:</span>
-          <div class="target-title-row">
-            <span class="target-badge" id="paramTargetBadge">Pending</span>
-            <span class="target-title" id="paramTargetTitle">Task title</span>
-          </div>
-        </div>
-
-        <!-- Multimodal UI Vision Section (Shown for [UI] tasks) -->
-        <div class="param-ui-vision-section" id="paramUiVisionSection" style="display: none;">
-          <div class="ui-vision-header">
-            <span class="ui-vision-badge">🎨 MULTIMODAL UI TASK</span>
-            <span class="ui-vision-subtitle">Reference Mockup / Wireframe Upload</span>
-          </div>
-          <p class="ui-vision-desc">Upload a wireframe, screenshot, or design mockup. The Architect and Coder will incorporate layout, hierarchy, and styling constraints directly into code generation.</p>
-          <div class="bug-upload-row">
-            <label class="btn-secondary btn-upload-attachment" for="inputUiImageAttachment">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/>
-                <circle cx="9" cy="9" r="2"/>
-                <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
-              </svg>
-              <span>Upload Design Reference</span>
-            </label>
-            <input type="file" id="inputUiImageAttachment" accept="image/*" style="display: none;">
-            <span class="attachment-name" id="lblUiAttachmentName">No image selected</span>
-          </div>
-          <div class="ui-image-preview-card" id="uiImagePreviewCard" style="display: none;">
-            <img id="imgUiPreview" src="" alt="Reference Preview">
-            <button class="btn-remove-preview" id="btnRemoveUiPreview" type="button" title="Remove image">&times;</button>
-          </div>
-        </div>
-
-        <!-- Bug Fix Specific Section (Required input for Fix Bug) -->
-        <div class="param-bug-section" id="paramBugSection" style="display: none;">
-          <label class="modal-input-label">
-            BUG DESCRIPTION / ERROR LOGS <span class="required-star">*Required</span>
-          </label>
-          <textarea 
-            class="modal-textarea-input" 
-            id="inputBugDescription" 
-            rows="3" 
-            placeholder="Paste error logs, stack trace, or describe the expected vs actual behavior..."></textarea>
-          
-          <div class="bug-upload-row">
-            <label class="btn-secondary btn-upload-attachment" for="inputBugAttachment">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-              </svg>
-              <span>Attach Screenshot / Reference</span>
-            </label>
-            <input type="file" id="inputBugAttachment" accept="image/*,.log,.txt" style="display: none;">
-            <span class="attachment-name" id="lblAttachmentName">No file attached</span>
-          </div>
-          <div class="bug-validation-msg" id="bugValidationMsg" style="display: none;">
-            ⚠️ Bug description or screenshot is strictly required to proceed.
-          </div>
-        </div>
-
-        <!-- Pre-written System Prompt Preset Banner -->
-        <div class="param-preset-banner">
-          <div class="preset-banner-header">
-            <span class="preset-label">ARCHITECT GATEKEEPER DIRECTIVE:</span>
-            <span class="preset-badge" id="paramActionTypeBadge">Intent Routing</span>
-          </div>
-          <p class="preset-desc" id="paramPresetDescription">Architect evaluates task requirements, analyzes workspace state, and delegates implementation to specialized Coder sub-agents.</p>
-        </div>
-
-        <!-- Custom Instructions Field (Available for ALL actions) -->
-        <div class="param-instructions-section">
-          <label class="modal-input-label" id="lblActionCustomInstructions">
-            CUSTOM INSTRUCTIONS / CONSTRAINTS (OPTIONAL)
-          </label>
-          <textarea 
-            class="modal-textarea-input" 
-            id="inputActionCustomInstructions" 
-            rows="3" 
-            placeholder="Append custom constraints, code style rules, specific libraries, or context to this action..."></textarea>
-          <div class="custom-validation-msg" id="customValidationMsg" style="display: none;">
-            ⚠️ Custom directive instruction is required to proceed.
-          </div>
-        </div>
-      </div>
-
-      <div class="modal-footer">
-        <button class="btn-dialog-primary" id="btnConfirmActionParam">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-          </svg>
-          <span id="btnConfirmActionText">Execute Action</span>
-        </button>
-        <button class="btn-dialog-secondary" id="btnCancelParamModal">Cancel</button>
-      </div>
-    </div>
   </div>
 
   <!-- ============================================================ -->
@@ -5518,8 +5714,8 @@ function initDOMElements() {
   DOM.txtDockProgress = document.getElementById("txtDockProgress");
   DOM.btnDockStop = document.getElementById("btnDockStop");
 
-  // Action Parameter Modal
-  DOM.actionParamModalOverlay = document.getElementById("actionParamModalOverlay");
+  // Docked command drawer (the parameter form of the action strip above it)
+  DOM.actionDrawerPanel = document.getElementById("actionDrawerPanel");
   DOM.btnCloseParamModal = document.getElementById("btnCloseParamModal");
   DOM.btnCancelParamModal = document.getElementById("btnCancelParamModal");
   DOM.btnConfirmActionParam = document.getElementById("btnConfirmActionParam");
@@ -6225,7 +6421,7 @@ function renderPlanTree() {
       if (execBtn) {
         execBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          openActionParamModal("next_step", {
+          openActionDrawer("next_step", {
             targetTaskId: step.id,
             targetTaskTitle: step.title
           });
@@ -6295,12 +6491,23 @@ async function handleExtractPlanSteps(planName) {
 }
   </script>
   <script>
-// ui/js/actions.js — Action parameter modal, confirm flow, and execution lifecycle.
+// ui/js/actions.js — Action drawer, confirm flow, and execution lifecycle.
 // ============================================================================
-// Action Parameter Modal Flow (Critical Rule: All Actions Prompt for Params)
+// Action Drawer Flow (Critical Rule: All Actions Prompt for Params)
 // ============================================================================
-function openActionParamModal(actionType, extraParams = {}) {
+function openActionDrawer(actionType, extraParams = {}) {
   if (state.isExecuting) return;
+  if (!DOM.actionDrawerPanel) return;
+
+  // A second click on the toolbar button whose form is already open folds the drawer away
+  // rather than resetting the fields that were typed into it. A call that names a task (a
+  // task card's own Execute button) is not a repeat of the toolbar button, so it always
+  // opens onto that task.
+  if (!extraParams.targetTaskId && isDockDrawerOpen() && state.selectedAction === actionType) {
+    closeActionDrawer();
+    return;
+  }
+
   state.selectedAction = actionType;
   state.targetTaskId = extraParams.targetTaskId || null;
   state.targetTaskTitle = extraParams.targetTaskTitle || null;
@@ -6422,11 +6629,14 @@ function openActionParamModal(actionType, extraParams = {}) {
       break;
   }
 
-  DOM.actionParamModalOverlay.style.display = "flex";
+  setDockDrawerOpen(true, actionType);
+  // The fields were reset above while the drawer was hidden, and assigning .value raises no
+  // event, so the highlighted copy that sits behind each field has to be rebuilt by hand.
+  if (typeof repaintCodeSurfaces === "function") repaintCodeSurfaces();
 }
 
-function closeActionParamModal() {
-  DOM.actionParamModalOverlay.style.display = "none";
+function closeActionDrawer() {
+  setDockDrawerOpen(false);
 }
 
 async function handleActionParamConfirm() {
@@ -6493,7 +6703,7 @@ async function handleActionParamConfirm() {
     prompt = customInstructions;
   }
 
-  closeActionParamModal();
+  closeActionDrawer();
   executeConfirmedTask(prompt, actionType, actionParams);
 }
 
@@ -7505,6 +7715,42 @@ function initDockResize() {
     event.preventDefault();
   });
 }
+
+// ----------------------------------------------------------------------------
+// Docked command drawer
+// ----------------------------------------------------------------------------
+// The drawer is a pane of this dock, so whether one is open is dock state. The class
+// below raises the dock's floor (see .bottom-dock.drawer-open in ui/css/dock.css) and
+// marks the toolbar button the drawer belongs to, which is what makes the panel read as
+// an expansion of that button rather than a view that floated in from elsewhere.
+// ui/js/actions.js decides when a drawer opens; this file owns what that looks like.
+function setDockDrawerOpen(open, actionType) {
+  const dock = DOM.bottomDock;
+  if (!dock) return;
+
+  // Only ever one form is open, so the mark moves rather than accumulates.
+  const marked = document.querySelectorAll(".action-btn.active");
+  for (let i = 0; i < marked.length; i++) {
+    marked[i].classList.remove("active");
+  }
+
+  if (!open) {
+    dock.classList.remove("drawer-open");
+    return;
+  }
+
+  const btn = actionType
+    ? document.querySelector('.action-btn[data-action="' + actionType + '"]')
+    : null;
+  if (btn) btn.classList.add("active");
+  dock.classList.add("drawer-open");
+}
+
+// Read by ui/js/actions.js so a second click on the button whose form is already open
+// folds the drawer away instead of resetting the fields that were typed into it.
+function isDockDrawerOpen() {
+  return !!(DOM.bottomDock && DOM.bottomDock.classList.contains("drawer-open"));
+}
   </script>
   <script>
 // ui/js/workbench.js — The Plan Workbench: the active plan rendered in the centre stage.
@@ -7865,6 +8111,10 @@ function codeSurfaceHighlight(text) {
 // too little to fit another glyph, which is 7.2px wide at this size.
 const CODE_SURFACE_FRAGMENT_SLACK = 0.5;
 
+// One painter per field the highlight layer was built for, so a surface can be repainted
+// on demand -- see repaintCodeSurfaces below.
+const CODE_SURFACE_PAINTERS = [];
+
 // Wraps one textarea in its highlight layer and returns the painters that keep the two
 // in step. Returns null on anything unexpected: the field must stay fully usable as a
 // plain textarea rather than half-enhanced.
@@ -7937,6 +8187,7 @@ function buildCodeSurface(textarea) {
   textarea.addEventListener("scroll", syncScroll);
   textarea.addEventListener("focus", paint);
   paint();
+  CODE_SURFACE_PAINTERS.push(paint);
   watchCodeSurfaceDialog(textarea, paint);
   return true;
 }
@@ -7960,6 +8211,17 @@ function initCodeSurfaces() {
   const fields = document.querySelectorAll(".modal-textarea-input");
   for (let i = 0; i < fields.length; i++) {
     buildCodeSurface(fields[i]);
+  }
+}
+
+// Repaints every built surface. A field inside a hidden surface measures as zero width,
+// and the code that opens the surface resets the field's value -- which raises no event --
+// so a surface that is revealed by a route the watcher above cannot see needs this. The
+// docked command drawer is one: it raises a class on the dock, not a display of its own,
+// and it resets its fields even when it is already open.
+function repaintCodeSurfaces() {
+  for (let i = 0; i < CODE_SURFACE_PAINTERS.length; i++) {
+    CODE_SURFACE_PAINTERS[i]();
   }
 }
   </script>
@@ -8826,19 +9088,19 @@ document.addEventListener("DOMContentLoaded", () => {
 // ============================================================================
 function initEventListeners() {
   // Action Control Panel Intent Buttons
-  if (DOM.btnActionFixBug) DOM.btnActionFixBug.addEventListener("click", () => openActionParamModal("fix_bug"));
-  if (DOM.btnActionNextStep) DOM.btnActionNextStep.addEventListener("click", () => openActionParamModal("next_step"));
-  if (DOM.btnActionUpdatePlan) DOM.btnActionUpdatePlan.addEventListener("click", () => openActionParamModal("update_plan"));
-  if (DOM.btnActionAnalyze) DOM.btnActionAnalyze.addEventListener("click", () => openActionParamModal("analyze"));
-  if (DOM.btnActionRecommend) DOM.btnActionRecommend.addEventListener("click", () => openActionParamModal("recommend"));
-  if (DOM.btnActionCustom) DOM.btnActionCustom.addEventListener("click", () => openActionParamModal("custom"));
+  if (DOM.btnActionFixBug) DOM.btnActionFixBug.addEventListener("click", () => openActionDrawer("fix_bug"));
+  if (DOM.btnActionNextStep) DOM.btnActionNextStep.addEventListener("click", () => openActionDrawer("next_step"));
+  if (DOM.btnActionUpdatePlan) DOM.btnActionUpdatePlan.addEventListener("click", () => openActionDrawer("update_plan"));
+  if (DOM.btnActionAnalyze) DOM.btnActionAnalyze.addEventListener("click", () => openActionDrawer("analyze"));
+  if (DOM.btnActionRecommend) DOM.btnActionRecommend.addEventListener("click", () => openActionDrawer("recommend"));
+  if (DOM.btnActionCustom) DOM.btnActionCustom.addEventListener("click", () => openActionDrawer("custom"));
 
   // Dock Stop Button
   if (DOM.btnDockStop) DOM.btnDockStop.addEventListener("click", handleStopClick);
 
-  // Action Parameter Modal Controls
-  if (DOM.btnCloseParamModal) DOM.btnCloseParamModal.addEventListener("click", closeActionParamModal);
-  if (DOM.btnCancelParamModal) DOM.btnCancelParamModal.addEventListener("click", closeActionParamModal);
+  // Action Drawer Controls
+  if (DOM.btnCloseParamModal) DOM.btnCloseParamModal.addEventListener("click", closeActionDrawer);
+  if (DOM.btnCancelParamModal) DOM.btnCancelParamModal.addEventListener("click", closeActionDrawer);
   if (DOM.btnConfirmActionParam) DOM.btnConfirmActionParam.addEventListener("click", handleActionParamConfirm);
 
   // File upload input for Fix Bug

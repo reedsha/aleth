@@ -325,7 +325,7 @@ function renderPlanTree() {
       if (execBtn) {
         execBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          openActionParamModal("next_step", {
+          openActionDrawer("next_step", {
             targetTaskId: step.id,
             targetTaskTitle: step.title
           });

@@ -432,7 +432,7 @@ const healthyWiring = (() => {
 
   const broken = runWithWatchdog(MODULES.filter((name) => name !== "actions.js"));
   check("the head watchdog names a module that did not load",
-    broken.some((t) => /frontend modules did not load/.test(t) && /openActionParamModal/.test(t)),
+    broken.some((t) => /frontend modules did not load/.test(t) && /openActionDrawer/.test(t)),
     broken.join(" | ") || "no banner");
 }
 

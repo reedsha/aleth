@@ -90,19 +90,19 @@ document.addEventListener("DOMContentLoaded", () => {
 // ============================================================================
 function initEventListeners() {
   // Action Control Panel Intent Buttons
-  if (DOM.btnActionFixBug) DOM.btnActionFixBug.addEventListener("click", () => openActionParamModal("fix_bug"));
-  if (DOM.btnActionNextStep) DOM.btnActionNextStep.addEventListener("click", () => openActionParamModal("next_step"));
-  if (DOM.btnActionUpdatePlan) DOM.btnActionUpdatePlan.addEventListener("click", () => openActionParamModal("update_plan"));
-  if (DOM.btnActionAnalyze) DOM.btnActionAnalyze.addEventListener("click", () => openActionParamModal("analyze"));
-  if (DOM.btnActionRecommend) DOM.btnActionRecommend.addEventListener("click", () => openActionParamModal("recommend"));
-  if (DOM.btnActionCustom) DOM.btnActionCustom.addEventListener("click", () => openActionParamModal("custom"));
+  if (DOM.btnActionFixBug) DOM.btnActionFixBug.addEventListener("click", () => openActionDrawer("fix_bug"));
+  if (DOM.btnActionNextStep) DOM.btnActionNextStep.addEventListener("click", () => openActionDrawer("next_step"));
+  if (DOM.btnActionUpdatePlan) DOM.btnActionUpdatePlan.addEventListener("click", () => openActionDrawer("update_plan"));
+  if (DOM.btnActionAnalyze) DOM.btnActionAnalyze.addEventListener("click", () => openActionDrawer("analyze"));
+  if (DOM.btnActionRecommend) DOM.btnActionRecommend.addEventListener("click", () => openActionDrawer("recommend"));
+  if (DOM.btnActionCustom) DOM.btnActionCustom.addEventListener("click", () => openActionDrawer("custom"));
 
   // Dock Stop Button
   if (DOM.btnDockStop) DOM.btnDockStop.addEventListener("click", handleStopClick);
 
-  // Action Parameter Modal Controls
-  if (DOM.btnCloseParamModal) DOM.btnCloseParamModal.addEventListener("click", closeActionParamModal);
-  if (DOM.btnCancelParamModal) DOM.btnCancelParamModal.addEventListener("click", closeActionParamModal);
+  // Action Drawer Controls
+  if (DOM.btnCloseParamModal) DOM.btnCloseParamModal.addEventListener("click", closeActionDrawer);
+  if (DOM.btnCancelParamModal) DOM.btnCancelParamModal.addEventListener("click", closeActionDrawer);
   if (DOM.btnConfirmActionParam) DOM.btnConfirmActionParam.addEventListener("click", handleActionParamConfirm);
 
   // File upload input for Fix Bug

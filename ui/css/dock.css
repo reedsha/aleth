@@ -78,3 +78,13 @@
 .bottom-dock .action-dock-card {
   max-width: none;
 }
+
+/* The command drawer is a pane of this dock, so the dock keeps a floor of its own while
+   one is open. It is 240 (this file's default) plus the drawer's own 184, and the drawer
+   cancels the card's 8px column gap with a negative margin, so opening one grows the dock
+   by exactly the drawer's height and the console below keeps the size it had. min-height
+   wins over the height the seam drag sets inline, so a dock dragged down still opens the
+   drawer whole and returns to exactly that dragged height once the drawer closes. */
+.bottom-dock.drawer-open {
+  min-height: 424px;
+}

@@ -87,7 +87,7 @@ deepagents/
 │   │   ├── base.css                     # Design tokens (:root) + reset & base styles
 │   │   ├── sidebar.css                  # Left pane: agents dock & workspace card
 │   │   ├── stage.css                    # Centre stage & the execution cards
-│   │   ├── actions.css                  # Dock action toolbar & action parameter modal
+│   │   ├── actions.css                  # Dock action toolbar & the docked command drawer
 │   │   ├── plan-tree.css                # Right pane: progress meter & task cards
 │   │   ├── modals.css                   # Confirmation, plan setup & workspace files dialogs
 │   │   ├── tiered-prompt-editor.css     # Tiered prompt editor (core rules panel)
@@ -107,13 +107,13 @@ deepagents/
 │       ├── bootstrap.js       # pywebview handshake, opt-in ?demo=1 data, hydration
 │       ├── plan-tree.js       # Right-pane tree from plan.json: summary card, task cards,
 │       │                      #   sub-steps in the card drawer, progress meter
-│       ├── actions.js         # Action parameter modal, confirm flow, execution lifecycle
+│       ├── actions.js         # Action drawer open/close + confirm, execution lifecycle
 │       ├── plan-modals.js     # Switch-plan and create-plan modals
 │       ├── agents.js          # Sidebar agent navigation & the system prompt editor
 │       ├── workspace.js       # File browser, codebase-sync audit, rollback modals
 │       ├── agent-events.js    # window.onAgentEvent: the inbound event stream renderer
 │       ├── visuals.js         # Toast notifications & the offline workflow simulator
-│       ├── dock.js            # Bottom dock resize (one drag gesture, self-contained)
+│       ├── dock.js            # Bottom dock resize + the drawer's open/close pane state
 │       ├── workbench.js       # Plan Workbench: the active plan in the centre stage
 │       ├── code-surface.js    # Syntax highlighting for the parameter textareas
 │       ├── console.js         # Dock console: terminal-style echo of the agent stream
@@ -124,7 +124,9 @@ deepagents/
 │       └── wire.js            # DOM event wiring & bootstrap — MUST stay last
 │
 ├── tests/
-│   ├── test_characterization.py  # stdlib unittest: 93 tests pinning backend behaviour
+│   ├── test_characterization.py  # stdlib unittest: 98 tests pinning backend behaviour
+│   ├── test_laya.py              # stdlib unittest: the System 1 heuristic classifier
+│   ├── test_laya_model.py        # stdlib unittest: the env-gated ModernBERT backend
 │   └── ui_startup_contract.js    # Node harness: 28 checks pinning bundle + markup contracts
 │
 ├── my_project_workspace/      # Default active project directory (PROJECT_DIR, gitignored)
@@ -166,7 +168,7 @@ There is no `package.json`; Node is used only to run the UI contract harness.
 .\venv\Scripts\python.exe -c "from tools.file_tools import read_file, parse_plan_tree; print(parse_plan_tree(read_file.invoke({'filename': 'PLAN.md'})))"
 ```
 
-### The three verification gates (run all three after any change)
+### The verification gates (run all of them after any change)
 
 ```powershell
 # A. Frontend contract: bundle freshness, module order, id inventory, markup contracts.
@@ -178,6 +180,11 @@ node tests/ui_startup_contract.js
 
 # C. Just the bundle-staleness check, without the rest of the harness:
 .\venv\Scripts\python.exe tools\build_ui_bundle.py --check
+
+# D. Markup balance audit of the hand-authored body region. The bundles are inlined, so a
+#    stray </div> here ends a container early and hoists every later sibling out of the
+#    rendered tree — the plan sidebar first among them. The two counts must be equal.
+.\venv\Scripts\python.exe -c "import pathlib; t=pathlib.Path('ui/index.html').read_text(encoding='utf-8'); r=t[t.index('END STYLE BUNDLE'):t.index('BEGIN UI BUNDLE')]; print('<div', r.count('<div'), '</div>', r.count('</div>'))"
 ```
 
 One expected non-failure: the backend suite prints
@@ -202,7 +209,9 @@ Additional invariants:
 - New JS modules append **before** `wire.js` in `JS_MODULES`; new stylesheets append
   **last** in `CSS_MODULES`. Do not reorder existing entries.
 - A new entry point (any function the wiring calls) must be added to the head
-  watchdog's `required` list near the top of `ui/index.html`. It currently names 17.
+  watchdog's `required` list near the top of `ui/index.html`. It currently names 21.
+- Hand edits to the body markup of `ui/index.html` are allowed; hand edits **inside**
+  the two marked regions are not. Run gate D after any markup edit.
 - A failure in a startup step is reported as a visible banner — that is intended
   behaviour, not a bug.
 
@@ -251,15 +260,15 @@ delegates catalogue building to `orchestration/agent_catalog.py`, which reflects
 
 The old free-text input bar and its "Are you sure…?" confirmation modal are gone.
 Execution is now intent-first: the user picks one of six toolbar buttons in the dock
-action panel, each of which opens the **action parameter modal** to collect its
+action panel, each of which opens the **action drawer** to collect its
 specific parameters (target task, vision mockup, custom directive text). Confirming
-that modal is the confirmation step.
+that drawer is the confirmation step.
 
 ```
 [Action Control Panel]  (bottom dock, six flat toolbar buttons)
       │  fix_bug │ next_step │ update_plan │ analyze │ recommend │ custom
       ▼
-[Action Parameter Modal]  (openActionParamModal(actionType, extraParams))
+[Action Drawer]  (openActionDrawer(actionType, extraParams))
       │  User reviews the targeted task / supplies the directive, then confirms
       ▼
 [BridgeAPI.start_execution(user_message, action_type, action_params)]  (app.py)
@@ -428,13 +437,20 @@ Pane order is load-bearing:
 
 ```
 #dockResizeHandle  ->  #actionControlPanelContainer  ->  #dockLogs
-                                                          ├── .console-bar (title + Clear)
-                                                          └── #consoleStream
+                         └── #actionDockCard              ├── .console-bar (title + Clear)
+                             ├── .action-buttons-grid     └── #consoleStream
+                             ├── #actionDrawerPanel  (the open action's parameter form,
+                             │                        flush under the strip, and the dock
+                             │                        raises its own floor while it is open)
+                             └── .action-dock-bottom-row  (status pill, progress, Stop)
 ```
 
 - **Action toolbar:** six flat, squared buttons with monochrome SVG icons — `Fix Bug`,
   `Execute Next Step` (primary), `Update Plan`, `Analyze Code`, `Recommend`,
-  `Custom Action`. Each opens the parameter modal.
+  `Custom Action`. Each opens the **command drawer**: a pane of the dock, not an overlay.
+  It is `display:none` at rest and `.bottom-dock.drawer-open` reveals it, while the dock's
+  own `min-height` (240 + the drawer's 184) keeps the console the size it had. Re-clicking
+  the same button folds the drawer away without clearing what was typed into it.
 - **Status row:** the read-only `Active Plan:` pill, the dock progress pill, and the
   `Stop Task` button (hidden at rest).
 - The dock is a CSS **container** (`container-type: inline-size`); under 700px of
@@ -444,9 +460,10 @@ Pane order is load-bearing:
 ### 5. Modals
 
 `position:absolute` children of `<body>` that already cover the window — **do not
-relocate them**. They cover: the action parameter modal (with its multimodal UI-vision
-section for `is_ui` tasks), the plan switch/create dialogs, the workspace file browser,
-the codebase/plan audit, and the rollback confirmation.
+relocate them**. They cover: the plan switch/create dialogs, the workspace file browser,
+the codebase/plan audit, and the rollback confirmation. The action parameter form is **not**
+here any more — it is the docked command drawer inside `#bottomDock` (§6.4), multimodal
+UI-vision section for `is_ui` tasks and all.
 
 ---
 
@@ -559,42 +576,74 @@ the codebase/plan audit, and the rollback confirmation.
      heading is excluded from `sections[]`; `compile_plan_json_to_markdown` re-emits it
      directly under the H1. Any in-app write (Save, executing a task, rollback, plan
      switch) now preserves it.
+12. **An Orphan `</div>` Took The Whole Right Pane Off Screen:**
+    - *Cause:* moving the action form out of the floating overlay and into the dock was done
+      by a script that sliced the old markup up to a `<div class="modal-footer">` marker.
+      The slice swallowed the `</div>` that closed `.modal-body`, so the dock ended one
+      nesting level early and every later sibling — the plan sidebar among them — was hoisted
+      out of the rendered tree. Because it is a parse fault and not a logic fault, it
+      presented **even with the drawer closed**, and it looked intermittent only because the
+      hoisted node sometimes still landed on screen.
+    - *Fix:* the extra closer is gone and the markup balances (`<div>` count == `</div>`
+      count across the region between the two bundle regions, 201 and 201 today). Re-run that
+      audit after any hand edit to `ui/index.html`; do not hand-edit inside the generated
+      bundle regions themselves.
+13. **`.drawer-action-btn` Lost To A Bundle-Order Tie:**
+    - *Cause:* `tools/build_ui_bundle.py` inlines `actions.css` **before** `modals.css`, and
+      `.drawer-action-btn` / `.btn-dialog-primary` have equal specificity (0,1,0). The later
+      rule won, so the drawer's `height: 24px; padding: 0 12px; font-size: 11.5px` was
+      overridden by `flex: 1; padding: 10px 18px; font-size: 13px` and a 13px label spilled
+      out of a 24px button.
+    - *Fix:* the drawer's button rules are scoped `.action-drawer-panel .drawer-action-btn`
+      (0,2,0), which beats the modal rule whatever the order. Do not unscope them, and do not
+      reorder the stylesheet list in `STYLESHEETS` to "fix" this.
+14. **The Drawer's Commit Row Belonged At The Bottom:**
+    - *Cause:* Confirm/Cancel were placed in `.drawer-head`, so the form read as sitting
+      underneath the buttons instead of above them.
+    - *Fix:* a `.drawer-foot` row closes `#actionDrawerPanel` and only the `×`
+      (`#btnCloseParamModal`) stays in the head, as a pane's close affordance. Heights:
+      drawer 184px, dock floor 424px — keep the invariant *dock `min-height` = its 240px
+      default + the drawer's height*, or the console shrinks when a drawer opens.
 
 ---
 
 ## 📋 9. Current Status of `PLAN.md`
 
 Active plan: `my_project_workspace/PLAN.md`, titled **"DeepAgents Studio Architecture
-Upgrade Roadmap"** — 4 sections, **16 tasks, 0 complete**, plus a **Global State Summary**
-(3 bullets) and **14 nested sub-steps** spread over 9 of the 16 tasks. The user wrote this
-file by hand; it is *not* rewritten until the first in-app Save.
+Upgrade Roadmap"** — 4 sections, **17 milestones, 4 complete**, plus a **Global State
+Summary** (6 bullets) and **45 nested sub-steps** across 16 of the 17 milestones. The user
+edits this file by hand; it is *not* rewritten until the first in-app Save.
 
-| # | Section | Task | Sub-steps |
-| --- | --- | --- | --- |
-| 1 | IDE Workbench & UI/UX | Implement Approach A: Docked Command Drawer in bottom dock | 3 |
-| 2 | | Implement dark IDE scrollbar theme in `ui/css/base.css` | 1 |
-| 3 | | Add resizable right sidebar panel handle | 2 |
-| 4 | | Remove code-level diff inspection views | 2 |
-| 5 | Living Behavioral Ledger | Upgrade Coder logging protocol (inline `🟢 Behavioral Log:`) | 0 |
-| 6 | | Update AST parser to parse inline behavioral summaries | 0 |
-| 7 | | Add nested sub-step extraction to `tools/plan_parser.py` | 1 |
-| 8 | | Enhance right plan tree UI | 1 |
-| 9 | Context Slicing & State | Add `## 🌍 Global State Summary` header support | 0 |
-| 10 | | Implement Line-Anchored Context Slicer | 1 |
-| 11 | | Add milestone wrap-up directive to `agents/architect.py` | 0 |
-| 12 | | Implement strict `.md` Normalization Gate | 2 |
-| 13 | Laya System 1 Integration | Integrate Laya ModernBERT runner | 1 |
-| 14 | | Wire Laya zero-token `[UI]` task tagging | 0 |
-| 15 | | Implement Laya input sufficiency gate for `🐛 Fix Bug` | 0 |
-| 16 | | Add pre-flight plan drift probability check | 0 |
+`State` below is the parent checkbox's own mark. A milestone whose parent box is `[ ]`
+reports as pending even where some of its sub-steps are already ticked — that is the plan's
+own state, not a parser artifact.
+
+| # | Section | Milestone | Sub-steps | State |
+| --- | --- | --- | --- | --- |
+| 1 | Data Layer, Parser & Context | Upgrade AST parser (`tools/plan_parser.py`) for advanced schema extraction | 2/3 | pending |
+| 2 | | Implement Line-Anchored Context Slicer in `context.py` | 0/1 | pending |
+| 3 | | Update Architect directives in `agents/architect.py` | 0/2 | pending |
+| 4 | | Implement AST Normalization Gate backend | 0/2 | pending |
+| 5 | Laya System 1 | Build the Laya decision engine as `agents/laya.py` | 4/4 | **done** |
+| 6 | | Replace the substring Gatekeeper gate in `actions_impl.py` | 3/3 | **done** |
+| 7 | | Route Coder deep-vs-standard selection through `laya.classify` | 6/6 | **done** |
+| 8 | | Wire zero-token `[UI]` tagging into `tools/plan_parser.py` | 0/2 | pending |
+| 9 | | Laya input sufficiency gate for `🐛 Fix Bug` | 0/2 | pending |
+| 10 | | Pre-flight plan drift probability check | 0/0 | pending |
+| 11 | | Laya ModernBERT backend behind the same `classify` seam | 1/3 | pending |
+| 12 | Center-Stage & Workbench | Transform center stage into Dual-View Workbench | 0/3 | pending |
+| 13 | | Redesign Right Panel into a 60px fixed Utility Rail | 0/2 | pending |
+| 14 | | Remove code-level diff inspection views entirely | 0/4 | pending |
+| 15 | Connected Dock & Console | Connected Tab Action Drawer in `#bottomDock` | 4/4 | **done** |
+| 16 | | Hybrid Console System | 0/2 | pending |
+| 17 | | Apply dark IDE UI polish | 1/2 | pending |
 
 Notes for whoever continues:
 
-- Rows 7, 8 and 9 of this table describe **work that is now done** (§2 and §3 above):
-  sub-step extraction, sub-step rendering, and the Global State Summary round trip. The
-  remaining roadmap items are the Dock Command Drawer, the scrollbar theme, the right-pane
-  resize handle, diff-pane removal, the Behavioral Ledger, the context slicer, the `.md`
-  normalization gate and all of §4 (Laya).
+- Milestone 15 (the Connected Tab Action Drawer) landed in the session this handoff
+  documents; milestones 5-7 are the Laya System 1 work recorded in §2. Beyond those four,
+  every remaining roadmap item is still open, including all of §3 (the dual-view workbench,
+  the fixed 60px rail, diff removal) and §4-2 (the hybrid console).
 - `tests/_plan_prebak.md` is the **previous** plan ("FastAPI Cloud Weather Microservice",
   10 tasks). It is untracked and, since `plan.json` was rehydrated, it is the last copy —
   do not delete it without asking.
@@ -612,9 +661,10 @@ Notes for whoever continues:
 ## 🎯 10. How Incoming Agents Should Continue
 
 1. **To advance the current roadmap:** click `Execute Next Step` in the dock toolbar. The
-   next pending target is `task-1` — "Implement Approach A: Docked Command Drawer in bottom
-   dock" (3 sub-steps). Task-keyed rollback/diff snapshots use the `task-N` ids, which for
-   this plan end at `task-16`; sub-steps have ids like `task-1-sub-2` but own no snapshots.
+   next pending target is `task-1` — "Upgrade AST parser (`tools/plan_parser.py`) for
+   advanced schema extraction", whose one open sub-step is the inline `🟢 Behavioral Log:`
+   extraction. Task-keyed rollback/diff snapshots use the `task-N` ids, which for this plan
+   run `task-1` … `task-17`; sub-steps have ids like `task-1-sub-2` but own no snapshots.
 2. **To pick up the user's backlog:** read `my_project_workspace/PLAN.md` first — it is the
    roadmap, not a description of it. Its `## 🌍 Global State Summary` is the standing
    context; keep those bullets true when a milestone lands.
@@ -626,10 +676,11 @@ Notes for whoever continues:
    - Click the `+` button in the right pane's header to scaffold a fresh `.md` plan. A new
      plan is seeded with a Global State Summary by `orchestration/plan_session.py`.
 5. **Before claiming any change is done:**
-   - Run all three gates in §3, then actually launch the app. A window that renders but
+   - Run all the gates in §3, then actually launch the app. A window that renders but
      ignores input is the historical failure mode here, and it is intermittent — launch
      several times before trusting a UI change.
-6. **Uncommitted work as of this handoff:** the collapsible-sidebar phase (Phase H:
-   `ui/js/sidebar.js`, `ui/js/env.js`, `ui/css/sidebar-panels.css`, the `file_ops` env
-   reader, the extra `dom.js` ids, the `wire.js` startup steps) is built and gated but not
-   yet committed on its own.
+6. **Uncommitted work as of this handoff:** nothing — the working tree is clean at the
+   commit that landed the Connected Tab Action Drawer. The roadmap's next item is §3-1, the
+   Dual-View Workbench (`ui/js/workbench.js`); §3-2 (the 60px fixed rail) and §3-3
+   (retiring `ui/js/diff-pane.js` from `STYLESHEETS`/`MODULES`, the header watchdog and
+   `tests/ui_startup_contract.js`) follow, then §4-2 (the hybrid console).

@@ -42,8 +42,8 @@ function initDOMElements() {
   DOM.txtDockProgress = document.getElementById("txtDockProgress");
   DOM.btnDockStop = document.getElementById("btnDockStop");
 
-  // Action Parameter Modal
-  DOM.actionParamModalOverlay = document.getElementById("actionParamModalOverlay");
+  // Docked command drawer (the parameter form of the action strip above it)
+  DOM.actionDrawerPanel = document.getElementById("actionDrawerPanel");
   DOM.btnCloseParamModal = document.getElementById("btnCloseParamModal");
   DOM.btnCancelParamModal = document.getElementById("btnCancelParamModal");
   DOM.btnConfirmActionParam = document.getElementById("btnConfirmActionParam");

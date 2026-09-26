@@ -1,9 +1,20 @@
-// ui/js/actions.js — Action parameter modal, confirm flow, and execution lifecycle.
+// ui/js/actions.js — Action drawer, confirm flow, and execution lifecycle.
 // ============================================================================
-// Action Parameter Modal Flow (Critical Rule: All Actions Prompt for Params)
+// Action Drawer Flow (Critical Rule: All Actions Prompt for Params)
 // ============================================================================
-function openActionParamModal(actionType, extraParams = {}) {
+function openActionDrawer(actionType, extraParams = {}) {
   if (state.isExecuting) return;
+  if (!DOM.actionDrawerPanel) return;
+
+  // A second click on the toolbar button whose form is already open folds the drawer away
+  // rather than resetting the fields that were typed into it. A call that names a task (a
+  // task card's own Execute button) is not a repeat of the toolbar button, so it always
+  // opens onto that task.
+  if (!extraParams.targetTaskId && isDockDrawerOpen() && state.selectedAction === actionType) {
+    closeActionDrawer();
+    return;
+  }
+
   state.selectedAction = actionType;
   state.targetTaskId = extraParams.targetTaskId || null;
   state.targetTaskTitle = extraParams.targetTaskTitle || null;
@@ -125,11 +136,14 @@ function openActionParamModal(actionType, extraParams = {}) {
       break;
   }
 
-  DOM.actionParamModalOverlay.style.display = "flex";
+  setDockDrawerOpen(true, actionType);
+  // The fields were reset above while the drawer was hidden, and assigning .value raises no
+  // event, so the highlighted copy that sits behind each field has to be rebuilt by hand.
+  if (typeof repaintCodeSurfaces === "function") repaintCodeSurfaces();
 }
 
-function closeActionParamModal() {
-  DOM.actionParamModalOverlay.style.display = "none";
+function closeActionDrawer() {
+  setDockDrawerOpen(false);
 }
 
 async function handleActionParamConfirm() {
@@ -196,7 +210,7 @@ async function handleActionParamConfirm() {
     prompt = customInstructions;
   }
 
-  closeActionParamModal();
+  closeActionDrawer();
   executeConfirmedTask(prompt, actionType, actionParams);
 }
 

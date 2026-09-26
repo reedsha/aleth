@@ -299,20 +299,233 @@ cells, no lift, no gradient, no glow. */
 /* The plan tree's inline task actions (execute, rollback, stop) and its domain pills are
    styled with the task card itself, in plan-tree.css. */
 
-/* Action Parameter Modal Styling
-The dialog is squared off and opaque like the rest of the studio chrome; its inputs
-carry the editor surface (see .modal-textarea-input in modals.css). */
-.action-param-card {
-  width: 100%;
-  max-width: 580px;
+/* --------------------------------------------------------------------------
+   DOCKED COMMAND DRAWER
+   The parameter form of whichever action is active in the strip above it. It used
+   to be a centred overlay over the centre stage; it is a dock pane now, opening
+   flush under that strip, and the dock takes a taller floor while it is open (see
+   .bottom-dock.drawer-open in ui/css/dock.css).
+   -------------------------------------------------------------------------- */
+.action-drawer-panel {
+  /* The card's 8px column gap would otherwise hold the drawer off the strip above it.
+     The spacing below it is kept, so the drawer and that strip read as one control. */
+  margin-top: -8px;
+  height: 184px;
+  flex: none;
+  display: none;
+  flex-direction: column;
+  min-width: 0;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7);
+  border-radius: 0 0 4px 4px;
+  overflow: hidden;
+}
+
+.bottom-dock.drawer-open .action-drawer-panel {
+  display: flex;
+}
+
+/* The button whose form is open is the one the drawer hangs from, so the open state is
+   marked on the button itself: an accent frame, no glow. The :hover variant is needed
+   because .action-btn.primary-action:hover is more specific than a bare .active. */
+.action-btn.active,
+.action-btn.active:hover {
+  background: rgba(14, 165, 233, 0.14);
+  border-color: var(--accent-blue);
+  color: var(--text-main);
+}
+
+.drawer-head {
+  flex: none;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.drawer-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.drawer-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.drawer-subtitle {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Names the intent the gatekeeper routes, so it is technical data and takes the mono face. */
+.drawer-badge {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.drawer-head-actions {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The pane's commit row, mirroring the head: the whole form sits above these buttons. */
+.drawer-foot {
+  flex: none;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 0 10px;
+  background: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* The dialog's primary/secondary buttons keep their colours; only the geometry changes,
+   from a stacked modal footer to a toolbar row. The selector is scoped to the drawer
+   because ui/css/modals.css is bundled after this file and .btn-dialog-primary has the
+   same specificity (0,1,0), so a bare .drawer-action-btn would lose flex/padding and
+   font-size to it, and a 13px label would spill out of the 24px button. */
+.action-drawer-panel .drawer-action-btn {
+  flex: none;
+  height: 24px;
+  padding: 0 12px;
+  font-size: 11.5px;
+  border-radius: 3px;
+}
+
+.drawer-close {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.drawer-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-subtle);
+  color: var(--text-main);
+}
+
+/* The drawer keeps its height and scrolls its fields: it is a fixed strip of the dock,
+   not a box that grows over the workbench. */
+.drawer-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 14px;
+  padding: 10px 12px;
+  overflow-y: auto;
+}
+
+/* Context on the left, the field being written on the right: what the field is answered
+   against is the directive and the targeted task. */
+.drawer-context {
+  flex: 0 0 330px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.drawer-inputs {
+  flex: 1;
+  min-width: 0;
+  /* The bug report and the constraints are both directives, so on a dock wide enough to
+     hold them side by side they sit as two fields; a single field keeps the full width
+     because a display:none section is not a grid item. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  align-items: start;
+  gap: 10px;
+}
+
+.drawer-directive {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* The sections keep their own framing; only the spacing between them is tightened for the
+   drawer's height. */
+.action-drawer-panel .param-target-task-card,
+.action-drawer-panel .param-bug-section,
+.action-drawer-panel .param-ui-vision-section {
+  margin-bottom: 8px;
+}
+
+.drawer-context > :last-child,
+.drawer-inputs > :last-child {
+  margin-bottom: 0;
+}
+
+/* The field is the drawer's editor surface, not a box that resizes past the panel: the
+   height is fixed and the field scrolls its own text, so a long report cannot push the
+   panel over the workbench. */
+.action-drawer-panel .modal-textarea-input {
+  height: 72px;
+  min-height: 0;
+  resize: none;
+}
+
+/* The bug report is the one form with two fields and an attachment, so its framing is
+   tightened to keep it inside the drawer's height. */
+.action-drawer-panel .param-bug-section {
+  padding: 9px 10px;
+  gap: 6px;
+}
+
+/* A reference image is context here, not the subject of the pane. */
+.action-drawer-panel .ui-image-preview-card {
+  max-height: 76px;
+}
+
+/* Mirrors the strip's own collapse below: the subtitle and then the side column go once
+   the dock is too narrow to carry them. */
+@container (max-width: 860px) {
+  .drawer-subtitle {
+    display: none;
+  }
+
+  .drawer-context {
+    flex-basis: 250px;
+  }
+}
+
+@container (max-width: 620px) {
+  .drawer-body {
+    flex-direction: column;
+  }
+
+  .drawer-context {
+    flex: none;
+  }
 }
 
 .param-header-title {
