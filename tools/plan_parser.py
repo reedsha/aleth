@@ -95,6 +95,27 @@ def _status_from_mark(mark: str) -> str:
     return "completed" if mark.lower() == "x" else ("in_progress" if mark == "-" else "pending")
 
 
+def explicit_ui_titles(content: str) -> Set[str]:
+    """Clean titles that carry a *literal* ``[UI]`` tag in the markdown.
+
+    The parsed plan collapses an author's ``[UI]`` and one the vocabulary inferred into
+    the same ``is_ui`` boolean. That is fine for rendering and not fine for re-tagging: a
+    pass that re-derives tags would otherwise silently drop a tag a human wrote. This is
+    the record of which tags a human wrote.
+
+    Matched with the same checkbox and tag patterns the parser itself uses, so the two
+    cannot drift about what an explicit tag looks like. This compares titles rather than
+    lines, so a title repeated in two sections counts as explicit in both.
+    """
+    explicit: Set[str] = set()
+    for line in (content or "").splitlines():
+        match = _CHECKBOX_RE.match(line.strip())
+        if not match or not _UI_TAG_RE.search(match.group(2)):
+            continue
+        explicit.add(_split_ui_tag(match.group(2))[0])
+    return explicit
+
+
 def _inferred_ui(title: str) -> bool:
     """Whether a title should carry the ``[UI]`` tag on the strength of its wording.
 

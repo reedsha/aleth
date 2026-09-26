@@ -10,10 +10,12 @@ Modules
 agent_catalog   reflection over ``agents/`` -> the catalogue the UI renders
 prompt_editor   persists edited system prompts back into the ``agents/`` sources
 plan_session    scaffolds a roadmap and reads the active plan
+plan_tagging    re-derives the plan's inferred ``[UI]`` tags with System 1
 """
 
 from orchestration.agent_catalog import build_catalog, resolve_prompt_variables
 from orchestration.plan_session import read_current_plan, scaffold_plan_file
+from orchestration.plan_tagging import retag_plan
 from orchestration.prompt_editor import edit_architect_prompt, edit_coder_prompt
 
 __all__ = [
@@ -21,6 +23,7 @@ __all__ = [
     "resolve_prompt_variables",
     "read_current_plan",
     "scaffold_plan_file",
+    "retag_plan",
     "edit_architect_prompt",
     "edit_coder_prompt",
 ]

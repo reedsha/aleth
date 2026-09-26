@@ -56,6 +56,7 @@ __all__ = [
     "ENV_BACKEND",
     "Backend",
     "Resolver",
+    "active_engine",
     "classify",
     "questions",
     "reset",
@@ -363,6 +364,16 @@ def warm_up() -> None:
     something calls it, the first gatekeeper decision pays for the load.
     """
     _resolver().backend()
+
+
+def active_engine() -> str:
+    """Which engine the seam will answer with, by name.
+
+    Reported rather than inferred, so a caller that leans on the distinction -- the
+    offline plan-tagging pass, which is only worth running with the checkpoint -- can say
+    which engine actually answered instead of guessing from the reasons it returned.
+    """
+    return BACKEND_MODEL if _resolver().enabled else BACKEND_HEURISTIC
 
 
 def reset() -> None:

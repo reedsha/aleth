@@ -11,6 +11,7 @@ from env_boot import load_environment
 for _shadowed in load_environment():
     print(f"[Config] .env overrides the exported {_shadowed}")
 
+from orchestration.plan_tagging import retag_plan
 from registry import registry
 from tools.file_tools import (
     get_project_dir,
@@ -226,6 +227,23 @@ class BridgeAPI:
             "plan_json": data.get("plan_json", {})
         })
         return data
+
+    def retag_plan_with_laya(self, dry_run=False):
+        """
+        Re-derives the plan's inferred [UI] tags with the System 1 decision engine.
+
+        Deliberately off the render path: System 1 answers a title in one call, which
+        costs zero tokens but is not instant, so the tags are decided here and persisted
+        into plan.json and PLAN.md rather than re-decided on every draw. An explicit
+        [UI] the author wrote is left alone.
+
+        dry_run reports the change set without writing, because this rewrites the text of
+        a plan the user authors by hand.
+        """
+        try:
+            return {"success": True, **retag_plan(dry_run=bool(dry_run))}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def set_active_plan(self, filename: str):
         """Switches the active plan file, re-hydrates state, and notifies the UI."""
