@@ -15,6 +15,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from orchestration.workflow import actions_admin, actions_impl, events
+from agents.model_routing import architect_model
 from orchestration.workflow.context import WorkflowContext
 from tools.file_tools import get_active_plan_filename, load_plan_state
 
@@ -95,7 +96,7 @@ def run_agent_workflow(
             "agent": "software-architect",
             "name": "Lead Software Architect",
             "role": "main",
-            "model": "openai:policy/architect"
+            "model": architect_model()
         })
         time.sleep(0.3)
 

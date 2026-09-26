@@ -1,6 +1,8 @@
 from tools.file_tools import all_file_tools
 from tools.shell_tools import coder_shell_tools
 
+from agents.model_routing import coder_model
+
 CODER_DEEP_CORE_PROMPT = """You are a Senior Backend Coder with full system shell access.
 When given a task:
 1. Always use `read_file` to inspect `{{ACTIVE_PLAN_FILE}}` and `plan.json` first for context and assigned requirements.
@@ -38,7 +40,7 @@ coder_deep = {
     "display_name": "Senior Backend Coder",
     "description": "Use this agent for complex architectural logic, core algorithm design, and security implementations.",
     "system_prompt": CODER_DEEP_SYSTEM_PROMPT,
-    "model": "openai:policy/coder-deep",
+    "model": coder_model("coder-deep"),
     "tools": all_file_tools + coder_shell_tools
 }
 
@@ -47,7 +49,7 @@ coder_standard = {
     "display_name": "Junior Developer",
     "description": "Use this agent for writing tests, boilerplate, documentation, and simple CRUD endpoints.",
     "system_prompt": CODER_STANDARD_SYSTEM_PROMPT,
-    "model": "openai:policy/coder-standard",
+    "model": coder_model("coder-standard"),
     "tools": all_file_tools + coder_shell_tools
 }
 

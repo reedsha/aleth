@@ -2,6 +2,7 @@ from deepagents import create_deep_agent
 from tools.file_tools import all_file_tools
 from tools.shell_tools import architect_shell_tools
 from agents.coders import coder_deep, coder_standard
+from agents.model_routing import architect_model
 
 ARCHITECT_CORE_PROMPT = """You are the Lead Software Architect and Gatekeeper.
 
@@ -39,7 +40,7 @@ def build_architect_agent(system_prompt=None):
     
     architect_agent = create_deep_agent(
         name="software-architect",
-        model="openai:policy/architect",
+        model=architect_model(),
         system_prompt=ARCHITECT_SYSTEM_PROMPT,
         tools=architect_tools,
         subagents=[coder_deep, coder_standard]
@@ -47,7 +48,7 @@ def build_architect_agent(system_prompt=None):
     # Introspection references
     architect_agent.agent_name = "software-architect"
     architect_agent.display_name = "Lead Software Architect"
-    architect_agent.model_name = "openai:policy/architect"
+    architect_agent.model_name = architect_model()
     architect_agent.system_prompt_text = ARCHITECT_SYSTEM_PROMPT
     architect_agent.subagents_list = [coder_deep, coder_standard]
     architect_agent.tools_list = architect_tools

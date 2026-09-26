@@ -845,7 +845,7 @@ class RegistryContractTests(WorkspaceTestCase):
         architect = summary["main_agents"][0]
         self.assertEqual(architect["type"], "main")
         self.assertEqual(architect["role"], "Coordinator")
-        self.assertEqual(architect["model"], "openai:policy/architect")
+        self.assertEqual(architect["model"], "openai:policy/coder-deep-test")
         self.assertEqual(architect["subagents"], ["coder-deep", "coder-standard"])
         self.assertEqual(architect["status"], "ready")
         self.assertIn("execute_restricted_command", architect["tools"])
@@ -1099,7 +1099,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertEqual(delegation["target_agent"], "coder-standard")
         self.assertEqual(delegation["target_name"], "Junior Developer")
         self.assertEqual(delegation["task"], "Project scaffolding and runtime dependencies")
-        self.assertEqual(events[6]["model"], "openai:policy/coder-standard")
+        self.assertEqual(events[6]["model"], "openai:policy/coder-standard-test")
 
         # Deliverables land on disk and are recorded against the task.
         self.assertIn("class SolutionEngine", self.read("main.py"))
@@ -1143,7 +1143,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertEqual(delegation["task"], "Build core domain models and application logic")
 
         spawn = [e for e in events if e["type"] == "coder_spawn"][0]
-        self.assertEqual(spawn["model"], "openai:policy/coder-deep")
+        self.assertEqual(spawn["model"], "openai:policy/coder-deep-test")
 
         # An explicit target completes that task, not the first pending one.
         plan_event = [e for e in events if e["type"] == "plan_updated"][0]

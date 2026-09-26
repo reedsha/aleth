@@ -17,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 import agents.architect as arch_mod
 import agents.coders as coders_mod
+from agents.model_routing import architect_model, coder_model
 
 
 def resolve_prompt_variables(prompt: str, active_plan: str) -> str:
@@ -47,7 +48,7 @@ def build_catalog(resolve: Callable[[str], str]) -> Tuple[Dict[str, Any], Dict[s
             system_prompt = getattr(arch_mod, "ARCHITECT_SYSTEM_PROMPT", "")
             core_prompt = getattr(arch_mod, "ARCHITECT_CORE_PROMPT", system_prompt)
             custom_instructions = getattr(arch_mod, "ARCHITECT_CUSTOM_INSTRUCTIONS", "")
-            model = getattr(obj, "model_name", "openai:policy/architect")
+            model = getattr(obj, "model_name", architect_model())
             subagents = getattr(obj, "subagents_list", coders_mod.all_coders)
             subagent_names = [sub.get("name") for sub in subagents if isinstance(sub, dict)]
 
@@ -93,7 +94,7 @@ def build_catalog(resolve: Callable[[str], str]) -> Tuple[Dict[str, Any], Dict[s
                         "display_name": sub.get("display_name", sub_id.replace("-", " ").title()),
                         "type": "coder",
                         "role": "Sub-Agent",
-                        "model": sub.get("model", "openai:policy/coder"),
+                        "model": sub.get("model", coder_model(sub_id)),
                         "description": sub.get("description", ""),
                         "system_prompt": resolve(sub.get("system_prompt", "")),
                         "core_prompt": resolve(coder_core),

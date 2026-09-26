@@ -23,6 +23,7 @@ from agents import laya as laya_gate
 # is: what a free-form directive is asking for. It answers with the word list unless
 # ``LAYA_BACKEND=model`` opts the checkpoint in, so this call site reads the same either way.
 from agents import laya_model
+from agents.model_routing import architect_model, coder_model
 from orchestration.workflow import templates
 from orchestration.workflow.context import WorkflowContext
 from orchestration.workflow.events import tool_call, tool_result
@@ -141,7 +142,7 @@ def fix_bug_action(
         "id": target_coder_id,
         "name": target_coder_id,
         "display_name": "Senior Backend Coder",
-        "model": "openai:policy/coder-deep"
+        "model": coder_model(target_coder_id)
     })
 
     ctx.emit_fn({
@@ -151,15 +152,13 @@ def fix_bug_action(
         "target_name": target_coder["display_name"],
         "task": f"Fix bug in {target_file}: {clean_bug[:80]}"
     })
-    time.sleep(0.6)
-    if ctx.should_stop(): return
 
     ctx.emit_fn({
         "type": "coder_spawn",
         "agent": target_coder_id,
         "name": target_coder["display_name"],
         "role": "coder",
-        "model": target_coder.get("model", "openai:policy/coder")
+        "model": target_coder.get("model", coder_model(target_coder_id))
     })
     time.sleep(0.3)
 
@@ -333,7 +332,7 @@ def next_step_action(
         "id": target_coder_id,
         "name": target_coder_id,
         "display_name": "Senior Backend Coder" if target_coder_id == "coder-deep" else "Junior Developer",
-        "model": "openai:policy/coder"
+        "model": coder_model(target_coder_id)
     })
 
     ctx.emit_fn({
@@ -351,7 +350,7 @@ def next_step_action(
         "agent": target_coder_id,
         "name": target_coder["display_name"],
         "role": "coder",
-        "model": target_coder.get("model", "openai:policy/coder")
+        "model": target_coder.get("model", coder_model(target_coder_id))
     })
     time.sleep(0.3)
 
@@ -554,7 +553,7 @@ def custom_action(
         "id": target_coder_id,
         "name": target_coder_id,
         "display_name": "Senior Backend Coder" if target_coder_id == laya_gate.CODER_DEEP else "Junior Developer",
-        "model": f"openai:policy/{target_coder_id}"
+        "model": coder_model(target_coder_id)
     })
 
     ctx.emit_fn({
@@ -572,7 +571,7 @@ def custom_action(
         "agent": target_coder_id,
         "name": target_coder["display_name"],
         "role": "coder",
-        "model": target_coder.get("model", "openai:policy/coder")
+        "model": target_coder.get("model", coder_model(target_coder_id))
     })
     time.sleep(0.3)
 
