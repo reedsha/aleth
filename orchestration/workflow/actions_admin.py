@@ -14,8 +14,10 @@ from orchestration.workflow.events import tool_call, tool_result
 from agents import laya as laya_gate
 from agents.laya import inferred_ui
 from tools.file_tools import (
+    PLAN_JSON_FILE,
     audit_codebase_plan_sync,
     compile_plan_json_to_markdown,
+    get_active_plan_filename,
     list_workspace_files,
     load_plan_state,
     save_plan_state,
@@ -162,7 +164,12 @@ def analyze_action(ctx: WorkflowContext) -> None:
     # paths just listed, so the reconciliation is only paid for when it is likely to have
     # something to say. The tool_call/tool_result pair is emitted either way -- only the
     # verdict differs -- so the console reads the same shape and no event is gained or lost.
-    drift = laya_gate.plan_drift(load_plan_state(), file_names)
+    # The plan's own files belong to no task by design, and the audit excludes them too.
+    drift = laya_gate.plan_drift(
+        load_plan_state(),
+        file_names,
+        ignore={PLAN_JSON_FILE, get_active_plan_filename()},
+    )
     if drift.probability >= laya_gate.DRIFT_THRESHOLD:
         audit_res = audit_codebase_plan_sync()
         audit_detail = audit_res["summary"]

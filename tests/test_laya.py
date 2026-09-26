@@ -147,6 +147,21 @@ class PlanDriftTests(unittest.TestCase):
         self.assertEqual(report.untracked, 1)
         self.assertLess(report.probability, laya.DRIFT_THRESHOLD)
 
+    def test_the_plans_own_files_are_not_counted_as_untracked(self):
+        # plan.json and the plan markdown sit in the listing and belong to no task by
+        # design; counting them would make this disagree with the audit it gate-keeps.
+        report = laya.plan_drift(
+            self._plan("completed", ["main.py"]),
+            ["main.py", "PLAN.md", "plan.json"],
+            ignore={"PLAN.md", "plan.json"},
+        )
+        self.assertEqual(report.untracked, 0)
+        self.assertEqual(report.probability, 0.0)
+
+    def test_ignore_matches_on_the_bare_filename(self):
+        report = laya.plan_drift(self._plan("pending", []), ["sub/plan.json"], ignore={"plan.json"})
+        self.assertEqual(report.untracked, 0)
+
     def test_the_probability_is_capped_at_one(self):
         plan = {"steps": [
             {"id": f"task-{i}", "title": "T", "status": "completed", "files": [f"gone{i}.py"]}

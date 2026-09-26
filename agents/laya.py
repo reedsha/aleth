@@ -401,7 +401,11 @@ def inferred_ui(title: str) -> bool:
     return bool(_ui_keyword_re().search(prose.lower()))
 
 
-def plan_drift(plan: Mapping[str, Any], disk_files: Iterable[str]) -> "DriftReport":
+def plan_drift(
+    plan: Mapping[str, Any],
+    disk_files: Iterable[str],
+    ignore: Iterable[str] = (),
+) -> "DriftReport":
     """How likely the plan and the code have drifted, from paths already collected.
 
     System 1's pre-flight for the plan/code reconciliation. The full audit walks the
@@ -409,12 +413,21 @@ def plan_drift(plan: Mapping[str, Any], disk_files: Iterable[str]) -> "DriftRepo
     already listed, so it can be asked *before* deciding to spend anything more on the
     question -- which is the whole point of checking first.
 
+    ``ignore`` is the bare filenames of the plan's own files. They sit in the list the
+    caller scanned, they belong to no task by design, and counting them would make this
+    disagree with the audit it is deciding whether to run.
+
     The three signals are the three ways a plan goes stale, weighted by how strong each
     one is. A completed task whose deliverable is absent is a fact that contradicts the
     plan; a pending task whose file already exists is a reasonable hint; an unclaimed file
     is merely a sign that something was built outside the roadmap.
     """
-    disk = {str(f).replace("\\", "/").strip() for f in (disk_files or []) if str(f).strip()}
+    ignored = {str(i).strip().replace("\\", "/").lower() for i in (ignore or [])}
+    disk = set()
+    for entry in (disk_files or []):
+        path = str(entry).replace("\\", "/").strip()
+        if path and path.rsplit("/", 1)[-1].lower() not in ignored:
+            disk.add(path)
 
     completed_missing: List[str] = []
     pending_existing: List[str] = []
