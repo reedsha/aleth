@@ -221,9 +221,10 @@ def _domain_of(lowered: str, is_ui: bool, reasons: List[str]) -> str:
 class Verdict:
     """One decision plus the evidence that produced it.
 
-    ``confidence`` is a coarse band between 0.4 and 0.9, not a calibrated probability.
-    It exists so a single threshold can be applied at the call site once a model sits
-    behind ``classify``; today nothing gates on it and it is informational only.
+    ``confidence`` is a coarse band between 0.4 and 0.9 for this engine, not a
+    calibrated probability. The optional checkpoint backend (``agents/laya_model.py``)
+    reports its own calibrated answer confidence here instead. Nothing gates on it
+    today; it is informational, so a threshold can be applied at one call site later.
 
     ``coder`` is the *plan task* routing decision (``route_coder``). A free-form
     directive has no task title, so the Gatekeeper branches should use

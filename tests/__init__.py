@@ -8,3 +8,11 @@ preserving.
 Run with:
     .\\venv\\Scripts\\python.exe -m unittest discover -s tests -t .
 """
+
+import os
+
+# The Gatekeeper reads ``LAYA_BACKEND`` at its first decision, so a developer whose
+# environment -- or a stale .env -- selects the model backend would otherwise change
+# what these tests observe, and whether they pass. The suite therefore pins the engine
+# it characterizes. The model path has its own tests, which inject a router.
+os.environ["LAYA_BACKEND"] = "heuristic"

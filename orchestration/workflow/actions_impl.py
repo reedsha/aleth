@@ -18,6 +18,11 @@ import time
 from typing import Any, Dict
 
 from agents import laya as laya_gate
+# ``laya_gate`` owns the vocabulary (routing a task to a Coder, naming a domain), which
+# is arithmetic and never worth a model call. ``laya_model`` owns the one decision that
+# is: what a free-form directive is asking for. It answers with the word list unless
+# ``LAYA_BACKEND=model`` opts the checkpoint in, so this call site reads the same either way.
+from agents import laya_model
 from orchestration.workflow import templates
 from orchestration.workflow.context import WorkflowContext
 from orchestration.workflow.events import tool_call, tool_result
@@ -481,7 +486,7 @@ def custom_action(
 ) -> None:
     """The Gatekeeper fallback: classify a free-form prompt, then answer or delegate."""
     plan_file = ctx.plan_file
-    verdict = laya_gate.classify(user_message)
+    verdict = laya_model.classify(user_message)
     is_admin_bypass = verdict.intent == laya_gate.INTENT_ADMIN
 
     if is_admin_bypass:
