@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from markdown_it import MarkdownIt
 
+from tools.task_tags import UI_TAG, split_tag, tag_prefix
 from tools.workspace import get_active_plan_filename
 
 
@@ -129,18 +130,31 @@ def _inferred_ui(title: str) -> bool:
     return inferred_ui(title)
 
 
-def _split_ui_tag(title: str) -> Tuple[str, bool]:
-    """Splits a title into (clean title, is it a UI task).
+def _split_ui_tag(title: str) -> Tuple[str, bool, Optional[str]]:
+    """Splits a title into (clean title, is it a UI task, its domain tag or None).
 
-    An explicit ``[UI]`` tag is honoured exactly as written. Otherwise the keyword
-    vocabulary decides -- the same vocabulary ``templates.select`` already matches on
-    -- so a task cannot be drawn as a plain module in the tree while the delegation
-    path routes it, delegates it and renders it as a UI task.
+    A leading tag from the project's own vocabulary (``tools.task_tags``) is the author's
+    own claim about the task, so it is taken exactly as written: the ``[UI]`` case is
+    unchanged, and an ``[API]`` or ``[CI/CD]`` is stripped and recorded rather than left
+    sitting in the title. Tags have to be understood *before* a compiler can write one --
+    otherwise the token survives as literal title text and compounds on every save.
+
+    With no tag, the keyword vocabulary decides -- the same vocabulary
+    ``templates.select`` already matches on -- so a task cannot be drawn as a plain
+    module in the tree while the delegation path routes it, delegates it and renders it
+    as a UI task.
+
+    A ``[UI]`` that is not at the start of the title still counts, as it always has: the
+    only tags written as a prefix are this project's own, but a hand-written plan may
+    hold one mid-sentence and re-reading it must not change what it meant.
     """
+    clean, tag = split_tag(title)
+    if tag is not None:
+        return clean, tag == UI_TAG, tag
     if _UI_TAG_RE.search(title):
-        return _UI_TAG_RE.sub("", title, count=1).strip(), True
-    clean = title.strip()
-    return clean, _inferred_ui(clean)
+        return _UI_TAG_RE.sub("", title, count=1).strip(), True, UI_TAG
+    stripped = title.strip()
+    return stripped, _inferred_ui(stripped), None
 
 
 def _collect_state_summary(tokens: List[Any]) -> Tuple[Optional[Dict[str, Any]], Optional[int], Optional[int]]:
@@ -234,13 +248,14 @@ def _collect_sub_steps(tokens: List[Any]) -> Tuple[Dict[str, List[List[Dict[str,
         sub_steps = []
         for item in collected:
             mark, raw_title = _CHECKBOX_RE.match(item["text"]).groups()
-            clean_title, is_ui = _split_ui_tag(raw_title)
+            clean_title, is_ui, tag = _split_ui_tag(raw_title)
             sub_step = {
                 # Filled in by the caller, which is where the parent's id is known.
                 "id": None,
                 "title": clean_title,
                 "status": _status_from_mark(mark),
                 "is_ui": is_ui,
+                "tag": tag,
                 "details": [],
                 "files": [],
             }
@@ -303,13 +318,14 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                     if task_hdr:
                         task_counter += 1
                         t_title = task_hdr.group(1).strip()
-                        clean_title, is_ui = _split_ui_tag(t_title)
+                        clean_title, is_ui, tag = _split_ui_tag(t_title)
                         task_obj = {
                             "id": f"task-{task_counter}",
                             "section": current_section["title"],
                             "title": clean_title,
                             "status": "completed",
                             "is_ui": is_ui,
+                            "tag": tag,
                             "details": [],
                             "files": [],
                             "sub_steps": []
@@ -353,7 +369,7 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                 if cb_match:
                     mark, raw_task_title = cb_match.groups()
                     task_counter += 1
-                    clean_task_title, is_ui = _split_ui_tag(raw_task_title)
+                    clean_task_title, is_ui, tag = _split_ui_tag(raw_task_title)
 
                     task_obj = {
                         "id": f"task-{task_counter}",
@@ -361,6 +377,7 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                         "title": clean_task_title,
                         "status": _status_from_mark(mark),
                         "is_ui": is_ui,
+                        "tag": tag,
                         "details": [],
                         "files": [],
                         "sub_steps": []
@@ -387,13 +404,14 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                         clean_item = re.sub(r"^(?:[*-]|\d+[.)])\s*", "", item_text).strip()
                         if clean_item and len(clean_item) > 2 and not clean_item.startswith("http"):
                             task_counter += 1
-                            clean_task_title, is_ui = _split_ui_tag(clean_item)
+                            clean_task_title, is_ui, tag = _split_ui_tag(clean_item)
                             task_obj = {
                                 "id": f"task-{task_counter}",
                                 "section": current_section["title"],
                                 "title": clean_task_title,
                                 "status": "pending",
                                 "is_ui": is_ui,
+                                "tag": tag,
                                 "details": item_details,
                                 "files": [],
                                 "sub_steps": []
@@ -471,7 +489,14 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
         for task in sec.get("tasks", []):
             st = task.get("status", "pending")
             mark = "x" if st == "completed" else ("-" if st == "in_progress" else " ")
-            ui_prefix = "[UI] " if task.get("is_ui") else ""
+            # A tag the plan carries is written back as itself. A task with only the
+            # inferred UI flag still gets [UI], so plans written before the vocabulary
+            # existed keep round-tripping unchanged.
+            ui_prefix = (
+                tag_prefix(task["tag"])
+                if task.get("tag")
+                else ("[UI] " if task.get("is_ui") else "")
+            )
             t_title = task.get("title", "")
             files = [f for f in task.get("files", []) if f]
             lines.append(f"- [{mark}] {ui_prefix}{t_title}")
@@ -480,7 +505,11 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
             for sub_step in task.get("sub_steps") or []:
                 sub_status = sub_step.get("status", "pending")
                 sub_mark = "x" if sub_status == "completed" else ("-" if sub_status == "in_progress" else " ")
-                sub_ui_prefix = "[UI] " if sub_step.get("is_ui") else ""
+                sub_ui_prefix = (
+                    tag_prefix(sub_step["tag"])
+                    if sub_step.get("tag")
+                    else ("[UI] " if sub_step.get("is_ui") else "")
+                )
                 lines.append(f"  - [{sub_mark}] {sub_ui_prefix}{sub_step.get('title', '')}")
                 for d in sub_step.get("details") or []:
                     lines.append(f"    - {d}")

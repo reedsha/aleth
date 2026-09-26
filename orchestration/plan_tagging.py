@@ -32,8 +32,23 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 from tools.plan_parser import explicit_ui_titles
 from tools.plan_state import load_plan_state, save_plan_state
+from tools.task_tags import UI_TAG
 
 DOMAIN_UI = "UI"
+
+# The engine answers with a coarse domain, and only these map onto the plan's tag
+# vocabulary without stretching it: the checkpoint scores 9/10 over seven classes, where
+# asking a 421M model to choose among the vocabulary's fifty-seven tags would not hold
+# up. "general" deliberately maps to nothing -- untagged is a real answer, and a wrong
+# tag is worse than an absent one, because the tree would render it as a claim.
+_TAG_BY_DOMAIN = {
+    "UI": "UI",
+    "API": "API",
+    "DB": "DB",
+    "TESTS": "TEST",
+    "DOCS": "DOCS",
+    "CORE": "BIZ",
+}
 
 
 def _entries(task: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -108,7 +123,13 @@ def retag_plan(
             kept_explicit += 1
         else:
             verdict = engine(title)
-            now = str(getattr(verdict, "domain", "")).upper() == DOMAIN_UI
+            domain = str(getattr(verdict, "domain", "")).upper()
+            now = domain == DOMAIN_UI
+            tag = _TAG_BY_DOMAIN.get(domain)
+            if tag:
+                entry["tag"] = tag
+            else:
+                entry.pop("tag", None)
 
         ui_after += now
         if now != was:

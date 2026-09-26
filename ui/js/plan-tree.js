@@ -92,14 +92,16 @@ function planStatusIcon(stepState) {
   return '<div class="step-status-icon pending"></div>';
 }
 
-// Domain pills are only ever drawn from data the plan actually carries. `is_ui` is the
-// one domain flag in the schema today -- tools/plan_parser.py reads a "[UI]" tag into it
-// and writes it back out -- so it is the only pill that can be shown without inventing
-// metadata. API and DB pills hook in here, and only here, once the plan schema carries
-// a domain for them.
+// Domain pills are drawn only from data the plan actually carries. `tag` is the plan's
+// own tag vocabulary (tools/task_tags.py); `is_ui` is the boolean it grew out of and is
+// still honoured, so a plan written before the vocabulary existed keeps its pill.
+// A tag outside the coloured set below falls back to the base pill, which is a complete
+// style rather than a broken one -- the tree never invents a domain for a task.
 function planDomainPills(step) {
-  if (!step.is_ui) return "";
-  return '<span class="task-domain-pill pill-ui">UI</span>';
+  const tag = step.tag || (step.is_ui ? "UI" : "");
+  if (!tag) return "";
+  const slug = tag.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return `<span class="task-domain-pill pill-${slug}">${escapeHtml(tag)}</span>`;
 }
 
 // Deliverables sit under the title rather than inside the collapsed details drawer, so
