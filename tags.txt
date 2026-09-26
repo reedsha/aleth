@@ -1,0 +1,25 @@
+[FE]	Frontend	UI components, UX flows, CSS, styling, web/mobile views
+[BE]	Backend	Core domain logic, business rules, server processing
+[API]	Interfaces	REST, GraphQL, gRPC endpoints, routes, API specs
+[DB]	Database	Schemas, SQL queries, migrations, ORMs
+[AUTH]	Identity	Authentication, OAuth, JWT, permissions, RBAC
+[INFRA]	Infrastructure	Cloud resources, Terraform, networking, DNS, load balancers
+[DEVOPS]	Delivery	CI/CD pipelines, Docker, Kubernetes, release scripts
+[TEST]	Quality	Unit, integration, E2E tests, mocks, test runners
+[SEC]	Security	Vulnerability fixes, security audits, hardening, compliance
+[OBS]	Observability	Logging, metrics, tracing, alerts, dashboards
+[PERF]	Optimization	Query tuning, caching (Redis), memory leaks, bundle size
+[ASYNC]	Event Processing	Background queues, pub/sub, WebSockets, background workers
+[INTEG]	External Services	Third-party SDKs, external API wrappers, webhooks
+[CONFIG]	System Setup	Env variables, feature flags, secrets management
+[DATA]	Data Systems	Data pipelines, ETL jobs, analytics, batch tasks
+[AI]	AI & ML	Prompts, LLM workflows, vector databases, model integrations
+[ARCH]	Design	System architecture, ADRs, high-level technical decisions
+[REFACTOR]	Code Health	Technical debt resolution, code cleanup, restructuring
+[BUG]	Defect Fixes	Bug resolution, edge-case fixes, error handling
+[HOTFIX]	Production Patch	Immediate production patches, critical fixes
+[SPIKE]	Research	Exploratory code, feasibility checks, POCs
+[DOCS]	Documentation	READMEs, dev guides, inline code documentation
+[DX]	Tooling	Linters, compilers, bundlers, local dev tools
+[DEPS]	Packages	Dependency upgrades, lockfile management, version bumps
+[I18N]	Localization	Multi-language support, translation keys, formatting

@@ -185,7 +185,7 @@ class UiInferenceTests(unittest.TestCase):
     def test_an_inferred_tag_is_written_out_and_survives_a_compile_cycle(self):
         """The first save promotes the guess to an explicit tag, and stays put after.
 
-        The compiler emits ``[UI] `` for a UI task, so a second pass reads a tag where
+        The compiler emits ``[FE] `` for a UI task, so a second pass reads a tag where
         the first pass had only wording. The two passes must agree, or the plan file
         would rewrite itself on every save.
         """
@@ -193,7 +193,7 @@ class UiInferenceTests(unittest.TestCase):
         once = plan_parser.compile_plan_json_to_markdown(
             plan_parser.parse_markdown_to_plan_dict(source, "PLAN.md")
         )
-        self.assertIn("[UI] Build the dashboard view", once)
+        self.assertIn("[FE] Build the dashboard view", once)
         twice = plan_parser.compile_plan_json_to_markdown(
             plan_parser.parse_markdown_to_plan_dict(once, "PLAN.md")
         )

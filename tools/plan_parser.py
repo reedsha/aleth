@@ -513,7 +513,7 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
             ui_prefix = (
                 tag_prefix(task["tag"])
                 if task.get("tag")
-                else ("[UI] " if task.get("is_ui") else "")
+                else (tag_prefix(UI_TAG) if task.get("is_ui") else "")
             )
             t_title = task.get("title", "")
             files = [f for f in task.get("files", []) if f]
@@ -526,7 +526,7 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
                 sub_ui_prefix = (
                     tag_prefix(sub_step["tag"])
                     if sub_step.get("tag")
-                    else ("[UI] " if sub_step.get("is_ui") else "")
+                    else (tag_prefix(UI_TAG) if sub_step.get("is_ui") else "")
                 )
                 lines.append(f"  - [{sub_mark}] {sub_ui_prefix}{sub_step.get('title', '')}")
                 for d in sub_step.get("details") or []:

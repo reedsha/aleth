@@ -38,16 +38,16 @@ DOMAIN_UI = "UI"
 
 # The engine answers with a coarse domain, and only these map onto the plan's tag
 # vocabulary without stretching it: the checkpoint scores 9/10 over seven classes, where
-# asking a 421M model to choose among the vocabulary's fifty-seven tags would not hold
+# asking a 421M model to choose among the vocabulary's twenty-five tags would not hold
 # up. "general" deliberately maps to nothing -- untagged is a real answer, and a wrong
 # tag is worse than an absent one, because the tree would render it as a claim.
 _TAG_BY_DOMAIN = {
-    "UI": "UI",
+    "UI": "FE",
     "API": "API",
     "DB": "DB",
     "TESTS": "TEST",
     "DOCS": "DOCS",
-    "CORE": "BIZ",
+    "CORE": "BE",
 }
 
 

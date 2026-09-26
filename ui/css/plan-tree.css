@@ -288,7 +288,8 @@
   white-space: nowrap;
 }
 
-.task-domain-pill.pill-ui {
+.task-domain-pill.pill-ui,
+.task-domain-pill.pill-fe {
   color: #f472b6;
   background: rgba(236, 72, 153, 0.12);
   border-color: rgba(236, 72, 153, 0.32);
@@ -327,6 +328,7 @@
 }
 
 .task-domain-pill.pill-biz,
+.task-domain-pill.pill-be,
 .task-domain-pill.pill-arch {
   color: #a78bfa;
   background: rgba(167, 139, 250, 0.12);

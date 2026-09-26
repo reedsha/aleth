@@ -28,7 +28,7 @@ PLAN_MD = """# Project Plan: Demo
 - [ ] Pending item
 - [-] Working item
 - [!] not a real checkbox
-- [ ] [UI] Dashboard view
+- [ ] [FE] Dashboard view
 
 ## 2. Build
 - [ ] Second section task
@@ -176,7 +176,7 @@ class PlanParserTests(unittest.TestCase):
         self.assertTrue(compiled.startswith("# Project Plan: Demo"))
         self.assertIn("- [x] Scaffolding", compiled)
         self.assertIn("- [-] Working item", compiled)
-        self.assertIn("- [ ] [UI] Dashboard view", compiled)
+        self.assertIn("- [ ] [FE] Dashboard view", compiled)
         self.assertTrue(compiled.endswith("\n"))
 
         reparsed = ft.parse_markdown_to_plan_dict(compiled, "PLAN.md")
@@ -264,7 +264,7 @@ class PlanParserTests(unittest.TestCase):
     def test_ui_tag_is_only_a_tag_when_it_stands_alone(self):
         # A bare substring test stripped the tag out of the middle of a title that merely
         # mentioned it, leaving an orphaned empty code span behind.
-        md = "# P\n\n## 1. S\n- [ ] Wire Laya zero-token `[UI]` task tagging into the parser\n- [ ] [UI] Dashboard view\n"
+        md = "# P\n\n## 1. S\n- [ ] Wire Laya zero-token `[UI]` task tagging into the parser\n- [ ] [FE] Dashboard view\n"
         steps = ft.parse_markdown_to_plan_dict(md, "P.md")["steps"]
 
         self.assertFalse(steps[0]["is_ui"])

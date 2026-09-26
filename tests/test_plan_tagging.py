@@ -87,11 +87,11 @@ class RetagPlanTests(unittest.TestCase):
 
     def test_an_explicit_tag_survives_an_engine_that_disagrees(self):
         # The engine says general; the author wrote [UI]. The author wins.
-        plan = _plan([_task("task-1", "retire the resize seam", is_ui=True, tag="UI")])
+        plan = _plan([_task("task-1", "retire the resize seam", is_ui=True, tag="FE")])
         result, save = self._retag(
             plan,
             _classifier({}),  # general for everything
-            explicit={"retire the resize seam": "UI"},
+            explicit={"retire the resize seam": "FE"},
         )
         self.assertTrue(plan["sections"][0]["tasks"][0]["is_ui"])
         self.assertEqual(result["kept_explicit"], 1)
