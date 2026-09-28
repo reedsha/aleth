@@ -102,7 +102,6 @@ def run_agent_workflow(
 
         emit({
             "type": "workflow_started",
-            "message": user_message,
             "plan_file": plan_file,
             "action_type": action_type
         })
@@ -111,7 +110,6 @@ def run_agent_workflow(
             "type": "architect_spawn",
             "agent": "software-architect",
             "name": "Lead Software Architect",
-            "role": "main",
             "model": architect_model()
         })
         time.sleep(0.3)
@@ -145,8 +143,7 @@ def run_agent_workflow(
         emit({
             "type": "agent_error",
             "agent": "software-architect",
-            "error": f"Execution error: {str(e)}",
-            "can_retry": True
+            "error": f"Execution error: {str(e)}"
         })
         emit({
             "type": "workflow_complete",

@@ -399,7 +399,14 @@ class BridgeAPI:
             self.emit_event({"type": "laya_tagging_done", "success": False, "error": str(e)})
             return
 
-        self.emit_event({"type": "laya_tagging_done", "success": True, **result})
+        # Only the fields the UI reads cross the wire: the tagging result also carries totals,
+        # dry-run flags and a before/after count map that no consumer uses (audit L2).
+        self.emit_event({
+            "type": "laya_tagging_done",
+            "success": True,
+            "changed": result.get("changed", []),
+            "engine": result.get("engine", ""),
+        })
 
         # The tags changed, so the tree, the pills and the workbench all need the new
         # payload. This is the same funnel every other plan write uses.

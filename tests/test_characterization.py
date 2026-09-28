@@ -1556,10 +1556,12 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertEqual(summary["files"], ["main.py", "test_main.py"])
         # The diagnosis is structured for the result view, not only narrated into the log:
         # the frontend's root-cause / resolution split reads these two fields.
-        self.assertEqual(summary["root_cause"], "Input validation or unexpected exception handler.")
+        # The offline path does not diagnose, so the field states the reported symptom rather
+        # than a canned cause (audit M14).
+        self.assertEqual(summary["root_cause"], "Reported symptom: IndexError in run()")
         self.assertEqual(
             summary["fix_spec"],
-            "Implement surgical exception guard and regression test in `test_main.py`.",
+            "Apply a defensive guard for the reported failure in `test_main.py`.",
         )
         self.assertEqual(
             events[-1]["message"], "Bug surgically diagnosed, patched, and verified."
@@ -1568,6 +1570,19 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         # No target task was named, so no plan state is written: the console/palette path
         # stays byte-for-byte what it has always emitted.
         self.assertEqual([e for e in events if e["type"] == "plan_updated"], [])
+
+    def test_fix_bug_refuses_when_no_file_can_be_targeted(self):
+        """No code in the workspace and no file named: refuse rather than invent main.py (M15)."""
+        self._seed_scaffold()
+        events = self._collect("fix_bug", "[ACTION: FIX_BUG] something is broken",
+                               {"bugDescription": "it crashes"})
+
+        summary = [e for e in events if e["type"] == "architect_summary"][0]["summary"]
+        self.assertEqual(summary["status"], "Input Required")
+        self.assertEqual(events[-1]["message"], "Bug report needs a target file.")
+        # Nothing was written: the refusal happens before any Coder is summoned.
+        self.assertNotIn("delegation", self._types(events))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "main.py")))
 
     def test_fix_bug_reports_failure_when_the_regression_test_fails(self):
         """The fix is gated like a task: a failing regression test is not an approval.
@@ -1821,14 +1836,14 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         for e in events:
             first.setdefault(e["type"], e)
 
-        self.assertEqual(list(first["workflow_started"]), ["type", "message", "plan_file", "action_type"])
-        self.assertEqual(list(first["architect_spawn"]), ["type", "agent", "name", "role", "model"])
+        self.assertEqual(list(first["workflow_started"]), ["type", "plan_file", "action_type"])
+        self.assertEqual(list(first["architect_spawn"]), ["type", "agent", "name", "model"])
         self.assertEqual(list(first["log"]), ["type", "agent", "log_type", "text"])
         self.assertEqual(
             list(first["delegation"]),
             ["type", "from_agent", "target_agent", "target_name", "task"],
         )
-        self.assertEqual(list(first["coder_spawn"]), ["type", "agent", "name", "role", "model"])
+        self.assertEqual(list(first["coder_spawn"]), ["type", "agent", "name", "model"])
         self.assertEqual(list(first["coder_summary"]), ["type", "agent", "summary"])
         self.assertEqual(list(first["plan_updated"]), ["type", "filename", "content", "tree", "plan_json"])
         self.assertEqual(list(first["architect_summary"]), ["type", "agent", "summary"])

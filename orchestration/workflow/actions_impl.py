@@ -140,7 +140,42 @@ def fix_bug_action(
     # The bug report usually names the file it is about; failing that, the first code file
     # in the workspace, which is the diagnosis-by-inspection this replaced.
     reported_target = generation.path_in_text(clean_bug)
-    target_file = reported_target or (py_files[0] if py_files else "main.py")
+    if not reported_target and not py_files:
+        # Nothing names a file and the workspace has no code to inspect. Inventing `main.py`
+        # and writing a patch into it is worse than refusing (audit M15): this is the same
+        # refusal the empty-report gate gives, worded for the missing-target case. "Input
+        # Required" is the status the UI already reads as "needs a human".
+        ctx.stream_text(
+            "software-architect",
+            "> [GATEKEEPER EVALUATION] Fix refused: no target file.\n"
+            "> The report names no code file, and the workspace holds none.\n"
+            "> Name the file in the report, or run Execute Next Step to create code first.",
+            log_type="decision",
+            delay=0.02
+        )
+        ctx.emit_fn({
+            "type": "architect_summary",
+            "agent": "software-architect",
+            "summary": {
+                "title": "Fix Bug Needs A Target",
+                "status": "Input Required",
+                "files": [],
+                "deliverables": [
+                    "No code file to patch, and the report named none.",
+                ],
+                "proposals": [
+                    "Name the file in the bug report.",
+                    "Run Execute Next Step to create code first.",
+                ]
+            }
+        })
+        ctx.emit_fn({
+            "type": "workflow_complete",
+            "status": "finished",
+            "message": "Bug report needs a target file."
+        })
+        return
+    target_file = reported_target or py_files[0]
     test_file = generation.paired_test_path(target_file) if reported_target else ""
     if not test_file:
         test_file = [f for f in py_files if "test" in f]
@@ -164,8 +199,15 @@ def fix_bug_action(
     # The diagnosis is carried as fields, not only narrated. The architect's card and the
     # frontend's root-cause/resolution result view both read it, and recovering it by
     # parsing this log line would couple them to one string's exact wording.
-    root_cause = "Input validation or unexpected exception handler."
-    fix_spec = f"Implement surgical exception guard and regression test in `{test_file}`."
+    # The offline patch path applies a defensive guard; it does not diagnose. Rather than
+    # present a canned cause as a finding, the field states what is actually known -- the
+    # reported symptom (audit M14). When System 2 runs, its reasoning is surfaced in the
+    # Coder's card instead, so a real diagnosis is not hidden by this label.
+    root_cause = (
+        f"Reported symptom: {clean_bug[:140]}" if clean_bug
+        else "Not diagnosed: the report supplied no description."
+    )
+    fix_spec = f"Apply a defensive guard for the reported failure in `{test_file}`."
 
     ctx.stream_text(
         "software-architect",
@@ -201,7 +243,6 @@ def fix_bug_action(
         "type": "coder_spawn",
         "agent": target_coder_id,
         "name": target_coder["display_name"],
-        "role": "coder",
         "model": target_coder.get("model", coder_model(target_coder_id))
     })
     time.sleep(0.3)
@@ -484,6 +525,9 @@ def next_step_action(
     # the pill the tree draws and the delegation path cannot disagree about it.
     ui_task = target_task.get("tag") == UI_TAG
     ui_image = action_params.get("uiImagePath") or action_params.get("attachment")
+    # The mockup's bytes, as a data URL, when the UI could read them. Only a UI task with an
+    # attached image has this; the model request is text-only when it is absent.
+    ui_image_data = action_params.get("uiImageData") or ""
 
     ctx.stream_text(
         "software-architect",
@@ -518,14 +562,11 @@ def next_step_action(
         "target_name": target_coder["display_name"],
         "task": target_task.get("title")
     })
-    time.sleep(0.6)
-    if ctx.should_stop(): return
 
     ctx.emit_fn({
         "type": "coder_spawn",
         "agent": target_coder_id,
         "name": target_coder["display_name"],
-        "role": "coder",
         "model": target_coder.get("model", coder_model(target_coder_id))
     })
     time.sleep(0.3)
@@ -549,6 +590,7 @@ def next_step_action(
         deliverable=deliverable,
         plan_file=plan_file,
         filename=out_filename,
+        image_data_urls=[ui_image_data] if ui_image_data else None,
         # A real call can take seconds; narrate it so the wait does not read as a hang.
         # The offline path never fires this, so its event stream is unchanged.
         on_request=lambda model, prompt_chars: ctx.stream_text(
@@ -871,14 +913,11 @@ def custom_action(
         "target_name": target_coder["display_name"],
         "task": user_message
     })
-    time.sleep(0.6)
-    if ctx.should_stop(): return
 
     ctx.emit_fn({
         "type": "coder_spawn",
         "agent": target_coder_id,
         "name": target_coder["display_name"],
-        "role": "coder",
         "model": target_coder.get("model", coder_model(target_coder_id))
     })
     time.sleep(0.3)

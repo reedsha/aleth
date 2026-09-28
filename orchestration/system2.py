@@ -26,7 +26,7 @@ time would decide the app's start-up cost.
 import os
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # The opt-out. Unset means "enabled once configured", so a checkout with a ``.env``
 # starts making real calls, while the test suite sets this to ``0`` to pin the offline
@@ -124,11 +124,16 @@ def complete(
     max_tokens: int = 16384,
     timeout: float = 180.0,
     client: Any = None,
+    images: Optional[List[str]] = None,
 ) -> Optional[Completion]:
     """One chat completion, or ``None`` when it cannot be made.
 
     ``client`` is injectable so the seam can be exercised without a network; production
     callers leave it unset and the provider endpoint is read from the environment.
+
+    ``images`` are data URLs (``data:image/png;base64,...``) attached to the user turn as
+    OpenAI-compatible ``image_url`` parts, for a vision-capable *model*. With none, the
+    message is the plain string it has always been -- so the text-only path is unchanged.
 
     Returns ``None`` -- and reports one line to stderr -- for every failure mode: no
     configuration, a transport error, or an empty answer. The caller decides what to do
@@ -147,13 +152,22 @@ def complete(
             api_key=config["api_key"], base_url=config["base_url"], timeout=timeout
         )
 
+    # A vision request carries the text plus one ``image_url`` part per image. The URLs are
+    # data URLs supplied by the caller, so nothing here knows where the bytes came from; with
+    # no images the content stays a plain string, which is what keeps the text path identical.
+    user_content: Any = user
+    if images:
+        user_content = [{"type": "text", "text": user}] + [
+            {"type": "image_url", "image_url": {"url": url}} for url in images
+        ]
+
     try:
         response = client.chat.completions.create(
             model=route_model(model),
             max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_content},
             ],
         )
     except Exception as exc:

@@ -21,7 +21,7 @@ and keeps the pinned event streams meaningful.
 import posixpath
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, List, Mapping, Optional
 
 from agents.model_routing import coder_model
 from orchestration.workflow.context import slice_task_context
@@ -197,6 +197,7 @@ def generate_code(
     fallback_code: str,
     completer: Optional[Callable[..., Any]] = None,
     on_request: Optional[Callable[[str, int], None]] = None,
+    image_data_urls: Optional[List[str]] = None,
 ) -> GeneratedFile:
     """One file's contents, from System 2 when available, else the caller's fallback.
 
@@ -229,11 +230,16 @@ def generate_code(
         on_request(model, len(instruction))
 
     try:
-        completion = completer(
-            model=model,
-            system=build_system_prompt(coder_id, plan_file),
-            user=instruction,
-        )
+        call_kwargs: Any = {
+            "model": model,
+            "system": build_system_prompt(coder_id, plan_file),
+            "user": instruction,
+        }
+        # `images` is passed only when there are some, so the text-only call keeps exactly the
+        # signature it had and a completer written before vision still works.
+        if image_data_urls:
+            call_kwargs["images"] = image_data_urls
+        completion = completer(**call_kwargs)
     except Exception as exc:  # the completer contract is "return None"; stay safe anyway
         return GeneratedFile(code=fallback_code, error=str(exc))
 
@@ -270,6 +276,7 @@ def generate_deliverable(
     filename: Optional[str] = None,
     completer: Optional[Callable[..., Any]] = None,
     on_request: Optional[Callable[[str, int], None]] = None,
+    image_data_urls: Optional[List[str]] = None,
 ) -> GeneratedFile:
     """A roadmap task's deliverable: the plan slice, handed to :func:`generate_code`.
 
@@ -288,4 +295,5 @@ def generate_deliverable(
         fallback_code=deliverable.code,
         completer=completer,
         on_request=on_request,
+        image_data_urls=image_data_urls,
     )

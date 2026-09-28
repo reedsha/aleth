@@ -223,6 +223,37 @@ class GenerateDeliverableTests(unittest.TestCase):
         self.assertFalse(result.used_llm)
         self.assertEqual(result.code, self._deliverable().code)
 
+    def test_image_data_reaches_the_completer_when_present(self):
+        seen = {}
+
+        def fake(**kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(text="print(1)", model="m")
+
+        with mock.patch.object(system2, "is_enabled", return_value=True):
+            generation.generate_deliverable(
+                coder_id="coder-deep", task=PLAN["steps"][0], plan=PLAN,
+                deliverable=self._deliverable(), plan_file="PLAN.md",
+                completer=fake, image_data_urls=["data:image/png;base64,AAAA"],
+            )
+        self.assertEqual(seen["images"], ["data:image/png;base64,AAAA"])
+
+    def test_no_images_kwarg_is_passed_when_there_are_none(self):
+        # The text-only call must keep exactly the signature it had, so a completer written
+        # before vision still works (the pinned offline event streams depend on it).
+        seen = {}
+
+        def fake(**kwargs):
+            seen.update(kwargs)
+            return SimpleNamespace(text="print(1)", model="m")
+
+        with mock.patch.object(system2, "is_enabled", return_value=True):
+            generation.generate_deliverable(
+                coder_id="coder-deep", task=PLAN["steps"][0], plan=PLAN,
+                deliverable=self._deliverable(), plan_file="PLAN.md", completer=fake,
+            )
+        self.assertNotIn("images", seen)
+
     def test_a_completer_that_raises_still_falls_back(self):
         def boom(**kwargs):
             raise RuntimeError("unexpected")
@@ -235,6 +266,36 @@ class GenerateDeliverableTests(unittest.TestCase):
             )
         self.assertFalse(result.used_llm)
         self.assertEqual(result.code, self._deliverable().code)
+
+
+class VisionMessageTests(unittest.TestCase):
+    """An attached image becomes a real vision part -- not only a named reference."""
+
+    def _client(self, captured):
+        class FakeCompletions:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content="file"))],
+                    usage=None,
+                )
+        return SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+
+    def test_an_image_is_attached_as_a_vision_part(self):
+        captured = {}
+        result = system2.complete(
+            model="m", system="s", user="describe it", client=self._client(captured),
+            images=["data:image/png;base64,AAAA"],
+        )
+        self.assertIsNotNone(result)
+        content = captured["messages"][1]["content"]
+        self.assertEqual(content[0], {"type": "text", "text": "describe it"})
+        self.assertEqual(content[1]["image_url"]["url"], "data:image/png;base64,AAAA")
+
+    def test_no_images_keeps_the_plain_string_message(self):
+        captured = {}
+        system2.complete(model="m", system="s", user="plain", client=self._client(captured))
+        self.assertEqual(captured["messages"][1]["content"], "plain")
 
 
 if __name__ == "__main__":
