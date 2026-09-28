@@ -100,7 +100,9 @@ function echoAgentEvent(event) {
       appendConsoleLine("ok", event.result || "done");
       break;
     case "delegation":
-      appendConsoleLine("delegate", `delegate -> ${event.target_name || event.target_agent || "coder"}`);
+      // The delegated task text is the useful half of this event; showing only the target
+      // left the transcript with a delegate line and no idea what was delegated (audit L2).
+      appendConsoleLine("delegate", `delegate -> ${event.target_name || event.target_agent || "coder"}${event.task ? " \u00b7 " + event.task : ""}`);
       break;
     case "coder_summary":
     case "architect_summary":

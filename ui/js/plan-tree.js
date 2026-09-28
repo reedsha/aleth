@@ -322,10 +322,14 @@ function renderPlanTree() {
     ? state.planJson.sections
     : null;
 
-  const total = state.planTree ? state.planTree.length : 0;
-  const completed = state.planTree ? state.planTree.filter(t => t.status === "completed").length : 0;
-  const inProgress = state.planTree ? state.planTree.filter(t => t.status === "in_progress").length : 0;
-  const failed = state.planTree ? state.planTree.filter(t => t.status === "failed").length : 0;
+  // Prefer plan.json's own metrics: the tree is derived from the same `steps` list, so the two
+  // cannot disagree, and this keeps the backend's figure the single source of the meter
+  // (audit L4). The derived counts stay as the fallback for a payload without metrics.
+  const metrics = state.planJson && state.planJson.metrics;
+  const total = metrics ? (metrics.total_tasks || 0) : (state.planTree ? state.planTree.length : 0);
+  const completed = metrics ? (metrics.completed_tasks || 0) : (state.planTree ? state.planTree.filter(t => t.status === "completed").length : 0);
+  const inProgress = metrics ? (metrics.in_progress_tasks || 0) : (state.planTree ? state.planTree.filter(t => t.status === "in_progress").length : 0);
+  const failed = metrics ? (metrics.failed_tasks || 0) : (state.planTree ? state.planTree.filter(t => t.status === "failed").length : 0);
   updateProgressMeter(completed, total, inProgress, failed);
   // The header is part of the same funnel: every plan load, save, sync and rollback that
   // redraws the tree also refreshes the tiles above it.

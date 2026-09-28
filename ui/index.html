@@ -7887,10 +7887,14 @@ function renderPlanTree() {
     ? state.planJson.sections
     : null;
 
-  const total = state.planTree ? state.planTree.length : 0;
-  const completed = state.planTree ? state.planTree.filter(t => t.status === "completed").length : 0;
-  const inProgress = state.planTree ? state.planTree.filter(t => t.status === "in_progress").length : 0;
-  const failed = state.planTree ? state.planTree.filter(t => t.status === "failed").length : 0;
+  // Prefer plan.json's own metrics: the tree is derived from the same `steps` list, so the two
+  // cannot disagree, and this keeps the backend's figure the single source of the meter
+  // (audit L4). The derived counts stay as the fallback for a payload without metrics.
+  const metrics = state.planJson && state.planJson.metrics;
+  const total = metrics ? (metrics.total_tasks || 0) : (state.planTree ? state.planTree.length : 0);
+  const completed = metrics ? (metrics.completed_tasks || 0) : (state.planTree ? state.planTree.filter(t => t.status === "completed").length : 0);
+  const inProgress = metrics ? (metrics.in_progress_tasks || 0) : (state.planTree ? state.planTree.filter(t => t.status === "in_progress").length : 0);
+  const failed = metrics ? (metrics.failed_tasks || 0) : (state.planTree ? state.planTree.filter(t => t.status === "failed").length : 0);
   updateProgressMeter(completed, total, inProgress, failed);
   // The header is part of the same funnel: every plan load, save, sync and rollback that
   // redraws the tree also refreshes the tiles above it.
@@ -8386,6 +8390,23 @@ async function readAttachmentText(file) {
   }
 }
 
+// Reads an attached image as a data URL for the bridge, so a UI mockup can actually be sent to
+// a vision-capable model rather than only named. Resolves to "" when the read fails, which
+// leaves the text-only request in place.
+function readImageDataUrl(file) {
+  return new Promise((resolve) => {
+    try {
+      if (!file || typeof FileReader === "undefined") return resolve("");
+      const reader = new FileReader();
+      reader.onload = (e) => resolve((e && e.target && e.target.result) || "");
+      reader.onerror = () => resolve("");
+      reader.readAsDataURL(file);
+    } catch (_err) {
+      resolve("");
+    }
+  });
+}
+
 async function handleActionParamConfirm() {
   const actionType = state.selectedAction || "custom";
   const customInstructions = DOM.inputActionCustomInstructions ? DOM.inputActionCustomInstructions.value.trim() : "";
@@ -8427,7 +8448,11 @@ async function handleActionParamConfirm() {
     const targetTask = state.targetTaskId ? state.planTree.find(t => t.id === state.targetTaskId) : null;
     if (targetTask && isUiTask(targetTask)) {
       if (DOM.inputUiImageAttachment && DOM.inputUiImageAttachment.files && DOM.inputUiImageAttachment.files.length > 0) {
-        actionParams.uiImagePath = DOM.inputUiImageAttachment.files[0].name;
+        const imageFile = DOM.inputUiImageAttachment.files[0];
+        actionParams.uiImagePath = imageFile.name;
+        // The backend cannot read the webview sandbox, so the bytes cross the bridge as a data
+        // URL and become a real vision input on the Coder's model request.
+        actionParams.uiImageData = await readImageDataUrl(imageFile);
       }
     }
     prompt = `[ACTION: EXECUTE_NEXT_STEP]\nTarget Task: ${taskName}`;
@@ -8552,8 +8577,7 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
       handleAgentEvent({
         type: "agent_error",
         agent: "software-architect",
-        error: `Could not launch task: ${err.message}`,
-        can_retry: true
+        error: `Could not launch task: ${err.message}`
       });
     }
   } else {
@@ -9474,7 +9498,7 @@ function handleAgentEvent(event) {
       break;
 
     case "agent_error":
-      renderErrorBadge(event.agent, event.error, event.can_retry);
+      renderErrorBadge(event.agent, event.error);
       setAgentThinking(event.agent, false);
       // An error is not the end of the run, but it is the moment the transcript becomes worth
       // reading; pinning keeps it on screen for the completion that follows.
@@ -9680,7 +9704,7 @@ function renderCardSummary(container, summary, includeProposals = false) {
   container.style.display = "block";
 }
 
-function renderErrorBadge(agentId, errorMsg, canRetry) {
+function renderErrorBadge(agentId, errorMsg) {
   const isArchitect = agentId === "software-architect" || agentId.includes("architect");
   const badge = isArchitect ? DOM.architectErrorBadge : DOM.coderErrorBadge;
   const msgEl = isArchitect ? DOM.architectErrorMsg : DOM.coderErrorMsg;
@@ -10490,7 +10514,9 @@ function echoAgentEvent(event) {
       appendConsoleLine("ok", event.result || "done");
       break;
     case "delegation":
-      appendConsoleLine("delegate", `delegate -> ${event.target_name || event.target_agent || "coder"}`);
+      // The delegated task text is the useful half of this event; showing only the target
+      // left the transcript with a delegate line and no idea what was delegated (audit L2).
+      appendConsoleLine("delegate", `delegate -> ${event.target_name || event.target_agent || "coder"}${event.task ? " \u00b7 " + event.task : ""}`);
       break;
     case "coder_summary":
     case "architect_summary":

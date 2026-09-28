@@ -138,7 +138,7 @@ function handleAgentEvent(event) {
       break;
 
     case "agent_error":
-      renderErrorBadge(event.agent, event.error, event.can_retry);
+      renderErrorBadge(event.agent, event.error);
       setAgentThinking(event.agent, false);
       // An error is not the end of the run, but it is the moment the transcript becomes worth
       // reading; pinning keeps it on screen for the completion that follows.
@@ -344,7 +344,7 @@ function renderCardSummary(container, summary, includeProposals = false) {
   container.style.display = "block";
 }
 
-function renderErrorBadge(agentId, errorMsg, canRetry) {
+function renderErrorBadge(agentId, errorMsg) {
   const isArchitect = agentId === "software-architect" || agentId.includes("architect");
   const badge = isArchitect ? DOM.architectErrorBadge : DOM.coderErrorBadge;
   const msgEl = isArchitect ? DOM.architectErrorMsg : DOM.coderErrorMsg;

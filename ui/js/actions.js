@@ -176,6 +176,23 @@ async function readAttachmentText(file) {
   }
 }
 
+// Reads an attached image as a data URL for the bridge, so a UI mockup can actually be sent to
+// a vision-capable model rather than only named. Resolves to "" when the read fails, which
+// leaves the text-only request in place.
+function readImageDataUrl(file) {
+  return new Promise((resolve) => {
+    try {
+      if (!file || typeof FileReader === "undefined") return resolve("");
+      const reader = new FileReader();
+      reader.onload = (e) => resolve((e && e.target && e.target.result) || "");
+      reader.onerror = () => resolve("");
+      reader.readAsDataURL(file);
+    } catch (_err) {
+      resolve("");
+    }
+  });
+}
+
 async function handleActionParamConfirm() {
   const actionType = state.selectedAction || "custom";
   const customInstructions = DOM.inputActionCustomInstructions ? DOM.inputActionCustomInstructions.value.trim() : "";
@@ -217,7 +234,11 @@ async function handleActionParamConfirm() {
     const targetTask = state.targetTaskId ? state.planTree.find(t => t.id === state.targetTaskId) : null;
     if (targetTask && isUiTask(targetTask)) {
       if (DOM.inputUiImageAttachment && DOM.inputUiImageAttachment.files && DOM.inputUiImageAttachment.files.length > 0) {
-        actionParams.uiImagePath = DOM.inputUiImageAttachment.files[0].name;
+        const imageFile = DOM.inputUiImageAttachment.files[0];
+        actionParams.uiImagePath = imageFile.name;
+        // The backend cannot read the webview sandbox, so the bytes cross the bridge as a data
+        // URL and become a real vision input on the Coder's model request.
+        actionParams.uiImageData = await readImageDataUrl(imageFile);
       }
     }
     prompt = `[ACTION: EXECUTE_NEXT_STEP]\nTarget Task: ${taskName}`;
@@ -342,8 +363,7 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
       handleAgentEvent({
         type: "agent_error",
         agent: "software-architect",
-        error: `Could not launch task: ${err.message}`,
-        can_retry: true
+        error: `Could not launch task: ${err.message}`
       });
     }
   } else {
