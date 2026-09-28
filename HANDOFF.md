@@ -65,6 +65,8 @@ deepagents/
 │       ├── runner.py          # Intent resolution, dispatch, error handling
 │       ├── context.py         # WorkflowContext shared by every branch
 │       ├── events.py          # THE single definition of the frontend event wire format
+│       ├── reasoning.py       # The Architect's System 2 answer as streamed UI text
+│       ├── ledger.py          # Living Behavioral Ledger: the 🟢 log line + state summary
 │       ├── actions_admin.py   # Administrative bypass: update_plan, analyze, recommend
 │       ├── actions_impl.py    # Delegated implementation: fix_bug, next_step, custom
 │       └── templates.py       # Deliverable templates (solution engine, ui_view, weather API)
@@ -79,38 +81,41 @@ deepagents/
 │   ├── recovery.py            # Backups, codebase/plan audit, sync resolution, rollback
 │   ├── code_metrics.py        # Static source metrics (complexity, security) for Analyze
 │   ├── test_runner.py         # Runs the test a task wrote; the result view's real verdict
+│   ├── git_status.py          # VCS status for the tree (blank outside the workspace's repo)
 │   ├── workspace.py           # Project dir + active-plan pointer (process-wide state)
 │   ├── shell_tools.py         # Full shell (Coders) + restricted shell (Architect)
 │   └── build_ui_bundle.py     # Inlines ui/js/*.js + ui/css/*.css into ui/index.html
 │
 ├── ui/
 │   ├── index.html             # Layout markup + two generated bundle regions (style, then UI)
-│   ├── css/                   # 17 stylesheets (source of truth), inlined in order
+│   ├── css/                   # 19 stylesheets (source of truth), inlined in order
 │   │   ├── base.css                     # Design tokens (:root) + reset & base styles
 │   │   ├── sidebar.css                  # Left pane: agents dock & workspace card
 │   │   ├── stage.css                    # Centre stage & the execution cards
 │   │   ├── actions.css                  # Dock action toolbar & the docked command drawer
-│   │   ├── plan-tree.css                # Right pane: progress meter & task cards
+│   │   ├── plan-tree.css                # Right rail & the workbench roadmap: bento, cards
 │   │   ├── modals.css                   # Confirmation, plan setup & workspace files dialogs
 │   │   ├── tiered-prompt-editor.css     # Tiered prompt editor (core rules panel)
 │   │   ├── ui-vision.css                # Multimodal UI vision parameters
-│   │   ├── audit-modal.css              # Audit modal
+│   │   ├── audit-modal.css              # Audit/summary rail & the plan panels it hosts
 │   │   ├── rollback-modal.css           # Rollback modal & shared keyframes
 │   │   ├── dock.css                     # Bottom dock geometry & the drag seam
-│   │   ├── workbench.css                # Centre-stage plan document
+│   │   ├── workbench.css                # Centre-stage plan document & the bento header grid
 │   │   ├── code-surface.css             # Highlighting surface for parameter textareas
 │   │   ├── console.css                  # Dock console transcript
-│   │   ├── diff-pane.css                # Tracked-edits pane
 │   │   ├── preview.css                  # Live preview overlay
-│   │   └── sidebar-panels.css           # Collapse rails + tree/env panels (appended last)
-│   └── js/                    # 19 modules (source of truth), inlined in order
+│   │   ├── sidebar-panels.css           # Collapse rails + tree/env panels
+│   │   ├── settings.css                 # Provider/model route settings panel
+│   │   ├── command-palette.css          # Ctrl/Cmd+K action palette
+│   │   └── result-view.css              # Polymorphic per-action result surface (appended last)
+│   └── js/                    # 21 modules (source of truth), inlined in order
 │       ├── state.js           # Global `state` and `DOM` cache
 │       ├── dom.js             # Element lookup helpers + escapeHtml()
 │       ├── bootstrap.js       # pywebview handshake, opt-in ?demo=1 data, hydration
-│       ├── plan-tree.js       # Right-pane tree from plan.json: summary card, task cards,
-│       │                      #   sub-steps in the card drawer, progress meter
+│       ├── plan-tree.js       # Roadmap from plan.json: bento header, phase cards,
+│       │                      #   step cards, sub-step rows, progress meter
 │       ├── actions.js         # Action drawer open/close + confirm, execution lifecycle
-│       ├── plan-modals.js     # Switch-plan and create-plan modals
+│       ├── plan-modals.js     # Switch-plan and create-plan rail panels
 │       ├── agents.js          # Sidebar agent navigation & the system prompt editor
 │       ├── workspace.js       # File browser, codebase-sync audit, rollback modals
 │       ├── agent-events.js    # window.onAgentEvent: the inbound event stream renderer
@@ -119,10 +124,12 @@ deepagents/
 │       ├── workbench.js       # Plan Workbench: the active plan in the centre stage
 │       ├── code-surface.js    # Syntax highlighting for the parameter textareas
 │       ├── console.js         # Dock console: terminal-style echo of the agent stream
-│       ├── diff-pane.js       # Tracked-edits pane: the changes a task actually made
 │       ├── preview.js         # Live preview of the workspace's generated interface
 │       ├── sidebar.js         # Collapsible side panes & the workspace file tree
 │       ├── env.js             # Environment variable panel (values masked in Python)
+│       ├── settings.js        # Provider/model route settings panel
+│       ├── command-palette.js # Ctrl/Cmd+K action palette + its key handling
+│       ├── result-view.js     # Polymorphic per-action result renderers (diff, dashboard…)
 │       └── wire.js            # DOM event wiring & bootstrap — MUST stay last
 │
 ├── tests/

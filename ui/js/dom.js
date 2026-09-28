@@ -239,7 +239,6 @@ function initDOMElements() {
   DOM.planEditorGutter = document.getElementById("planEditorGutter");
   DOM.planDoc = document.getElementById("planDoc");
   DOM.planEditorInput = document.getElementById("planEditorInput");
-  DOM.txtWorkbenchPath = document.getElementById("txtWorkbenchPath");
   DOM.txtWorkbenchMeta = document.getElementById("txtWorkbenchMeta");
 
   // Plan workbench views: the roadmap as a tree, or the raw markdown source

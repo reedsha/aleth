@@ -143,7 +143,6 @@ function refreshWorkbenchChrome() {
 
   const planFile = state.activePlan || "PLAN.md";
   if (DOM.crumbPlanFile) DOM.crumbPlanFile.textContent = planFile;
-  if (DOM.txtWorkbenchPath) DOM.txtWorkbenchPath.textContent = planFile;
 
   // Editing needs the bridge: without one a save has nowhere to go, and pretending
   // otherwise would be the same disguise initFallbackMode refuses to make. The bridge

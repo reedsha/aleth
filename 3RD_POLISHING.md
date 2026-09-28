@@ -1081,9 +1081,12 @@ chips (asserting nothing is invented), the progress badge + bar width, and the t
  dead `.workbench-stat` rule — regenerated, all five gates green (contract ALL CHECKS PASSED, `--check` up to
  date, 378 tests OK, div balance 236/236).
 
-**Still open, offered not taken.** `#txtWorkbenchPath` in the workbench's own footer restates the active plan
- filename that the breadcrumb two rows above it (`#crumbPlanFile`) already carries — a fourth home for the plan
- name. `#txtWorkbenchMeta` beside it (lines · mode) is unique and stays. Say the word and the path span goes.
+**Also resolved — `#txtWorkbenchPath` removed.** The workbench footer restated the active plan filename that
+ the breadcrumb above it (`#crumbPlanFile`) already carries, so the path span (and its `dom.js`/`workbench.js`
+ wiring) went; `#txtWorkbenchMeta` beside it (lines · mode) is unique and stays. The same commit refreshed
+ `HANDOFF.md` §2, whose file-structure listing still counted 17 stylesheets and 19 modules and still named the
+ retired `diff-pane.*`, and corrected the plan-lock copy, which told the user to press a ⇄ button that no
+ longer exists in the rail — the left sidebar's Plans tab is the switcher's entry point now.
 
 ---
 
