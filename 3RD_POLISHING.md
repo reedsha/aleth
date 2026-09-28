@@ -1364,6 +1364,57 @@ new checks (errored/halted labels, the revert button) · bundle `--check` up to 
 
 ---
 
+### Go 16 — The audit's remainder: restores, verdicts, and the reachable Stop (**landed**)
+
+The Medium/Low half of the same audit, taken now because each is a small, self-contained honesty
+fix. Nothing here reverses a pinned contract.
+
+- **M6 — `save_plan_content` no longer substitutes the editor's raw text on a compile failure.**
+  `except: canonical = content` handed the workbench a document that differed from disk and from
+  `plan.json`; the recompile now stands on its own (`save_plan_state` already compiled once
+  successfully, so it cannot fail silently).
+- **M7 — a rollback that could not restore a file no longer reports success.** The restore loop's
+  failures are collected into `restore_errors`; `success` is `False` and `error` names them, so the
+  toast says the rollback was partial instead of claiming a rollback that did not happen.
+- **M5 — a crashed structure check is marked `"checked": False`** (and a produced verdict
+  `"checked": True`), so the Normalization Gate can stay advisory without presenting a broken check
+  as a clean verdict.
+- **M16 — the inline Stop is now reachable.** It hung off an `in_progress` status the workflow never
+  writes, so the control was wired but could never appear. It now renders on the card for the task
+  the run was launched against, keyed on run state, and `beginRunUi` / `abortRunUi` / `finalizeWorkflow`
+  redraw the tree when the lock flips so it appears and disappears with the run.
+- **L5/L9/L6** — `showToast` guards the container it writes into (the feedback channel itself must
+  not throw); clicking the already-active plan says so instead of being a silent no-op; the
+  vestigial `data-env-name` attribute is gone.
+- **L8 — a skipped audit is marked `"audited": False`** rather than being indistinguishable from a
+  completed clean scan.
+- **M8 — `emit_event` prints a traceback** when `evaluate_js` fails, since a dropped terminal event
+  is what leaves the UI stuck in its running state.
+
+Gates after Go 16: contract **ALL CHECKS PASSED** · bundle `--check` up to date · **401 tests OK**
+(+3: the failed-restore rollback, and the checked/unchecked structure verdict) · div balance
+**230/230**.
+
+**Eyeball checklist.**
+
+- Starting a run from a task card shows **Stop** on that card; it disappears when the run ends.
+- A rollback whose file restore fails says so (partial), rather than "rolled back".
+- Clicking the active plan's chip says it is already active.
+
+**Open, offered not taken.**
+
+- **F3 — a corrupt `plan.json` still degrades to an empty plan silently** (the failure is printed,
+  not surfaced). Doing it right needs a load-error channel through `plan_session`/`registry` and a
+  line in `reportPlanDiagnostics`; deferred so it can be done carefully rather than bolted on.
+- The remaining cosmetic/dead-surface items: `get_agent` / `get_plan_json` / `save_plan_json` /
+  `sync_plan` are still uncalled; several event fields still cross the wire unread; sub-step
+  `id`/`tag`/`details`/`files` are persisted but never rendered; `plan_json.metrics` is computed in
+  Python and recomputed in JS; the analyze action's `root_cause`/`target` fallbacks are still
+  canned; and true image vision for `[UI]` tasks is still not implemented.
+- `HANDOFF.md` §9/§10 remain stale; the user said **"leave it for now."**
+
+---
+
 ## Part H — Why this order, in one paragraph
 
 Theme first because it cascades into everything built afterwards; the small additive wins next
