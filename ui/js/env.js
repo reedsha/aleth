@@ -26,7 +26,7 @@ function envRowMarkup(entry) {
     : "not set in the environment";
 
   return (
-    `<div class="env-row ${isSet ? "set" : "unset"}" data-env-name="${name}">` +
+    `<div class="env-row ${isSet ? "set" : "unset"}">` +
     '<span class="env-dot"></span>' +
     `<span class="env-name" title="${name}">${name}</span>` +
     `<span class="env-mask">${ENV_MASK_TEXT}</span>` +

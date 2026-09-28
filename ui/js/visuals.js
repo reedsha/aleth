@@ -1,5 +1,8 @@
 // ui/js/visuals.js — Toast notifications and the offline workflow simulator.
 function showToast(message, type = "info") {
+  // The feedback channel itself must never throw: if the container is missing, no error the
+  // user is being told about could surface (audit L5).
+  if (!DOM.toastContainer) return;
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
   toast.textContent = message;

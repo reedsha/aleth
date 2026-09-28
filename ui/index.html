@@ -7839,16 +7839,19 @@ const PLAN_FIX_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none"
 // button that would lie.
 function planInlineActions(step, stepState) {
   let primary = "";
-  if (stepState === "pending") {
+  // While a run is live, the card for the task it was launched against hosts the inline Stop.
+  // The control used to hang off an `in_progress` status the workflow never writes, so it was
+  // wired but could never appear (audit M16). Keyed on run state, it can.
+  if (state.isExecuting && state.targetTaskId && String(step.id) === String(state.targetTaskId)) {
+    primary = `<button class="btn-inline-stop" title="Stop the running agent execution">${PLAN_STOP_ICON}<span>Stop</span></button>`;
+  } else if (stepState === "pending") {
     primary = `<button class="btn-inline-execute" data-task-id="${escapeHtml(step.id)}" data-task-title="${escapeHtml(step.title)}" title="Execute this specific task">${PLAN_EXECUTE_ICON}<span>Execute</span></button>`;
   } else if (stepState === "completed") {
     // A completed task can be rolled back to pending; that is the only action its
     // recorded snapshot state is still needed for.
     primary = `<button class="btn-inline-rollback" data-task-id="${escapeHtml(step.id)}" title="Roll this completed task back to pending">${PLAN_ROLLBACK_ICON}<span>Rollback</span></button>`;
   } else if (stepState === "in_progress") {
-    primary = state.isExecuting
-      ? `<button class="btn-inline-stop" title="Stop the running agent execution">${PLAN_STOP_ICON}<span>Stop</span></button>`
-      : '<span class="task-state-chip running">Running</span>';
+    primary = '<span class="task-state-chip running">Running</span>';
   } else if (stepState === "failed") {
     // A failed task is re-run the same way a pending one is. It is not a completed task, so
     // Rollback is not offered -- there is no completed state to roll back from. Fix is the
@@ -8461,6 +8464,10 @@ function beginRunUi() {
   }
 
   setActionButtonsDisabled(true);
+
+  // The plan cards key their inline Stop on run state, so they are redrawn when it flips
+  // (audit M16). A re-render preserves each card's expanded/collapsed state.
+  if (typeof renderPlanTree === "function") renderPlanTree();
 }
 
 // Undoes beginRunUi when a launch did not actually start -- the backend refused because a run
@@ -8477,6 +8484,8 @@ function abortRunUi(message) {
   DOM.systemStatusDot.className = "status-dot ready";
   DOM.systemStatusLabel.textContent = "Ready";
   if (typeof updateBentoStats === "function") updateBentoStats();
+  // A launch that did not happen takes the inline Stop back down with it.
+  if (typeof renderPlanTree === "function") renderPlanTree();
   if (message) showToast(message, "error");
 }
 
@@ -8606,6 +8615,8 @@ function finalizeWorkflow(status) {
   else showToast("Task concluded successfully!", "success");
   // The run is over, which is a fact the bento header's live tile states.
   if (typeof updateBentoStats === "function") updateBentoStats();
+  // The inline Stop hangs off run state, so the tree is redrawn when the run ends.
+  if (typeof renderPlanTree === "function") renderPlanTree();
 }
   </script>
   <script>
@@ -9696,6 +9707,9 @@ function updateTaggingProgress(done, total, title) {
   <script>
 // ui/js/visuals.js — Toast notifications and the offline workflow simulator.
 function showToast(message, type = "info") {
+  // The feedback channel itself must never throw: if the container is missing, no error the
+  // user is being told about could surface (audit L5).
+  if (!DOM.toastContainer) return;
   const toast = document.createElement("div");
   toast.className = `toast ${type}`;
   toast.textContent = message;
@@ -10971,7 +10985,12 @@ async function refreshSidebarPlans() {
 // Switching from the tab runs the same path the switcher's chips do, including the advisory
 // structural gate -- one behaviour, two entry points.
 async function switchActivePlan(planName) {
-  if (!planName || planName === state.activePlan) return;
+  if (!planName) return;
+  if (planName === state.activePlan) {
+    // A silent no-op reads as a broken click; say the plan is already active (audit L9).
+    showToast("Already the active plan.", "info");
+    return;
+  }
   const api = window.pywebview && window.pywebview.api;
   if (!api) {
     showToast("Switching plans needs the desktop app; this view is read-only.", "info");
@@ -11183,7 +11202,7 @@ function envRowMarkup(entry) {
     : "not set in the environment";
 
   return (
-    `<div class="env-row ${isSet ? "set" : "unset"}" data-env-name="${name}">` +
+    `<div class="env-row ${isSet ? "set" : "unset"}">` +
     '<span class="env-dot"></span>' +
     `<span class="env-name" title="${name}">${name}</span>` +
     `<span class="env-mask">${ENV_MASK_TEXT}</span>` +

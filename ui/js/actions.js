@@ -270,6 +270,10 @@ function beginRunUi() {
   }
 
   setActionButtonsDisabled(true);
+
+  // The plan cards key their inline Stop on run state, so they are redrawn when it flips
+  // (audit M16). A re-render preserves each card's expanded/collapsed state.
+  if (typeof renderPlanTree === "function") renderPlanTree();
 }
 
 // Undoes beginRunUi when a launch did not actually start -- the backend refused because a run
@@ -286,6 +290,8 @@ function abortRunUi(message) {
   DOM.systemStatusDot.className = "status-dot ready";
   DOM.systemStatusLabel.textContent = "Ready";
   if (typeof updateBentoStats === "function") updateBentoStats();
+  // A launch that did not happen takes the inline Stop back down with it.
+  if (typeof renderPlanTree === "function") renderPlanTree();
   if (message) showToast(message, "error");
 }
 
@@ -415,4 +421,6 @@ function finalizeWorkflow(status) {
   else showToast("Task concluded successfully!", "success");
   // The run is over, which is a fact the bento header's live tile states.
   if (typeof updateBentoStats === "function") updateBentoStats();
+  // The inline Stop hangs off run state, so the tree is redrawn when the run ends.
+  if (typeof renderPlanTree === "function") renderPlanTree();
 }

@@ -170,7 +170,12 @@ async function refreshSidebarPlans() {
 // Switching from the tab runs the same path the switcher's chips do, including the advisory
 // structural gate -- one behaviour, two entry points.
 async function switchActivePlan(planName) {
-  if (!planName || planName === state.activePlan) return;
+  if (!planName) return;
+  if (planName === state.activePlan) {
+    // A silent no-op reads as a broken click; say the plan is already active (audit L9).
+    showToast("Already the active plan.", "info");
+    return;
+  }
   const api = window.pywebview && window.pywebview.api;
   if (!api) {
     showToast("Switching plans needs the desktop app; this view is read-only.", "info");

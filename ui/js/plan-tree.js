@@ -281,16 +281,19 @@ const PLAN_FIX_ICON = '<svg width="9" height="9" viewBox="0 0 24 24" fill="none"
 // button that would lie.
 function planInlineActions(step, stepState) {
   let primary = "";
-  if (stepState === "pending") {
+  // While a run is live, the card for the task it was launched against hosts the inline Stop.
+  // The control used to hang off an `in_progress` status the workflow never writes, so it was
+  // wired but could never appear (audit M16). Keyed on run state, it can.
+  if (state.isExecuting && state.targetTaskId && String(step.id) === String(state.targetTaskId)) {
+    primary = `<button class="btn-inline-stop" title="Stop the running agent execution">${PLAN_STOP_ICON}<span>Stop</span></button>`;
+  } else if (stepState === "pending") {
     primary = `<button class="btn-inline-execute" data-task-id="${escapeHtml(step.id)}" data-task-title="${escapeHtml(step.title)}" title="Execute this specific task">${PLAN_EXECUTE_ICON}<span>Execute</span></button>`;
   } else if (stepState === "completed") {
     // A completed task can be rolled back to pending; that is the only action its
     // recorded snapshot state is still needed for.
     primary = `<button class="btn-inline-rollback" data-task-id="${escapeHtml(step.id)}" title="Roll this completed task back to pending">${PLAN_ROLLBACK_ICON}<span>Rollback</span></button>`;
   } else if (stepState === "in_progress") {
-    primary = state.isExecuting
-      ? `<button class="btn-inline-stop" title="Stop the running agent execution">${PLAN_STOP_ICON}<span>Stop</span></button>`
-      : '<span class="task-state-chip running">Running</span>';
+    primary = '<span class="task-state-chip running">Running</span>';
   } else if (stepState === "failed") {
     // A failed task is re-run the same way a pending one is. It is not a completed task, so
     // Rollback is not offered -- there is no completed state to roll back from. Fix is the
