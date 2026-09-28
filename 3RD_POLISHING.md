@@ -1457,6 +1457,68 @@ Gates after Go 17: contract **ALL CHECKS PASSED** · bundle `--check` up to date
 
 ---
 
+### Go 18 — The event wire, the honest diagnosis, and the real meter (**landed**)
+
+- **L2 — the event payloads now carry only what the UI reads.** `delegation.task` is
+  **surfaced** in the console (`delegate -> Junior Developer · Project scaffolding and runtime
+  dependencies`) rather than dropped, because it is the useful half of the event; the dead
+  bits went: `agent_error.can_retry` (never read — `renderErrorBadge` ignored it), the
+  `role` field on `architect_spawn` / `coder_spawn` (redundant with the event type), and
+  `workflow_started.message`. `laya_tagging_done` was trimmed to `changed`/`engine` instead of
+  spreading the tagging result's totals and dry-run flags. The pinned wire-shape test was
+  updated deliberately. `coder_summary.status`/`files` were **left**: the summary shape is
+  shared with `architect_summary`, where `status` *is* read, so forking it per type would be
+  worse than the unused-by-one-caller field.
+- **M14 — the fix-bug diagnosis is no longer canned.** The offline patch path applies a
+  defensive guard; it does not diagnose. Rather than present "Input validation or unexpected
+  exception handler" as a finding, `root_cause` now states what is actually known —
+  `Reported symptom: <the report>` — and `fix_spec` says it is a defensive guard. When System 2
+  runs, its reasoning is surfaced in the Coder's card, so a real diagnosis is not hidden.
+- **M15 — no invented target.** With no file named in the report *and* no code in the
+  workspace, `fix_bug` used to patch `main.py` into existence. It now refuses with the same
+  *Input Required* status the empty-report gate uses, which the UI already reads as "needs a
+  human".
+- **L4 — the progress meter reads `plan.json`'s metrics** (with the derived counts as the
+  fallback for a payload without them), so the backend's figure is the single source of the
+  meter rather than being recomputed in parallel.
+
+Gates after Go 18: contract **ALL CHECKS PASSED** · `--check` up to date · **404 tests OK**
+(+1: the no-target refusal) · div balance **230/230**.
+
+---
+
+### Go 19 — Image vision for `[UI]` tasks (**landed**)
+
+The audit called the "Multimodal UI Handling" claim a phantom capability: the mockup's *name*
+was narrated, and its bytes never left the webview sandbox. That is now a real vision input.
+
+- **`system2.complete` accepts `images`** — data URLs attached to the user turn as
+  OpenAI-compatible `image_url` parts. With none, the message stays the plain string it always
+  was, so every text-only call is byte-identical.
+- **`generation.generate_code` / `generate_deliverable` take `image_data_urls`** and pass
+  `images` to the completer **only when non-empty** — so the call keeps exactly the signature it
+  had, and a completer (or test fake) written before vision still works.
+- **`next_step_action` reads `actionParams.uiImageData`** and hands it to the deliverable call;
+  the frontend reads the attached file as a data URL (`readImageDataUrl`) before confirming.
+- Untestable without a network, so the *message construction* is pinned instead: an image
+  becomes a `text` + `image_url` part pair, and no image keeps the plain string.
+
+Gates after Go 19: contract **ALL CHECKS PASSED** · `--check` up to date · **408 tests OK**
+(+4: two vision-message tests, two generate-forwarding tests) · div balance **230/230**.
+
+**Eyeball checklist.**
+
+- A `🐛 Fix Bug` refusal names the missing target instead of writing `main.py`.
+- A `🐛 Fix Bug` result's "Root cause" pane says *Reported symptom: …*, not a canned sentence.
+- The console's delegate line names the Coder **and** the task.
+- Attaching a mockup to a `[UI]` Execute Next Step sends it to the model (visible as a larger
+  prompt in the Coder's card); with no attachment the request is text-only.
+
+**Also refreshed:** `HANDOFF.md` §5 (the wire table no longer promises `can_retry` / `message`),
+§9 (the plan-write mechanism) and §10 (the uncommitted-work note).
+
+---
+
 ## Part H — Why this order, in one paragraph
 
 Theme first because it cascades into everything built afterwards; the small additive wins next

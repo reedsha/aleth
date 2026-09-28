@@ -326,7 +326,7 @@ payloads are JSON-serialised in insertion order.
 
 | `type` | Meaning |
 | --- | --- |
-| `workflow_started` | A run began; carries the message, plan file and resolved intent |
+| `workflow_started` | A run began; carries the plan file and resolved intent |
 | `architect_spawn` | The Architect card is created |
 | `log` | One streamed line of agent narration (`log_type` drives styling) |
 | `tool_call` / `tool_result` | A tool invocation and its paired outcome; animated as one unit |
@@ -335,12 +335,16 @@ payloads are JSON-serialised in insertion order.
 | `coder_summary` | The Coder's deliverable summary |
 | `architect_summary` | The Architect's verification verdict and next steps |
 | `plan_updated` | Plan data changed; the payload is the plan + its parsed tree |
-| `agent_error` | A run failed; carries `can_retry` |
+| `agent_error` | A run failed |
 | `workflow_stopped` | A stop request was honoured |
 | `workflow_complete` | The run finished (`status` is `finished` or `error`) |
 | `workspace_changed` | The active project directory changed |
 | `agents_updated` | The agent catalogue changed (e.g. a prompt was saved) |
 
+> Payloads carry only what the UI reads. `can_retry`, the spawn-event `role`, and
+> `workflow_started.message` were removed (audit L2); `delegation.task` stays because the
+> console now renders the delegated task text.
+>
 > Do **not** add an `"exists"` key to `plan_updated` payloads — the characterization
 > suite pins the exact wire shape in three places.
 
@@ -665,6 +669,14 @@ Notes for whoever continues:
   when `md_mtime > json_mtime` (strict); force it with
   `load_plan_state(force_sync=True)`.
 
+> **Update (post polishing-passes).** The table above is a point-in-time snapshot of the
+> user's hand-edited plan; re-read `PLAN.md` before relying on it. What *has* changed is the
+> mechanism: in-app actions now write the plan themselves (`add_plan_task` — the one-click
+> "Add to Plan" — and the Update Plan admin bypass), and an automatic before-image of the
+> last revision lands in `.deepagents_backups/plan_revision/`, which is what the result
+> view's **Revert Changes** restores from. A corrupt `plan.json` is also explained now
+> (`load_error`) instead of silently becoming an empty plan.
+
 ---
 
 ## 🎯 10. How Incoming Agents Should Continue
@@ -688,8 +700,11 @@ Notes for whoever continues:
    - Run all the gates in §3, then actually launch the app. A window that renders but
      ignores input is the historical failure mode here, and it is intermittent — launch
      several times before trusting a UI change.
-6. **Uncommitted work as of this handoff:** nothing — the working tree is clean at the
-   commit that landed the Connected Tab Action Drawer. The roadmap's next item is §3-1, the
-   Dual-View Workbench (`ui/js/workbench.js`); §3-2 (the 60px fixed rail) and §3-3
-   (retiring `ui/js/diff-pane.js` from `STYLESHEETS`/`MODULES`, the header watchdog and
-   `tests/ui_startup_contract.js`) follow, then §4-2 (the hybrid console).
+6. **Uncommitted work as of this handoff:** nothing — the working tree is clean. Since the
+   Connected Tab Action Drawer commit, the three polishing passes (`1ST`–`3RD_POLISHING.md`)
+   and their audit follow-ups landed in layered commits: the bento workbench and command
+   palette, the elastic console, the polymorphic result views, a real `add_plan_task` and a
+   plan-revision revert, a server-authoritative run lock, image-vision input for `[UI]`
+   tasks, and the pre-launch audit fixes (Go 15–19). The gates in §3 are green (408 tests,
+   contract, `--check`, div balance). The roadmap's *own* plan file remains the source of
+   truth for what is left — re-read it rather than trusting a list here.
