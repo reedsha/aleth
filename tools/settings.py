@@ -126,7 +126,12 @@ def _name_of(line: str) -> Optional[str]:
 
 
 def _quote(value: str) -> str:
-    """A value as it can be written after ``NAME=`` without escaping its line."""
+    """A value as it can be written after ``NAME=`` without escaping its line.
+
+    A literal CR or LF would end the assignment early and could inject a second
+    variable into the file, so newlines are folded to spaces before quoting.
+    """
+    value = value.replace("\r", " ").replace("\n", " ")
     if _UNQUOTED_RE.match(value):
         return value
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')

@@ -15,6 +15,8 @@ and its derived machine-state JSON every turn.
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Mapping, Sequence
 
+from tools.plan_parser import BEHAVIORAL_LOG_PREFIX
+
 
 @dataclass
 class WorkflowContext:
@@ -69,12 +71,18 @@ def task_slice(plan: Mapping[str, Any], task_id: str) -> str:
     if section:
         lines.append(f"## {section}")
     lines.append(f"- {_status_mark(task.get('status'))} {_task_prefix(task)}{task.get('title', '')}")
+    # What earlier work already did, carried at the same point the plan carries it, so a
+    # re-run sees the ledger rather than repeating work the log says is finished.
+    for entry in task.get("behavioral_log") or []:
+        lines.append(f"  - {BEHAVIORAL_LOG_PREFIX} {entry}")
 
     for sub_step in task.get("sub_steps") or []:
         lines.append(
             f"  - {_status_mark(sub_step.get('status'))} "
             f"{_task_prefix(sub_step)}{sub_step.get('title', '')}"
         )
+        for entry in sub_step.get("behavioral_log") or []:
+            lines.append(f"    - {BEHAVIORAL_LOG_PREFIX} {entry}")
         for detail in sub_step.get("details") or []:
             lines.append(f"    - {detail}")
         sub_files = [f for f in (sub_step.get("files") or []) if f]
@@ -86,6 +94,35 @@ def task_slice(plan: Mapping[str, Any], task_id: str) -> str:
     files = [f for f in (task.get("files") or []) if f]
     if files:
         lines.append(f"  - {_deliverables_line(files)}")
+
+    return "\n".join(lines)
+
+
+def roadmap_brief(plan: Mapping[str, Any], max_tasks: int = 40) -> str:
+    """A compact whole-roadmap view for an administrative answer.
+
+    The standing summary first, then one line per task carrying only what a decision needs:
+    its status mark, its tag, its title, and where its deliverable went. Capped, because
+    the Architect is being asked about the shape of the roadmap, not handed the document
+    (and its derived ``plan.json``) to re-read.
+    """
+    lines = []
+    header = state_summary_block(plan)
+    if header:
+        lines.append(header)
+
+    steps = list(plan.get("steps") or [])
+    if not steps:
+        steps = [t for s in plan.get("sections") or [] for t in s.get("tasks") or []]
+
+    for task in steps[:max_tasks]:
+        line = f"- {_status_mark(task.get('status'))} {_task_prefix(task)}{task.get('title', '')}"
+        files = [f for f in (task.get("files") or []) if f]
+        if files:
+            line += f" \u2014 {', '.join(files[:2])}"
+        lines.append(line)
+    if len(steps) > max_tasks:
+        lines.append(f"- \u2026 (+{len(steps) - max_tasks} more tasks)")
 
     return "\n".join(lines)
 
@@ -123,6 +160,8 @@ def _status_mark(status: Any) -> str:
         return "[x]"
     if status == "in_progress":
         return "[-]"
+    if status == "failed":
+        return "[!]"
     return "[ ]"
 
 

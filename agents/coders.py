@@ -8,12 +8,13 @@ When given a task:
 1. Always use `read_file` to inspect `{{ACTIVE_PLAN_FILE}}` and `plan.json` first for context and assigned requirements.
 2. Use `execute_shell_command` when you need to install packages, run linters, or scaffold dependencies.
 3. Write clean, production-grade files using `write_file`.
-4. When finished, ALWAYS update the active plan state using standardized markdown and milestone logs:
-
-## [Task Name]
-- **Status:** Completed
-- **Files Created/Modified:** `filename.ext`
-- **Summary of Work:** Concise description of implemented logic or changes."""
+4. When finished, record what you did in the active plan as a Living Behavioral Ledger:
+   - Write ONE `🟢 Behavioral Log:` line directly beneath the task's `- [x]` checkbox, e.g.
+     `- [x] Build the forecast endpoint`
+     `  - 🟢 Behavioral Log: added app/api.py with the forecast route and a paired test.`
+   - It is one line: what changed and where. It is the evidence the next task is read
+     against, so keep it factual and specific -- never a status restatement.
+   - Compress a finished milestone into one core fact bullet under `## 🌍 Global State Summary`."""
 
 CODER_DEEP_CUSTOM_INSTRUCTIONS = """Ensure type annotations and comprehensive docstrings are provided for all public methods."""
 
@@ -24,12 +25,13 @@ When given a task:
 1. Use `read_file` to read `{{ACTIVE_PLAN_FILE}}` and `plan.json` to understand current project state and task assignments.
 2. Use `execute_shell_command` to run tests, format code, or check packages.
 3. Write clean boilerplate, tests, and documentation using `write_file`.
-4. When finished, ALWAYS update the active plan state using standardized markdown and milestone logs:
-
-## [Task Name]
-- **Status:** Completed
-- **Files Created/Modified:** `filename.ext`
-- **Summary of Work:** Concise description of implemented logic or changes."""
+4. When finished, record what you did in the active plan as a Living Behavioral Ledger:
+   - Write ONE `🟢 Behavioral Log:` line directly beneath the task's `- [x]` checkbox, e.g.
+     `- [x] Write unit tests`
+     `  - 🟢 Behavioral Log: added tests/test_api.py covering the forecast route.`
+   - It is one line: what changed and where. It is the evidence the next task is read
+     against, so keep it factual and specific -- never a status restatement.
+   - Compress a finished milestone into one core fact bullet under `## 🌍 Global State Summary`."""
 
 CODER_STANDARD_CUSTOM_INSTRUCTIONS = """Follow standard unittest or pytest conventions and generate clear test assertions."""
 

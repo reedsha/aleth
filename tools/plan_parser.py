@@ -14,6 +14,10 @@ Four shapes of plan content are recognised, and only the first is a milestone:
       - [ ] Sub-step             folded into the parent task's `sub_steps`, never a
                                  task of its own, at any indent depth
       - detail bullet            a detail, or `files` when it declares deliverables
+
+A milestone's checkbox mark *is* its status: ``[ ]`` pending, ``[-]`` in progress,
+``[x]`` completed, and ``[!]`` failed -- a task the Coder wrote but that did not pass the
+Architect's verification. The four marks round-trip through the compiler unchanged.
 """
 
 import re
@@ -22,7 +26,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from markdown_it import MarkdownIt
 
-from tools.task_tags import UI_TAG, split_tag, tag_prefix
+from tools.task_tags import UI_TAG, is_tag, split_tag, tag_prefix
 from tools.workspace import get_active_plan_filename
 
 
@@ -32,9 +36,19 @@ from tools.workspace import get_active_plan_filename
 # rehydrated from the markdown plan.
 _DELIVERABLES_RE = re.compile(r"(?i)files?\s*(?:created|modified)?\s*:\s*([^,\n]+(?:,\s*[^,\n]+)*)")
 
+# The inline Behavioral Ledger entry: what a completed milestone actually did, written
+# directly beneath the checkbox it describes. The marker is defined here -- with the other
+# markdown syntax this module owns -- because the compiler emits it and the parser reads
+# it back; a second spelling in the compiler would make the parser stop recognising it and
+# the log would re-accumulate as an ordinary detail note on every round-trip.
+BEHAVIORAL_LOG_PREFIX = "\U0001F7E2 Behavioral Log:"
+_BEHAVIORAL_LOG_RE = re.compile("^\\s*" + re.escape(BEHAVIORAL_LOG_PREFIX) + r"\s*(.*)$")
+
 # A checkbox list item's mark and title. Shared by the task scan and the sub-step
-# pre-pass so the two can never disagree about what counts as a checkbox.
-_CHECKBOX_RE = re.compile(r"^[*-]?\s*\[([ xX\-])\]\s*(.*)")
+# pre-pass so the two can never disagree about what counts as a checkbox. The fourth
+# mark, `!`, is a task that ran and did not pass verification (`failed`); it is a real
+# mark now, so a `- [!]` line is a milestone rather than a nested detail bullet.
+_CHECKBOX_RE = re.compile(r"^[*-]?\s*\[([ xX\-!])\]\s*(.*)")
 
 # The Global State Summary heading. Matched on the words rather than the whole line so
 # the decorative globe is optional and either heading level is accepted.
@@ -76,14 +90,39 @@ def _unique(files: List[str]) -> List[str]:
     return unique
 
 
-def _absorb_detail_lines(task: Dict[str, Any], lines: List[str]) -> None:
-    """Sorts detail bullets into a task's structured `files` or free-form `details`.
+def _split_behavioral_logs(lines: List[str]) -> Tuple[List[str], List[str]]:
+    """Splits a task's detail bullets into ledger entries and everything else.
 
-    A bullet that declares deliverables ("Files: a.py, b.py") belongs in `files`;
-    leaving it in `details` as well would let the two views of one fact duplicate
-    each other on the next compile/reparse round-trip.
+    Returns ``(logs, others)``. The ledger entries are messages rather than bullets, so a
+    caller routes them into ``behavioral_log`` while the rest keep their existing path.
     """
+    logs: List[str] = []
+    others: List[str] = []
     for line in lines:
+        match = _BEHAVIORAL_LOG_RE.match(line)
+        if match:
+            message = match.group(1).strip()
+            if message:
+                logs.append(message)
+            continue
+        others.append(line)
+    return logs, others
+
+
+def _absorb_detail_lines(task: Dict[str, Any], lines: List[str]) -> None:
+    """Sorts detail bullets into a task's ledger, structured `files`, or `details`.
+
+    A ledger line belongs in ``behavioral_log``; a bullet that declares deliverables
+    ("Files: a.py, b.py") belongs in `files`; leaving either in `details` as well would
+    let two views of one fact duplicate each other on the next compile/reparse round-trip.
+    """
+    logs, others = _split_behavioral_logs(lines)
+    if logs:
+        existing = task.setdefault("behavioral_log", [])
+        for message in logs:
+            if message not in existing:
+                existing.append(message)
+    for line in others:
         declared = parse_deliverables(line)
         if declared:
             task["files"] = _unique(task["files"] + declared)
@@ -93,7 +132,18 @@ def _absorb_detail_lines(task: Dict[str, Any], lines: List[str]) -> None:
 
 def _status_from_mark(mark: str) -> str:
     """The one place a checkbox mark is translated into a task status."""
-    return "completed" if mark.lower() == "x" else ("in_progress" if mark == "-" else "pending")
+    if mark.lower() == "x":
+        return "completed"
+    if mark == "-":
+        return "in_progress"
+    if mark == "!":
+        return "failed"
+    return "pending"
+
+
+# The inverse of :func:`_status_from_mark`, so the compiler writes exactly the marks the
+# parser reads back. A status not listed here (a legacy `pending`) compiles to `[ ]`.
+_MARK_FOR_STATUS = {"completed": "x", "in_progress": "-", "failed": "!"}
 
 
 def explicit_tags(content: str) -> Dict[str, str]:
@@ -245,7 +295,12 @@ def _collect_sub_steps(tokens: List[Any]) -> Tuple[Dict[str, List[List[Dict[str,
     nested_texts: Set[str] = set()
     by_task: Dict[str, List[List[Dict[str, Any]]]] = {}
 
-    def collect(frame: Dict[str, Any], inside_step: bool, out: List[Dict[str, Any]]) -> None:
+    def collect(
+        frame: Dict[str, Any],
+        inside_step: bool,
+        state: Dict[str, Any],
+        out: List[Dict[str, Any]],
+    ) -> None:
         match = _CHECKBOX_RE.match(frame["text"] or "")
         if match and inside_step:
             out.append(frame)
@@ -253,15 +308,28 @@ def _collect_sub_steps(tokens: List[Any]) -> Tuple[Dict[str, List[List[Dict[str,
             if frame["text"]:
                 nested_texts.add(frame["text"])
             nested_texts.update(frame["details"])
+            # A nested checkbox opens a new sub-step; everything indented under it belongs
+            # to it rather than to the milestone above it.
+            state["current"] = frame
+        elif inside_step and frame["text"] and state["current"] is not None:
+            # A non-checkbox item indented under a sub-step (a ``🟢 Behavioral Log:`` line,
+            # say) is that sub-step's detail. It is recorded on the sub-step *and* claimed
+            # from the parent's detail scan, so an inline ledger entry cannot surface as the
+            # milestone's own note -- which is exactly what it did before this branch.
+            state["current"]["details"].append(frame["text"])
+            nested_texts.add(frame["text"])
         for child in frame["children"]:
-            collect(child, inside_step or bool(match), out)
+            collect(child, inside_step or bool(match), state, out)
 
     for frame in top_level:
         if not _CHECKBOX_RE.match(frame["text"] or ""):
             continue
         collected: List[Dict[str, Any]] = []
         for child in frame["children"]:
-            collect(child, True, collected)
+            # A fresh state per direct child: the task's own nested bullets are siblings of
+            # its sub-steps at the same indentation, so they must not inherit the sub-step a
+            # previous sibling opened. Only a frame nested *inside* a sub-step attaches to it.
+            collect(child, True, {"current": None}, collected)
         if not collected:
             continue
         sub_steps = []
@@ -276,6 +344,7 @@ def _collect_sub_steps(tokens: List[Any]) -> Tuple[Dict[str, List[List[Dict[str,
                 "tag": tag,
                 "details": [],
                 "files": [],
+                "behavioral_log": [],
             }
             _absorb_detail_lines(sub_step, item["details"])
             sub_steps.append(sub_step)
@@ -332,8 +401,12 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                         # Not a section: it holds no tasks and is already captured.
                         i += 2
                         continue
-                    task_hdr = re.match(r"^\[(.*?)\]", heading_text)
-                    if task_hdr:
+                    task_hdr = re.match(r"^\[([^\[\]]+)\]", heading_text)
+                    if task_hdr and is_tag(task_hdr.group(1).strip()):
+                        # Only a heading that opens with a *real* tag is a logged task. An
+                        # unknown bracket token such as `[Draft]` is prose, not a tag: taking
+                        # it as one silently turned the heading into a completed milestone
+                        # and dropped a genuine section off the plan tree.
                         task_counter += 1
                         t_title = task_hdr.group(1).strip()
                         clean_title, tag = _split_tag(t_title)
@@ -345,6 +418,7 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                             "tag": tag,
                             "details": [],
                             "files": [],
+                            "behavioral_log": [],
                             "sub_steps": []
                         }
                         current_section["tasks"].append(task_obj)
@@ -396,6 +470,7 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                         "tag": tag,
                         "details": [],
                         "files": [],
+                        "behavioral_log": [],
                         "sub_steps": []
                     }
                     queues = sub_steps_by_task.get(item_text)
@@ -421,14 +496,16 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
                         if clean_item and len(clean_item) > 2 and not clean_item.startswith("http"):
                             task_counter += 1
                             clean_task_title, tag = _split_tag(clean_item)
+                            logs, raw_details = _split_behavioral_logs(item_details)
                             task_obj = {
                                 "id": f"task-{task_counter}",
                                 "section": current_section["title"],
                                 "title": clean_task_title,
                                 "status": "pending",
                                 "tag": tag,
-                                "details": item_details,
+                                "details": raw_details,
                                 "files": [],
+                                "behavioral_log": logs,
                                 "sub_steps": []
                             }
                             current_section["tasks"].append(task_obj)
@@ -455,7 +532,8 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
     total = len(all_steps)
     completed = len([t for t in all_steps if t["status"] == "completed"])
     in_progress = len([t for t in all_steps if t["status"] == "in_progress"])
-    pending = total - completed - in_progress
+    failed = len([t for t in all_steps if t["status"] == "failed"])
+    pending = total - completed - in_progress - failed
     pct = round((completed / total) * 100) if total > 0 else 0
 
     return {
@@ -470,6 +548,7 @@ def parse_markdown_to_plan_dict(content: str, filename: str = "PLAN.md", relaxed
             "total_tasks": total,
             "completed_tasks": completed,
             "in_progress_tasks": in_progress,
+            "failed_tasks": failed,
             "pending_tasks": pending,
             "progress_percent": pct
         }
@@ -503,7 +582,7 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
 
         for task in sec.get("tasks", []):
             st = task.get("status", "pending")
-            mark = "x" if st == "completed" else ("-" if st == "in_progress" else " ")
+            mark = _MARK_FOR_STATUS.get(st, " ")
             # The tag the plan carries is written back as itself. A task whose domain was
             # inferred still carries it in `tag`, so there is no second field to consult.
             tag = task.get("tag")
@@ -511,14 +590,21 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
             t_title = task.get("title", "")
             files = [f for f in task.get("files", []) if f]
             lines.append(f"- [{mark}] {ui_prefix}{t_title}")
+            # The inline ledger sits directly beneath the checkbox it describes, so the plan
+            # reads as claim-then-evidence and the parser folds it back into
+            # `behavioral_log` rather than into free-form details.
+            for entry in task.get("behavioral_log") or []:
+                lines.append(f"  - {BEHAVIORAL_LOG_PREFIX} {entry}")
             # Sub-steps are re-indented under their parent so the parser folds them back
             # into `sub_steps` instead of rebuilding them as extra milestones.
             for sub_step in task.get("sub_steps") or []:
                 sub_status = sub_step.get("status", "pending")
-                sub_mark = "x" if sub_status == "completed" else ("-" if sub_status == "in_progress" else " ")
+                sub_mark = _MARK_FOR_STATUS.get(sub_status, " ")
                 sub_tag = sub_step.get("tag")
                 sub_ui_prefix = tag_prefix(sub_tag) if sub_tag else ""
                 lines.append(f"  - [{sub_mark}] {sub_ui_prefix}{sub_step.get('title', '')}")
+                for entry in sub_step.get("behavioral_log") or []:
+                    lines.append(f"    - {BEHAVIORAL_LOG_PREFIX} {entry}")
                 for d in sub_step.get("details") or []:
                     lines.append(f"    - {d}")
                 sub_files = [f for f in sub_step.get("files") or [] if f]
@@ -534,6 +620,65 @@ def compile_plan_json_to_markdown(data: Dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines).strip() + "\n"
+
+
+# The two marks a plan has to carry to be machine-workable: a `##`/`###` heading for the
+# section spine, and a `#` heading for the title. The milestone mark is `_CHECKBOX_RE`
+# above, reused rather than re-spelled, so the gate and the parser can never disagree
+# about what counts as a milestone.
+_TITLE_RE = re.compile(r"^\s*#\s+\S")
+_SECTION_HEADING_RE = re.compile(r"^\s*#{2,3}\s+\S")
+_ANY_BULLET_RE = re.compile(r"^\s*(?:[*-]|\d+[.)])\s+\S")
+
+
+def check_plan_structure(content: str) -> Dict[str, Any]:
+    """Verdict on whether a document carries the plan AST the parser can read.
+
+    A *shape* check, not a content check: it asks only for a title, at least one `##`
+    section, and at least one `- [ ]` milestone, which is exactly what
+    :func:`parse_markdown_to_plan_dict` needs to produce a task tree. A document without
+    them still renders as markdown, but the Plan Tracker reads it as an empty tree and
+    every action locks -- the Normalization Gate exists to catch that on import instead.
+
+    Pure and read-only: the caller decides what, if anything, to rewrite.
+    """
+    text = content or ""
+    lines = text.splitlines()
+    sections = len([line for line in lines if _SECTION_HEADING_RE.match(line)])
+    milestones = len([line for line in lines if _CHECKBOX_RE.match(line.strip())])
+    bullets = len([line for line in lines if _ANY_BULLET_RE.match(line)])
+    has_title = any(_TITLE_RE.match(line) for line in lines)
+
+    issues: List[str] = []
+    if not text.strip():
+        issues.append("The document is empty.")
+    else:
+        if not has_title:
+            issues.append("Add a `# Title` heading.")
+        if sections == 0:
+            issues.append("Add at least one `## Section` heading.")
+        if milestones == 0:
+            issues.append("Mark each milestone as a `- [ ]` checkbox.")
+
+    structured = bool(text.strip()) and has_title and sections > 0 and milestones > 0
+    if structured:
+        summary = f"Structured: {sections} section(s), {milestones} milestone(s)."
+    elif not text.strip():
+        summary = "Unstructured: the document is empty."
+    else:
+        summary = "Unstructured: " + " ".join(issues)
+
+    return {
+        "structured": structured,
+        "issues": issues,
+        "summary": summary,
+        "counts": {
+            "sections": sections,
+            "milestones": milestones,
+            "bullets": bullets,
+            "has_title": has_title,
+        },
+    }
 
 
 def parse_plan_tree(content: str) -> list[dict]:

@@ -47,22 +47,6 @@ IGNORE_DIRS = {
     ".pytest_cache", ".idea", ".vscode", ".gemini"
 }
 
-# Documents that describe the project but are not plans. They stay readable in the file
-# explorer, but every ``.md`` in the plan directory is otherwise offered as a switchable
-# plan, and selecting one makes the Dual-Sync engine try to compile a non-plan document --
-# surfacing as a blank plan tree with every action locked. Compared case-insensitively
-# against the bare filename.
-#
-# The plan directory is the repository root, which is where the project's own documents
-# live too, so they are listed here rather than left to be offered as roadmaps.
-NON_PLAN_MD_FILES = {
-    "progress.md",
-    "readme.md",
-    "changelog.md",
-    "handoff.md",
-    "deepagents_studio_overhaul_roadmap.md",
-}
-
 
 def get_project_dir() -> str:
     """Return the absolute path of the current project workspace."""
@@ -99,8 +83,10 @@ def get_plan_dir() -> str:
 def set_plan_dir(new_path: str) -> str:
     """Point the plan at a different directory and re-hydrate state from it.
 
-    Used by the test suite, which must work against a throwaway plan rather than the real
-    roadmap. Imported lazily for the same circular-import reason as ``set_project_dir``.
+    Called when the workspace changes, so the plan follows the project folder rather than
+    staying pinned to whichever directory was active before, and by the test suite, which
+    must work against a throwaway plan rather than the real roadmap. Imported lazily for
+    the same circular-import reason as ``set_project_dir``.
     """
     global PLAN_DIR
     abs_path = os.path.abspath(new_path)
@@ -136,20 +122,40 @@ def get_plan_json_path() -> str:
 
 
 def list_plan_files() -> list[str]:
-    """Finds all `.md` plan files in the plan directory.
+    """Finds the `.md` plan files in the plan directory.
 
-    Project documents that are not roadmaps (see ``NON_PLAN_MD_FILES``) are skipped:
-    an arbitrary ``.md`` in the plan directory is a plan candidate, so a stray
-    tracker or README would otherwise be offered as a switchable plan.
+    Candidacy is decided by *content*, not by filename. A document is offered when it
+    parses as the plan AST (``tools.plan_parser.check_plan_structure``: a title, a section
+    and at least one milestone). That keeps a README, a changelog or a planning note out
+    of the switcher without a hardcoded list of names, and lets any real roadmap in
+    whatever it is called -- so a tracker that *is* milestone-shaped is offered too.
+
+    The active plan is always included, even when it does not parse: it is what the app is
+    currently working on, and the Normalization Gate exists to fix its shape.
+
+    The parser is imported lazily: ``tools.plan_parser`` imports this module, so a
+    module-level import here would close an import cycle.
     """
+    from tools.plan_parser import check_plan_structure
+
     base_dir = get_plan_dir()
     if not os.path.exists(base_dir):
         return []
+
+    active = get_active_plan_filename().lower()
     md_files = []
     for f in os.listdir(base_dir):
-        if f.lower() in NON_PLAN_MD_FILES:
+        if not f.lower().endswith(".md") or not os.path.isfile(os.path.join(base_dir, f)):
             continue
-        if f.lower().endswith(".md") and os.path.isfile(os.path.join(base_dir, f)):
+        if f.lower() == active:
+            md_files.append(f)
+            continue
+        try:
+            with open(os.path.join(base_dir, f), "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read()
+        except OSError:
+            continue
+        if check_plan_structure(content)["structured"]:
             md_files.append(f)
     return sorted(md_files)
 

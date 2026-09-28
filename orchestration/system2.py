@@ -55,6 +55,10 @@ class Completion:
     # The provider's stop reason. ``"length"`` means the output budget ran out and the
     # answer is a *partial* file -- the caller must not write it as if it were complete.
     finish_reason: str = ""
+    # A reasoning model's chain of thought, when it exposes one. Empty for a plain chat
+    # model; the workflow surfaces it in the agent's card so the reasoning behind an answer
+    # can be read rather than guessed at.
+    reasoning: str = ""
 
     @property
     def total_tokens(self) -> int:
@@ -174,4 +178,31 @@ def _completion_from(response: Any, model: str) -> Optional[Completion]:
         prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
         completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
         finish_reason=str(getattr(choices[0], "finish_reason", "") or ""),
+        reasoning=reasoning_from(message),
     )
+
+
+def reasoning_from(message: Any) -> str:
+    """A message's chain of thought, from whichever field the provider used.
+
+    There is no one spelling for this. DeepSeek-style endpoints put it in
+    ``reasoning_content``; some use ``reasoning``; others return a list of parts under
+    ``reasoning_details``. All three are read, and an absent one is simply an empty string
+    -- a plain chat model has no chain of thought and that is not an error.
+    """
+    if message is None:
+        return ""
+    for attr in ("reasoning_content", "reasoning"):
+        value = getattr(message, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    details = getattr(message, "reasoning_details", None)
+    if isinstance(details, list):
+        parts = []
+        for item in details:
+            text = item.get("text") or item.get("content") if isinstance(item, dict) else getattr(item, "text", None)
+            if text:
+                parts.append(str(text))
+        return "\n".join(parts).strip()
+    return ""

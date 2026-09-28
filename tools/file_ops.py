@@ -13,6 +13,7 @@ import os
 from langchain_core.tools import tool
 
 from tools.plan_state import load_plan_state
+from tools.git_status import workspace_vcs_status
 from tools.workspace import PROJECT_ROOT, get_active_plan_filename, get_project_dir, walk_workspace
 
 MAX_FILE_READ_CHARS = 6000
@@ -40,6 +41,24 @@ def read_file(filename: str) -> str:
         return content
     except Exception as e:
         return f"Error reading file {filename}: {str(e)}"
+
+
+def read_source(filename: str) -> str:
+    """Reads a workspace file in full, with no token-optimised truncation.
+
+    ``read_file`` middle-truncates a large non-plan file, which is right when the
+    content is only being shown to a model. Paths that will write the content
+    *back* -- a bug patch, say -- must not use that view: the omitted middle would
+    be silently deleted when the (truncated) text is written to disk. Returns ""
+    when the file is missing or unreadable, so a caller can tell there was nothing
+    to read rather than writing an error string as file content.
+    """
+    filepath = os.path.join(get_project_dir(), filename)
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
 
 
 @tool
@@ -75,11 +94,17 @@ def append_to_file(filename: str, content: str) -> str:
 
 
 def list_workspace_files() -> list[dict]:
-    """Returns a list of files in the current workspace, excluding internal/temporary/cache folders."""
+    """Returns a list of files in the current workspace, excluding internal/temporary/cache folders.
+
+    Each entry carries a ``vcs`` letter (``"M"``/``"U"``, empty when unchanged) for the
+    sidebar tree. Git answers when the workspace is a work tree and the task snapshots do
+    otherwise -- see ``tools.git_status``; either way the listing itself is unchanged.
+    """
     files_list = []
     base_dir = get_project_dir()
     if not os.path.exists(base_dir):
         return []
+    vcs = workspace_vcs_status(base_dir)
     for root, _dirs, files in walk_workspace(base_dir):
         for f in files:
             if f.startswith(".tmp") or f.lower() in {".ds_store", "thumbs.db"}:
@@ -93,7 +118,8 @@ def list_workspace_files() -> list[dict]:
             files_list.append({
                 "name": f,
                 "path": rel_path,
-                "size": size
+                "size": size,
+                "vcs": vcs.get(rel_path, ""),
             })
     files_list.sort(key=lambda x: x["path"])
     return files_list

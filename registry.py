@@ -117,7 +117,11 @@ class AgentRegistry:
         return plan_session.read_current_plan()
 
     def stop_workflow(self):
-        """Signals the running workflow to halt immediately."""
+        """Signals the running workflow to halt immediately.
+
+        Sets the *current* run's stop event (see ``run_agent_workflow``), so a stop
+        can never be re-interpreted as belonging to a later run.
+        """
         self.stop_event.set()
 
     def run_agent_workflow(
@@ -132,10 +136,17 @@ class AgentRegistry:
         The sequencing -- intent resolution, the Architect preamble, action dispatch
         and error handling -- lives in ``orchestration.workflow.runner``. The signal
         and coder catalogue stay here because they are the registry's own state.
+
+        A fresh stop event is created for every run and published as ``self.stop_event``.
+        Reusing one event and clearing it at the start of each run let a new run clear
+        the flag a previous, still-winding-down run was stopping on -- un-cancelling it,
+        so two workflows then wrote the same plan and files concurrently.
         """
+        run_stop_event = threading.Event()
+        self.stop_event = run_stop_event
         runner.run_agent_workflow(
             coder_agents=self.coder_agents,
-            stop_event=self.stop_event,
+            stop_event=run_stop_event,
             user_message=user_message,
             emit_fn=emit_fn,
             action_type=action_type,

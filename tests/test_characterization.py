@@ -18,6 +18,7 @@ import unittest
 from unittest import mock
 
 from tools import file_tools as ft
+from tools.shell_tools import command_exit_code, command_failed
 from tools.task_tags import UI_TAG
 from tools.workspace import get_plan_dir, set_plan_dir
 from orchestration.workflow import templates
@@ -29,7 +30,7 @@ PLAN_MD = """# Project Plan: Demo
   - Files Created/Modified: `setup.py`, `config.py`
 - [ ] Pending item
 - [-] Working item
-- [!] not a real checkbox
+- [?] not a real checkbox
 - [ ] [FE] Dashboard view
 
 ## 2. Build
@@ -144,10 +145,30 @@ class PlanParserTests(unittest.TestCase):
 
     def test_non_checkbox_bullet_appends_to_previous_task_details(self):
         steps = ft.parse_markdown_to_plan_dict(PLAN_MD)["steps"]
-        # The raw item text (including its leading "[!] ") is preserved verbatim.
-        self.assertEqual(steps[2]["details"], ["[!] not a real checkbox"])
+        # A bracket token that is not one of the four marks (`x`, `-`, `!`, ` `) is not a
+        # checkbox, so the raw item text (including its leading "[?] ") survives verbatim.
+        self.assertEqual(steps[2]["details"], ["[?] not a real checkbox"])
         # ...and it does not create a task of its own.
-        self.assertNotIn("[!] not a real checkbox", [s["title"] for s in steps])
+        self.assertNotIn("[?] not a real checkbox", [s["title"] for s in steps])
+
+    def test_failed_mark_is_a_real_status_and_round_trips(self):
+        # `[!]` marks a task the Coder wrote but that did not pass verification. It has to be
+        # a real mark and survive compile -> reparse, or a reload would turn a failed task
+        # back into a pending one.
+        steps = ft.parse_markdown_to_plan_dict(
+            "# P\n\n## 1. S\n- [!] Broken thing\n- [ ] Untouched\n", "P.md"
+        )["steps"]
+        self.assertEqual([s["status"] for s in steps], ["failed", "pending"])
+        self.assertEqual(steps[0]["title"], "Broken thing")
+
+        plan = {"title": "P", "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
+            {"id": "task-1", "section": "1. S", "title": "Broken thing", "status": "failed"},
+        ]}]}
+        compiled = ft.compile_plan_json_to_markdown(plan)
+        self.assertIn("- [!] Broken thing", compiled)
+        self.assertEqual(
+            ft.parse_markdown_to_plan_dict(compiled, "P.md")["steps"][0]["status"], "failed"
+        )
 
     def test_metrics(self):
         parsed = ft.parse_markdown_to_plan_dict(PLAN_MD)
@@ -157,6 +178,7 @@ class PlanParserTests(unittest.TestCase):
                 "total_tasks": 5,
                 "completed_tasks": 1,
                 "in_progress_tasks": 1,
+                "failed_tasks": 0,
                 "pending_tasks": 3,
                 "progress_percent": 20,
             },
@@ -514,14 +536,28 @@ class PlanStateTests(WorkspaceTestCase):
         self.assertEqual(ft.list_plan_files(), ["PLAN.md", "ROADMAP.md"])
 
     def test_list_plan_files_skips_non_plan_documents(self):
-        # A tracker/README in the workspace root is not a roadmap. Offering one as a
-        # switchable plan made the Dual-Sync engine compile a non-plan document, which
-        # surfaced as a blank plan tree with every action locked.
+        # Candidacy is decided by content, not by name: prose documents that are not shaped
+        # like a roadmap (no sections/milestones) are not offered as switchable plans, so
+        # the Dual-Sync engine cannot be pointed at one and left with a blank, locked tree.
         self.write("PLAN.md", PLAN_MD)
         self.write("PROGRESS.md", "# Project Plan & Execution Tracker\n")
         self.write("README.md", "# readme\n")
         self.write("CHANGELOG.md", "# changelog\n")
         self.assertEqual(ft.list_plan_files(), ["PLAN.md"])
+
+    def test_list_plan_files_offers_a_milestone_shaped_tracker(self):
+        # A tracker that actually carries sections and checkboxes is a switchable plan
+        # whatever it is called -- no filename may hide it.
+        self.write("PLAN.md", PLAN_MD)
+        self.write("PROGRESS.md", "# Progress\n\n## Roadmap\n- [x] done\n- [ ] todo\n")
+        self.assertEqual(ft.list_plan_files(), ["PLAN.md", "PROGRESS.md"])
+
+    def test_list_plan_files_always_includes_the_active_plan(self):
+        # Even an unstructured active plan stays in the list: it is what the app is
+        # working on, and the Normalization Gate exists to repair its shape.
+        self.write("PLAN.md", "# Just a title\n\nsome prose, no milestones\n")
+        self.write("ROADMAP.md", PLAN_MD)
+        self.assertEqual(ft.list_plan_files(), ["PLAN.md", "ROADMAP.md"])
 
 
 class BackupAuditRollbackTests(WorkspaceTestCase):
@@ -706,6 +742,42 @@ class TaskDiffTests(WorkspaceTestCase):
             self.read(os.path.join(".deepagents_backups", "task-9", "existing.py")),
             "v1\n",
         )
+
+
+class VerificationResultParserTests(unittest.TestCase):
+    """The exit-code reader behind the Architect's compile gate.
+
+    ``run_command_in_workspace`` always returns a non-empty block -- ``[Exit Code: N]``
+    plus the output, or "(Command executed successfully with no output)" when there is
+    none. Reading success with ``bool(result)`` therefore marks *every* verified task
+    failed. These pin the three-way reading: zero, non-zero, and no verdict at all.
+    """
+
+    def test_a_clean_run_exits_zero(self):
+        result = "[Exit Code: 0]\n(Command executed successfully with no output)"
+        self.assertEqual(command_exit_code(result), 0)
+        self.assertFalse(command_failed(result))
+
+    def test_a_syntax_error_is_a_non_zero_exit(self):
+        result = (
+            '[Exit Code: 1]\n[STDERR]\n  File "main.py", line 3\n    def broken(\n'
+            "SyntaxError: invalid syntax"
+        )
+        self.assertEqual(command_exit_code(result), 1)
+        self.assertTrue(command_failed(result))
+
+    def test_an_inconclusive_result_has_no_exit_code_and_does_not_fail(self):
+        # A timeout, a start-up error or a whitelist refusal never produced a verdict, and
+        # "could not judge" must not be read as "failed".
+        for result in (
+            "Error: Command timed out after 30 seconds.",
+            "Execution error: [WinError 2] The system cannot find the file specified",
+            "Permission Denied: Command 'x' is not in the Architect's approved whitelist.",
+            "",
+        ):
+            with self.subTest(result=result):
+                self.assertIsNone(command_exit_code(result))
+                self.assertFalse(command_failed(result))
 
 
 class PreviewSourceTests(WorkspaceTestCase):
@@ -1097,13 +1169,14 @@ class CoderDelegationEventTests(WorkspaceTestCase):
             "log", "log", "log",
             "delegation", "coder_spawn",
             "log", "log",
-            "tool_call", "tool_result",
-            "tool_call", "tool_result",
-            "tool_call", "tool_result",
+            "tool_call", "tool_result",  # write_file deliverable
+            "tool_call", "tool_result",  # write_file test
+            "log",                       # verifying narration
+            "tool_call", "tool_result",  # py_compile
+            "tool_call", "tool_result",  # run_task_tests
+            "tool_call", "tool_result",  # save_plan_state
             "plan_updated",
             "coder_summary",
-            "log",
-            "tool_call", "tool_result",
             "architect_summary",
             "workflow_complete",
         ])
@@ -1126,6 +1199,13 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         task = plan_event["tree"][1]
         self.assertEqual(task["id"], "task-2")
         self.assertEqual(task["status"], "completed")
+        # A clean compile must read as verified, not as an error: the result block is never
+        # empty, so the gate reads its exit code rather than the string's truthiness.
+        compile_result = [
+            e for e in events
+            if e["type"] == "tool_result" and e["tool"] == "execute_restricted_command"
+        ][0]
+        self.assertEqual(compile_result["result"], "Syntax and compilation verified with 0 errors")
         self.assertEqual(task["files"], ["main.py", "test_main.py"])
         self.assertIn("Deliverables: `main.py`, `test_main.py`", task["details"])
         self.assertIn("Files: `main.py`, `test_main.py`", plan_event["content"])
@@ -1146,6 +1226,44 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         meta = json.loads(self.read(os.path.join(".deepagents_backups", "task-2", "_meta.json")))
         self.assertEqual(meta["main.py"]["action"], "created")
         self.assertEqual(meta["test_main.py"]["action"], "created")
+
+    def test_next_step_marks_a_task_failed_when_its_tests_fail(self):
+        """A verified-negative is the only thing that flips the mark to `[!]`.
+
+        The Coder's own test is the gate: when it runs and fails, the task is not
+        completed, the failure is written into the plan (so a reload remembers why), and
+        the proposals offer a retry rather than a rollback. The template seam is injected
+        so the failing test is deterministic rather than dependent on generated content.
+        """
+        self._seed_scaffold()
+        failing = templates.Deliverable(
+            filename="main.py",
+            test_filename="test_main.py",
+            code="class SolutionEngine:\n    pass\n",
+            test_code="def test_always_fails():\n    assert False\n",
+        )
+        with mock.patch("orchestration.workflow.templates.select", return_value=failing):
+            events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
+
+        plan_event = [e for e in events if e["type"] == "plan_updated"][0]
+        task = plan_event["tree"][1]
+        self.assertEqual(task["id"], "task-2")
+        self.assertEqual(task["status"], "failed")
+        self.assertTrue(
+            any(
+                detail.startswith("Verification failed: tests did not pass")
+                for detail in task["details"]
+            ),
+            task["details"],
+        )
+
+        summary = events[-2]["summary"]
+        self.assertEqual(summary["status"], "Verification Failed")
+        self.assertTrue(summary["proposals"][0].startswith("Retry '"))
+        self.assertEqual(
+            events[-1]["message"],
+            "Task 'Project scaffolding and runtime dependencies' failed verification and needs attention.",
+        )
 
     def test_next_step_targets_the_deep_coder_for_core_tasks(self):
         self._seed_scaffold()
@@ -1213,11 +1331,15 @@ class CoderDelegationEventTests(WorkspaceTestCase):
 
     def _seed_buggy_main(self):
         self._seed_scaffold()
+        # The canned regression suite asserts ``run()`` returns ``verified: True``, so the
+        # fixture has to return one for the suite to be a passing check rather than an
+        # accidental failure -- the "always failed" trap the compile gate was fixed for,
+        # in a second guise.
         ft.write_file.invoke({"filename": "main.py", "content": (
             "from typing import Dict, Any\n\n"
             "class SolutionEngine:\n"
             "    def run(self) -> Dict[str, Any]:\n"
-            "        return {'status': 'success'}\n"
+            "        return {'status': 'success', 'verified': True}\n"
         )})
         ft.write_file.invoke({"filename": "test_main.py", "content": "def test_ok():\n    assert True\n"})
 
@@ -1242,6 +1364,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
             "coder_summary",
             "log",
             "tool_call", "tool_result",
+            "tool_call", "tool_result",  # run_task_tests
             "architect_summary",
             "workflow_complete",
         ])
@@ -1274,9 +1397,139 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         summary = events[-2]["summary"]
         self.assertEqual(summary["title"], "Lead Architect Bug Fix Approval")
         self.assertEqual(summary["files"], ["main.py", "test_main.py"])
+        # The diagnosis is structured for the result view, not only narrated into the log:
+        # the frontend's root-cause / resolution split reads these two fields.
+        self.assertEqual(summary["root_cause"], "Input validation or unexpected exception handler.")
+        self.assertEqual(
+            summary["fix_spec"],
+            "Implement surgical exception guard and regression test in `test_main.py`.",
+        )
         self.assertEqual(
             events[-1]["message"], "Bug surgically diagnosed, patched, and verified."
         )
+
+        # No target task was named, so no plan state is written: the console/palette path
+        # stays byte-for-byte what it has always emitted.
+        self.assertEqual([e for e in events if e["type"] == "plan_updated"], [])
+
+    def test_fix_bug_reports_failure_when_the_regression_test_fails(self):
+        """The fix is gated like a task: a failing regression test is not an approval.
+
+        The suite text is injected so the failure is deterministic. In the default path it
+        cannot be relied on either way -- the canned suite imports ``SolutionEngine``, which
+        a real target file need not contain, so the runner reports an *error* and the fix is
+        left approved rather than failed. A definite failure has to come from a test that
+        actually runs.
+        """
+        self._seed_buggy_main()
+        with mock.patch(
+            "orchestration.workflow.templates.BUGFIX_REGRESSION_TEST",
+            "def test_regression():\n    assert False\n",
+        ):
+            events = self._collect(
+                "fix_bug", "[ACTION: FIX_BUG] something broke",
+                {"bugDescription": "IndexError in run()"},
+            )
+
+        coder_summary = [e for e in events if e["type"] == "coder_summary"][0]["summary"]
+        # The coder claims only what it did -- it wrote the patch and the suite; the
+        # Architect runs it.
+        self.assertEqual(coder_summary["status"], "Patch Applied")
+
+        summary = events[-2]["summary"]
+        self.assertEqual(summary["status"], "Verification Failed")
+        self.assertTrue(
+            any(
+                detail.startswith("Verification failed: tests did not pass")
+                for detail in summary["deliverables"]
+            ),
+            summary["deliverables"],
+        )
+        self.assertTrue(summary["proposals"][0].startswith("Retry the bug fix"))
+        self.assertEqual(
+            events[-1]["message"], "Bug fix failed verification and needs attention."
+        )
+
+    def test_fix_bug_with_a_target_task_marks_that_task_failed(self):
+        """A targeted fix writes its verdict onto the task it names.
+
+        The Fix affordance on a failed plan card passes the task id, so the failure the fix
+        uncovers has to land on that task -- otherwise the mark and the reason would live
+        only in the transcript and a reload would lose both.
+        """
+        self._seed_buggy_main()
+        with mock.patch(
+            "orchestration.workflow.templates.BUGFIX_REGRESSION_TEST",
+            "def test_regression():\n    assert False\n",
+        ):
+            events = self._collect(
+                "fix_bug", "[ACTION: FIX_BUG] something broke",
+                {"bugDescription": "IndexError in run()", "targetTaskId": "task-2"},
+            )
+
+        plan_event = [e for e in events if e["type"] == "plan_updated"][0]
+        self.assertEqual(plan_event["filename"], "PLAN.md")
+        task = next(t for t in plan_event["tree"] if t["id"] == "task-2")
+        self.assertEqual(task["status"], "failed")
+        self.assertTrue(
+            any(
+                detail.startswith("Verification failed: tests did not pass")
+                for detail in task["details"]
+            ),
+            task["details"],
+        )
+
+    def test_fix_bug_with_a_target_task_clears_a_failed_mark_back_to_pending(self):
+        """A verified fix clears the `[!]` it answered for.
+
+        The task is left `pending` -- runnable again -- and not `completed`: the bug is
+        patched, not the milestone, so only a re-run can complete it.
+        """
+        self._seed_buggy_main()
+        state_dict = self.read_state()
+        for sec in state_dict.get("sections", []):
+            for t in sec.get("tasks", []):
+                if t.get("id") == "task-2":
+                    t["status"] = "failed"
+        self.save_state(state_dict)
+
+        events = self._collect(
+            "fix_bug", "[ACTION: FIX_BUG] something broke",
+            {"bugDescription": "IndexError in run()", "targetTaskId": "task-2"},
+        )
+
+        plan_event = [e for e in events if e["type"] == "plan_updated"][0]
+        task = next(t for t in plan_event["tree"] if t["id"] == "task-2")
+        self.assertEqual(task["status"], "pending")
+        self.assertIn("Bug fix verified in `main.py`.", task["details"])
+        self.assertEqual(
+            events[-1]["message"], "Bug surgically diagnosed, patched, and verified."
+        )
+
+    def test_fix_bug_with_a_target_task_leaves_a_non_failed_task_in_its_own_state(self):
+        """A verified fix never invents or destroys a completion.
+
+        When the task was not `[!]` -- here, already `completed` -- the fix records its
+        evidence and leaves the status exactly as it found it, so patching a bug in finished
+        work cannot un-finish the milestone either.
+        """
+        self._seed_buggy_main()
+        state_dict = self.read_state()
+        for sec in state_dict.get("sections", []):
+            for t in sec.get("tasks", []):
+                if t.get("id") == "task-2":
+                    t["status"] = "completed"
+        self.save_state(state_dict)
+
+        events = self._collect(
+            "fix_bug", "[ACTION: FIX_BUG] something broke",
+            {"bugDescription": "IndexError in run()", "targetTaskId": "task-2"},
+        )
+
+        plan_event = [e for e in events if e["type"] == "plan_updated"][0]
+        task = next(t for t in plan_event["tree"] if t["id"] == "task-2")
+        self.assertEqual(task["status"], "completed")
+        self.assertIn("Bug fix verified in `main.py`.", task["details"])
 
     def test_fix_bug_falls_back_to_the_message_and_strips_action_tags(self):
         self._seed_buggy_main()

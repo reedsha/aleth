@@ -1,7 +1,8 @@
 """Implementation actions: the intents that may physically write code.
 
 ``fix_bug`` diagnoses a reported defect, patches it through a Coder and verifies the
-result; ``next_step`` builds the next roadmap deliverable and marks the task done;
+result; ``next_step`` builds the next roadmap deliverable, verifies it, and marks the
+task completed or failed on the verdict;
 the ``custom`` branch is the Gatekeeper's fallback, deciding between an inline
 Architect answer and a Coder delegation.
 
@@ -24,23 +25,27 @@ from agents import laya as laya_gate
 # ``LAYA_BACKEND=model`` opts the checkpoint in, so this call site reads the same either way.
 from agents import laya_model
 from agents.model_routing import architect_model, coder_model
-from orchestration.workflow import generation, templates
-from orchestration.workflow.context import WorkflowContext
+from orchestration.workflow import generation, ledger, reasoning, templates
+from orchestration.workflow.context import WorkflowContext, roadmap_brief
 from orchestration.workflow.events import tool_call, tool_result
 from tools.file_tools import (
     backup_file_for_task,
     compile_plan_json_to_markdown,
     list_workspace_files,
-    read_file,
+    read_source,
     save_plan_state,
     write_file,
 )
-from tools.shell_tools import execute_restricted_command
+from tools.shell_tools import command_failed, execute_restricted_command
 from tools.task_tags import UI_TAG
+# Imported directly rather than through the ``tools.file_tools`` façade: the test runner is
+# its own lower-layer tool (stdlib subprocess + pytest), not a file operation.
+from tools.test_runner import run_task_tests
 
 
 def fix_bug_action(
     ctx: WorkflowContext,
+    plan_state: Dict[str, Any],
     coder_agents: Dict[str, Dict[str, Any]],
     action_params: Dict[str, Any],
     user_message: str,
@@ -49,6 +54,15 @@ def fix_bug_action(
     bug_desc = action_params.get("bugDescription", "") or user_message
     attachment = action_params.get("bugAttachment", "")
     clean_bug = bug_desc.replace("[ACTION: FIX_BUG]", "").replace("Bug Report:", "").strip()
+
+    # The UI can name the plan task this fix answers for -- the Fix/Retry affordance on a
+    # failed card passes that task's id. When it does, the snapshot key is the id (so the
+    # diff is the task's own, and its recorded regression file is what runs) and the verdict
+    # below is written back onto the task, the same way ``next_step`` writes its own. Without
+    # a target -- the console path, the palette -- the key stays the literal ``bugfix`` and no
+    # plan state is touched, exactly as before.
+    target_task_id = action_params.get("targetTaskId")
+    task_key = target_task_id or "bugfix"
 
     # Sufficiency gate, mirroring the client rule in ui/js/actions.js. The webview
     # blocks an empty report, but the bridge is not the only way in -- a directive
@@ -123,19 +137,28 @@ def fix_bug_action(
         f"Inspecting {target_file} for root cause"
     ))
     time.sleep(0.3)
-    curr_code = read_file.invoke({"filename": target_file})
+    # Full read, not the tool's token-optimised view: this content is written back
+    # below, and ``read_file`` middle-truncates large files, which would delete the
+    # omitted middle when the patch is saved.
+    curr_code = read_source(target_file)
     ctx.emit_fn(tool_result(
         "software-architect", "read_file",
         f"Inspected {target_file} ({len(curr_code)} bytes)"
     ))
+
+    # The diagnosis is carried as fields, not only narrated. The architect's card and the
+    # frontend's root-cause/resolution result view both read it, and recovering it by
+    # parsing this log line would couple them to one string's exact wording.
+    root_cause = "Input validation or unexpected exception handler."
+    fix_spec = f"Implement surgical exception guard and regression test in `{test_file}`."
 
     ctx.stream_text(
         "software-architect",
         f"> Diagnosis Result:\n"
         f"- Bug Report: {clean_bug[:120]}\n"
         f"- Target File: `{target_file}`\n"
-        f"- Root Cause: Input validation or unexpected exception handler.\n"
-        f"- Fix Spec: Implement surgical exception guard and regression test in `{test_file}`.\n"
+        f"- Root Cause: {root_cause}\n"
+        f"- Fix Spec: {fix_spec}\n"
         f"> Phase 1 complete. Summoning Senior Coder for implementation...",
         log_type="decision",
         delay=0.02
@@ -170,8 +193,11 @@ def fix_bug_action(
 
     ctx.stream_text(target_coder_id, f"> [PHASE 2: CODER SURGICAL PATCH]\n> Backing up `{target_file}` before applying patch...", delay=0.02)
 
-    # Backup existing file for rollback safety!
-    backup_file_for_task("bugfix", target_file)
+    # Backup both files under the one task key the fix is recorded against, so the
+    # verification below finds the regression test the same way ``next_step`` does -- from
+    # the snapshot metadata rather than a second, guessed path.
+    backup_file_for_task(task_key, target_file)
+    backup_file_for_task(task_key, test_file)
     time.sleep(0.2)
 
     # Surgical patch. Written by System 2 when it is available -- it is the only thing here
@@ -205,6 +231,10 @@ def fix_bug_action(
         ),
     )
 
+    if generated.used_llm and generated.reasoning:
+        # The model's own deliberation, shown in the Coder's card: what the patch is based on.
+        reasoning.stream_thought(ctx.stream_text, target_coder_id, generated.reasoning)
+
     ctx.emit_fn(tool_call(
         target_coder_id, "write_file", {"filename": target_file},
         f"Applying surgical bug patch to {target_file}"
@@ -236,7 +266,7 @@ def fix_bug_action(
         "agent": target_coder_id,
         "summary": {
             "title": f"Surgical Bug Patch: {target_file}",
-            "status": "Patch Applied & Tested",
+            "status": "Patch Applied",
             "files": [target_file, test_file],
             "deliverables": [
                 f"Applied surgical patch addressing: {clean_bug[:60]}.",
@@ -247,7 +277,12 @@ def fix_bug_action(
     })
     time.sleep(0.3)
 
-    # Phase 3: Architect Verification
+    # Phase 3: Architect Verification. The same gate ``next_step`` uses, and it chooses the
+    # verdict rather than only narrating it: a patch that does not compile, or whose
+    # regression test runs and fails, is a failed fix. An inconclusive check -- a test file
+    # that cannot import (the canned suite imports ``SolutionEngine``, which a real target
+    # need not contain), a missing runner -- does not fail the patch, because "could not
+    # judge" is not "broken".
     ctx.stream_text("software-architect", f"> [PHASE 3: VERIFICATION LOOP] Lead Architect verifying patch in `{target_file}` via restricted shell...", delay=0.02)
     ctx.emit_fn(tool_call(
         "software-architect", "execute_restricted_command",
@@ -256,35 +291,119 @@ def fix_bug_action(
     ))
     time.sleep(0.3)
     check_res = execute_restricted_command.invoke({"command": f"python -m py_compile {target_file}"})
+    compile_error = check_res.strip() if command_failed(check_res) else ""
     ctx.emit_fn(tool_result(
         "software-architect", "execute_restricted_command",
-        "Syntax and compilation verified with 0 errors" if not check_res.strip() else check_res.strip()
+        compile_error or "Syntax and compilation verified with 0 errors"
     ))
     time.sleep(0.2)
+
+    # The regression test is recorded under the same task key, so the shared runner finds
+    # it without the workflow having to name it.
+    test_verdict = run_task_tests(task_key)
+    test_summary = test_verdict.get("summary") or "No test file was recorded for this task."
+    ctx.emit_fn(tool_call(
+        "software-architect", "run_task_tests", {"task_id": task_key},
+        "Executing the regression tests against the patched code"
+    ))
+    time.sleep(0.3)
+    ctx.emit_fn(tool_result(
+        "software-architect", "run_task_tests", f"Tests: {test_summary}"
+    ))
+
+    fix_failed = bool(compile_error) or test_verdict.get("verdict") == "failed"
+    failure_reason = ""
+    if fix_failed:
+        failure_reason = compile_error.splitlines()[-1] if compile_error else f"tests did not pass ({test_summary})"
+
+    fix_deliverables = [
+        f"Root cause diagnosed and surgically fixed in `{target_file}`.",
+        f"Regression tests confirmed in `{test_file}`.",
+        "Zero regressions detected in restricted shell validation."
+    ]
+    fix_proposals = [
+        "Run 'Analyze Codebase' to verify entire system stability.",
+        "Proceed to next milestone via 'Execute Next Step'."
+    ]
+    if fix_failed:
+        fix_deliverables = [
+            f"Root cause diagnosed and patched in `{target_file}`.",
+            f"Verification failed: {failure_reason}",
+            f"The patch and the regression test in `{test_file}` need attention before this fix is trusted.",
+        ]
+        fix_proposals[0] = f"Retry the bug fix once the failure in `{target_file}` is addressed."
+
+    # When the UI named the task, the verdict lands in the plan, not only in the transcript.
+    # A failed fix keeps (or sets) the task `[!]`; a verified fix clears a failed mark back to
+    # `pending` -- the failure it was marked for has been addressed, so the task is runnable
+    # again -- and leaves a task that was not failed in its own state. Either way it is not
+    # *completed*: a patched bug is not a finished milestone, so only a re-run completes it.
+    if target_task_id:
+        target_task = None
+        for sec in plan_state.get("sections", []):
+            for t in sec.get("tasks", []):
+                if t.get("id") == target_task_id or t.get("title") == target_task_id:
+                    target_task = t
+                    break
+            if target_task:
+                break
+        if target_task:
+            if fix_failed:
+                target_task["status"] = "failed"
+                target_task.setdefault("details", []).append(
+                    f"Verification failed: {failure_reason}"
+                )
+            else:
+                if target_task.get("status") == "failed":
+                    # Clear the mark the fix answered for. Reverting to `pending` (not
+                    # `completed`) keeps the runnable-again signal without claiming a
+                    # milestone the fix's own gate never verified.
+                    target_task["status"] = "pending"
+                target_task.setdefault("details", []).append(
+                    f"Bug fix verified in `{target_file}`."
+                )
+            saved_plan = save_plan_state(plan_state)
+            latest_markdown = compile_plan_json_to_markdown(saved_plan)
+            ctx.emit_fn(tool_call(
+                "software-architect", "save_plan_state",
+                {"task_id": target_task.get("id"), "status": target_task.get("status")},
+                f"Recording the bug fix verdict for '{target_task.get('title')}'"
+            ))
+            time.sleep(0.3)
+            ctx.emit_fn(tool_result(
+                "software-architect", "save_plan_state",
+                "Machine state and Markdown synchronized"
+            ))
+            ctx.emit_fn({
+                "type": "plan_updated",
+                "filename": ctx.plan_file,
+                "content": latest_markdown,
+                "tree": saved_plan.get("steps", []),
+                "plan_json": saved_plan
+            })
 
     ctx.emit_fn({
         "type": "architect_summary",
         "agent": "software-architect",
         "summary": {
             "title": "Lead Architect Bug Fix Approval",
-            "status": "Verified & Approved",
+            "status": "Verification Failed" if fix_failed else "Verified & Approved",
             "files": [target_file, test_file],
-            "deliverables": [
-                f"Root cause diagnosed and surgically fixed in `{target_file}`.",
-                f"Regression tests confirmed in `{test_file}`.",
-                "Zero regressions detected in restricted shell validation."
-            ],
-            "proposals": [
-                "Run 'Analyze Codebase' to verify entire system stability.",
-                "Proceed to next milestone via 'Execute Next Step'."
-            ]
+            "root_cause": root_cause,
+            "fix_spec": fix_spec,
+            "deliverables": fix_deliverables,
+            "proposals": fix_proposals
         }
     })
     time.sleep(0.3)
     ctx.emit_fn({
         "type": "workflow_complete",
         "status": "finished",
-        "message": "Bug surgically diagnosed, patched, and verified."
+        "message": (
+            "Bug fix failed verification and needs attention."
+            if fix_failed
+            else "Bug surgically diagnosed, patched, and verified."
+        )
     })
 
 
@@ -413,6 +532,10 @@ def next_step_action(
     )
     out_code = generated.code
 
+    if generated.used_llm and generated.reasoning:
+        # The model's reasoning about the deliverable, shown in the Coder's card.
+        reasoning.stream_thought(ctx.stream_text, target_coder_id, generated.reasoning)
+
     ctx.stream_text(target_coder_id, f"> Creating snapshot backup of deliverables for rollback safety...", delay=0.02)
     backup_file_for_task(target_task.get("id"), out_filename)
     backup_file_for_task(target_task.get("id"), out_test)
@@ -440,19 +563,91 @@ def next_step_action(
         f"Wrote {len(out_test_code)} chars to {out_test}"
     ))
 
-    # Mark task completed in plan_state
-    target_task["status"] = "completed"
+    # Architect Verification runs *before* the status is written, so its verdict can choose
+    # the status. This is the writer the plan's failed state (`[!]`) needs. Two checks, either
+    # of which can fail the task: py_compile, where a syntax error is unambiguous, and the
+    # task's own regression tests, run through the shared runner (tools/test_runner.py) rather
+    # than a second implementation that could drift from the result view's.
+    ctx.stream_text("software-architect", "> Verifying task deliverables via restricted shell...", delay=0.02)
+    ctx.emit_fn(tool_call(
+        "software-architect", "execute_restricted_command",
+        {"command": f"python -m py_compile {out_filename if out_filename.endswith('.py') else out_test}"},
+        "Validating syntax and deliverable integrity"
+    ))
+    time.sleep(0.3)
+    cmd_to_run = f"python -m py_compile {out_filename}" if out_filename.endswith(".py") else f"python -m py_compile {out_test}"
+    v_res = execute_restricted_command.invoke({"command": cmd_to_run})
+    # The command's block is never empty, so success has to be read from its exit code, not
+    # from the string's truthiness (which is always true). Only a non-zero exit is evidence
+    # of a syntax error; an inconclusive result -- no exit status at all -- is not.
+    compile_error = v_res.strip() if command_failed(v_res) else ""
+    ctx.emit_fn(tool_result(
+        "software-architect", "execute_restricted_command",
+        compile_error or "Syntax and compilation verified with 0 errors"
+    ))
+
+    # The task's own tests are on disk already (written above) and their filenames are recorded
+    # in the snapshot metadata written before the writes, so the runner can find them here.
+    test_verdict = run_task_tests(target_task.get("id"))
+    test_summary = test_verdict.get("summary") or "No test file was recorded for this task."
+    ctx.emit_fn(tool_call(
+        "software-architect", "run_task_tests",
+        {"task_id": target_task.get("id")},
+        "Executing the task's regression tests"
+    ))
+    time.sleep(0.3)
+    ctx.emit_fn(tool_result(
+        "software-architect", "run_task_tests",
+        f"Tests: {test_summary}"
+    ))
+
+    # Only a *definite* negative fails a task: a compile error, or tests that ran and failed.
+    # An inconclusive run (a collection error, a missing runner, no test file) does not punish
+    # a task whose code could not be judged -- the same "never infer a verdict" rule the result
+    # view's test pill follows.
+    task_failed = bool(compile_error) or test_verdict.get("verdict") == "failed"
+    reason = ""
+    if task_failed:
+        reason = compile_error.splitlines()[-1] if compile_error else f"tests did not pass ({test_summary})"
+
+    # Mark the task's outcome in plan_state, chosen by the verdict above.
+    target_task["status"] = "failed" if task_failed else "completed"
     target_task.setdefault("files", []).extend([out_filename, out_test])
     target_task["files"] = list(dict.fromkeys(target_task["files"]))
     target_task.setdefault("details", []).append(f"Deliverables: `{out_filename}`, `{out_test}`")
+    if task_failed:
+        # The failure has to live in the plan, not only in the event stream, or a reload would
+        # forget why a task is marked `[!]` and it could only be re-run blindly.
+        target_task["details"].append(f"Verification failed: {reason}")
+
+    # Living Behavioral Ledger. Deterministic bookkeeping -- no tokens -- and it has to land
+    # in the same write as the status, or the plan would briefly claim a task is done with no
+    # evidence for it. The evidence line is written either way (the files were written
+    # regardless of the verdict), but a failed task is not a *finished* milestone, so it does
+    # not graduate into the standing context's core facts.
+    ledger_message = f"wrote `{out_filename}` and `{out_test}`"
+    if generated.used_llm:
+        ledger_message += f" via {generated.model}"
+    ledger.record_behavioral_log(target_task, ledger_message)
+    fact = None if task_failed else ledger.wrap_up_milestone(plan_state, target_task)
+    if generated.used_llm:
+        # Narrated only for a real call: the ledger is *recorded* either way (the plan tree
+        # and the compiled markdown carry it), but the card's model lines exist to show what
+        # the model did, and the offline path's event stream is a pinned contract.
+        ctx.stream_text(
+            target_coder_id,
+            f"> \U0001F7E2 Behavioral Log: {ledger_message}"
+            + (f"\n> Global State Summary fact: {fact}" if fact else ""),
+            delay=0.02,
+        )
 
     saved_plan = save_plan_state(plan_state)
     latest_markdown = compile_plan_json_to_markdown(saved_plan)
 
     ctx.emit_fn(tool_call(
         target_coder_id, "save_plan_state",
-        {"task_id": target_task.get("id"), "status": "completed"},
-        f"Marked task '{target_task.get('title')}' completed in plan.json & {plan_file}"
+        {"task_id": target_task.get("id"), "status": target_task["status"]},
+        f"Marked task '{target_task.get('title')}' {target_task['status']} in plan.json & {plan_file}"
     ))
     time.sleep(0.3)
     ctx.emit_fn(tool_result(
@@ -471,7 +666,7 @@ def next_step_action(
     coder_deliverables = [
         f"Constructed `{out_filename}`.",
         f"Created test suite `{out_test}`.",
-        f"Updated active plan `{plan_file}` (marked task completed)."
+        f"Updated active plan `{plan_file}` (marked task {target_task['status']})."
     ]
     # Only a real call has a cost to report, so the offline path's payload is unchanged.
     if generated.used_llm:
@@ -495,37 +690,30 @@ def next_step_action(
     })
     time.sleep(0.3)
 
-    # Architect Verification
-    ctx.stream_text("software-architect", f"> Verifying task deliverables via restricted shell...", delay=0.02)
-    ctx.emit_fn(tool_call(
-        "software-architect", "execute_restricted_command",
-        {"command": f"python -m py_compile {out_filename if out_filename.endswith('.py') else out_test}"},
-        "Validating syntax and deliverable integrity"
-    ))
-    time.sleep(0.3)
-    cmd_to_run = f"python -m py_compile {out_filename}" if out_filename.endswith(".py") else f"python -m py_compile {out_test}"
-    v_res = execute_restricted_command.invoke({"command": cmd_to_run})
-    ctx.emit_fn(tool_result(
-        "software-architect", "execute_restricted_command",
-        "Syntax and compilation verified with 0 errors" if not v_res.strip() else v_res.strip()
-    ))
-
     next_p = [t for s in saved_plan.get("sections", []) for t in s.get("tasks", []) if t.get("status") == "pending"]
     proposals = [
         f"Execute next step: '{next_p[0].get('title')}'" if next_p else "All roadmap tasks finished! Run final test audit.",
         "Verify file structure with 'Analyze Codebase'.",
         "Click completed task in Plan Tracker if you ever need to Rollback."
     ]
+    if task_failed:
+        # Rollback is not the recovery for a failed task -- it is already un-completed -- so the
+        # first proposal names the real next move: address the failure and run it again.
+        proposals[0] = f"Retry '{target_task.get('title')}' once the failure above is addressed."
 
     ctx.emit_fn({
         "type": "architect_summary",
         "agent": "software-architect",
         "summary": {
             "title": "Lead Architect Task Approval & Handoff",
-            "status": "Verified & Approved",
+            "status": "Verification Failed" if task_failed else "Verified & Approved",
             "files": [plan_file, out_filename, out_test],
             "deliverables": [
-                f"Verified deliverables for '{target_task.get('title')}'.",
+                (
+                    f"Verification failed for '{target_task.get('title')}': {reason}"
+                    if task_failed
+                    else f"Verified deliverables for '{target_task.get('title')}'."
+                ),
                 f"Deliverables active in workspace: `{out_filename}`, `{out_test}`.",
                 "Plan tracker updated strictly from AST JSON state."
             ],
@@ -536,7 +724,11 @@ def next_step_action(
     ctx.emit_fn({
         "type": "workflow_complete",
         "status": "finished",
-        "message": f"Task '{target_task.get('title')}' completed and verified."
+        "message": (
+            f"Task '{target_task.get('title')}' failed verification and needs attention."
+            if task_failed
+            else f"Task '{target_task.get('title')}' completed and verified."
+        )
     })
 
 
@@ -574,6 +766,34 @@ def custom_action(
 
         ctx.stream_text("software-architect", f"> Direct Architect Response to Custom Directive:\n- Workspace is anchored to `{plan_file}`.\n- Active milestones: {len(plan_state.get('steps', []))} items.\n- No physical code modification requested; administrative resolution applied.", delay=0.02)
 
+        # The direct answer itself, when a provider is configured. This branch exists to
+        # resolve an analytical directive without a Coder -- and an analytical directive is
+        # precisely what the Architect should answer in its own words rather than narrate.
+        answer = reasoning.architect_answer(
+            prompt=(
+                f"Answer this directive directly as the Architect: {user_message}\n"
+                f"At most 8 short lines. No code will be written for it."
+            ),
+            context_text=roadmap_brief(plan_state),
+            plan_file=plan_file,
+        )
+        if answer.used_llm:
+            reasoning.stream_thought(ctx.stream_text, "software-architect", answer.reasoning)
+            ctx.stream_text(
+                "software-architect",
+                f"> Architect answer ({answer.model}):\n{answer.text}",
+                log_type="decision",
+                delay=0.02
+            )
+
+        admin_deliverables = [
+            f"Directly processed directive: '{user_message[:60]}'.",
+            "Administrative bypass applied (no Coder spawned).",
+            "Workspace state verified stable."
+        ]
+        if answer.used_llm:
+            admin_deliverables.append(answer.usage_line())
+
         ctx.emit_fn({
             "type": "architect_summary",
             "agent": "software-architect",
@@ -581,11 +801,7 @@ def custom_action(
                 "title": "Lead Architect Directive Assessment",
                 "status": "Handled Directly",
                 "files": [plan_file],
-                "deliverables": [
-                    f"Directly processed directive: '{user_message[:60]}'.",
-                    "Administrative bypass applied (no Coder spawned).",
-                    "Workspace state verified stable."
-                ],
+                "deliverables": admin_deliverables,
                 "proposals": [
                     "Execute Next Step to advance implementation.",
                     "Analyze Codebase for in-depth system audit."
@@ -660,6 +876,8 @@ def custom_action(
         ),
     )
     code_content = generated.code
+    if generated.used_llm and generated.reasoning:
+        reasoning.stream_thought(ctx.stream_text, target_coder_id, generated.reasoning)
     backup_file_for_task("custom", filename)
     ctx.stream_text(target_coder_id, f"> Writing custom code solution to `{filename}`...", delay=0.02)
     write_file.invoke({"filename": filename, "content": code_content})

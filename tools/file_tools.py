@@ -25,15 +25,18 @@ from tools.file_ops import (
     read_environment_variables,
     read_file,
     read_preview_source,
+    read_source,
     write_file,
 )
 from tools.plan_parser import (
+    check_plan_structure,
     compile_plan_json_to_markdown,
     parse_markdown_to_plan_dict,
     parse_plan_tree,
 )
 from tools.plan_state import (
     load_plan_state,
+    plan_structure_report,
     save_plan_state,
     sync_plan_on_disk,
     update_plan_task_status,
@@ -52,10 +55,12 @@ from tools.workspace import (
     IGNORE_DIRS,
     PLAN_JSON_FILE,
     get_active_plan_filename,
+    get_plan_dir,
     get_plan_json_path,
     get_project_dir,
     list_plan_files,
     set_active_plan_filename,
+    set_plan_dir,
     set_project_dir,
     walk_workspace,
 )
@@ -66,6 +71,8 @@ __all__ = [
     "set_project_dir",
     "get_active_plan_filename",
     "set_active_plan_filename",
+    "get_plan_dir",
+    "set_plan_dir",
     "PROJECT_DIR",
     "ACTIVE_PLAN_FILE",
     "get_plan_json_path",
@@ -76,13 +83,16 @@ __all__ = [
     "parse_markdown_to_plan_dict",
     "compile_plan_json_to_markdown",
     "parse_plan_tree",
+    "check_plan_structure",
     # state persistence
     "load_plan_state",
+    "plan_structure_report",
     "save_plan_state",
     "sync_plan_on_disk",
     "update_plan_task_status",
     # file operations
     "read_file",
+    "read_source",
     "write_file",
     "append_to_file",
     "list_workspace_files",

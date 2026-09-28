@@ -11,7 +11,11 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from tools.plan_parser import compile_plan_json_to_markdown, parse_markdown_to_plan_dict
+from tools.plan_parser import (
+    check_plan_structure,
+    compile_plan_json_to_markdown,
+    parse_markdown_to_plan_dict,
+)
 from tools.task_tags import UI_TAG
 from tools.workspace import (
     get_active_plan_filename,
@@ -66,6 +70,7 @@ def _empty_plan(title: str) -> Dict[str, Any]:
             "total_tasks": 0,
             "completed_tasks": 0,
             "in_progress_tasks": 0,
+            "failed_tasks": 0,
             "pending_tasks": 0,
             "progress_percent": 0
         }
@@ -161,6 +166,18 @@ def write_plan_markdown(content: str) -> str:
     return path
 
 
+def plan_structure_report(content: Optional[str] = None) -> Dict[str, Any]:
+    """AST structure verdict for a plan document (the active plan by default).
+
+    The Normalization Gate reads this to decide whether an imported ``.md`` can be
+    parsed into sections and milestones, or has to be reformatted first. Read-only: it
+    never writes ``plan.json`` or the markdown, so asking the question cannot change
+    the answer.
+    """
+    text = read_plan_markdown() if content is None else content
+    return check_plan_structure(text)
+
+
 def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Persists updated machine state to plan.json and instantly compiles back to PLAN.md.
@@ -170,9 +187,28 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
     plan_md_path = get_plan_markdown_path()
     plan_json_path = get_plan_json_path()
 
-    # Flatten steps from sections to ensure consistency
-    all_steps = []
+    # Flatten steps from sections to ensure consistency. A dict that carries tasks only
+    # in the flat `steps` view (a hand-built or partially migrated plan) would otherwise
+    # flatten to nothing -- wiping `steps` and zeroing every metric. Rebuilding the
+    # nested view from the flat one first keeps such a plan intact.
     sections = plan_dict.get("sections", [])
+    if not sections:
+        flat = plan_dict.get("steps") or []
+        if flat:
+            grouped: Dict[str, Dict[str, Any]] = {}
+            purged: List[Dict[str, Any]] = []
+            for t in flat:
+                title = t.get("section", "General")
+                sec = grouped.get(title)
+                if sec is None:
+                    sec = {"id": f"sec-{len(grouped) + 1}", "title": title, "tasks": []}
+                    grouped[title] = sec
+                    purged.append(sec)
+                sec["tasks"].append(t)
+            sections = purged
+            plan_dict["sections"] = sections
+
+    all_steps = []
     for sec in sections:
         for t in sec.get("tasks", []):
             t["section"] = sec.get("title", "General")
@@ -181,7 +217,8 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
     total = len(all_steps)
     completed = len([t for t in all_steps if t.get("status") == "completed"])
     in_progress = len([t for t in all_steps if t.get("status") == "in_progress"])
-    pending = total - completed - in_progress
+    failed = len([t for t in all_steps if t.get("status") == "failed"])
+    pending = total - completed - in_progress - failed
     pct = round((completed / total) * 100) if total > 0 else 0
 
     plan_dict["steps"] = all_steps
@@ -189,6 +226,7 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
         "total_tasks": total,
         "completed_tasks": completed,
         "in_progress_tasks": in_progress,
+        "failed_tasks": failed,
         "pending_tasks": pending,
         "progress_percent": pct
     }

@@ -113,6 +113,15 @@ def edit_coder_prompt(
             pattern = rf'{const_name}\s*=\s*""".*?"""'
             replacement = f'{const_name} = """{new_prompt}"""'
             updated_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+            # Update the in-memory state too, exactly as the architect branch does. Without
+            # this, the rebuild below (build_architect_agent / rescan) would read the stale
+            # system prompt and the UI's agents_updated event would report the old one, so
+            # the edit would appear not to have taken effect until a restart.
+            setattr(coders_mod, const_name, new_prompt)
+            if coder_name == "coder-deep":
+                coders_mod.coder_deep["system_prompt"] = new_prompt
+            else:
+                coders_mod.coder_standard["system_prompt"] = new_prompt
 
         with open(coder_file, "w", encoding="utf-8") as f:
             f.write(updated_content)

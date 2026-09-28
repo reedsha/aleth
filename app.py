@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import threading
+import html as html_module
 import webview
 
 from env_boot import load_environment
@@ -19,6 +20,7 @@ from tools.file_tools import (
     list_workspace_files,
     get_active_plan_filename,
     set_active_plan_filename,
+    set_plan_dir,
     list_plan_files,
     parse_plan_tree,
     load_plan_state,
@@ -37,7 +39,85 @@ from tools.file_tools import (
     read_environment_variables
 )
 from tools.settings import read_settings, save_settings as write_settings
-from tools.plan_state import write_plan_markdown
+from tools.plan_state import plan_structure_report, write_plan_markdown
+from tools.test_runner import run_task_tests as run_task_test_suite
+
+
+# The style of the detached console window. It is a separate document from ui/index.html
+# and is handed to pywebview as inline html, so it needs no subresource fetch and cannot
+# be affected by the module-bundle rules that govern the main window.
+_CONSOLE_WINDOW_STYLE = """
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0a0c10; color: #cbd5e1;
+         font: 12px/1.6 "JetBrains Mono", Consolas, monospace; }
+  header { position: sticky; top: 0; display: flex; align-items: center;
+           justify-content: space-between; gap: 10px; padding: 8px 12px;
+           background: #15181d; border-bottom: 1px solid #2a2d32;
+           font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+           color: #94a3b8; }
+  #stream { padding: 8px 12px 14px 12px; }
+  .ln { display: flex; gap: 10px; white-space: pre-wrap; overflow-wrap: break-word; }
+  .cmd .t, .tool .t { color: #7dd3fc; }
+  .ok .t { color: #34d399; }
+  .error .t { color: #f87171; }
+  .agent .t, .decision .t { color: #fbbf24; }
+  .state .t { color: #64748b; }
+  .delegate .t, .summary .t { color: #e2e8f0; }
+"""
+
+_CONSOLE_WINDOW_APPEND_JS = (
+    "window.appendLine = function (kind, text) {"
+    "  var stream = document.getElementById('stream');"
+    "  if (!stream) return;"
+    "  var row = document.createElement('div');"
+    "  row.className = 'ln ' + String(kind || 'log').replace(/[^a-z0-9_-]/gi, '');"
+    "  var span = document.createElement('span');"
+    "  span.className = 't';"
+    "  span.textContent = String(text);"
+    "  row.appendChild(span);"
+    "  stream.appendChild(row);"
+    "  window.scrollTo(0, document.body.scrollHeight);"
+    "};"
+)
+
+
+def _console_kind(kind) -> str:
+    """The transcript line's class suffix, restricted to what belongs in a class name."""
+    cleaned = "".join(ch for ch in str(kind or "log").lower() if ch.isalnum() or ch in "_-")
+    return cleaned or "log"
+
+
+def _console_window_html(backlog) -> str:
+    """The detached console's initial document, seeded with the transcript shown so far."""
+    rows = []
+    for item in backlog or []:
+        if not isinstance(item, dict):
+            continue
+        kind = _console_kind(item.get("kind"))
+        text = html_module.escape(str(item.get("text", "")))
+        rows.append(f'<div class="ln {kind}"><span class="t">{text}</span></div>')
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        "<title>DeepAgents \u2022 Console</title>"
+        f"<style>{_CONSOLE_WINDOW_STYLE}</style></head>"
+        '<body><header><span>DeepAgents \u2022 Console</span>'
+        '<span>detached</span></header>'
+        f'<div id="stream">{"".join(rows)}</div>'
+        f"<script>{_CONSOLE_WINDOW_APPEND_JS}</script></body></html>"
+    )
+
+
+def _eval_console_line(window, kind, text) -> None:
+    """Pushes one line into the detached window's transcript.
+
+    The values are JSON-encoded, which is a valid JavaScript string literal, so a log line
+    can never break out of the call or corrupt the second window's document.
+    """
+    window.evaluate_js(
+        f"window.appendLine && window.appendLine({json.dumps(str(kind))}, {json.dumps(str(text))});"
+    )
+
 
 class BridgeAPI:
     """
@@ -47,6 +127,12 @@ class BridgeAPI:
         self._window = None
         self._execution_thread = None
         self._tagging_thread = None
+        # The detached-console window (a real second pywebview window) and the lines that
+        # arrived before it finished loading. Touched from the workflow thread, the spawn
+        # thread and pywebview's loaded/closed callbacks, so every access takes the lock.
+        self._console_window = None
+        self._console_buffer = []
+        self._console_lock = threading.Lock()
 
     def set_window(self, window):
         """Bind the webview window for pushing asynchronous events to JavaScript."""
@@ -149,6 +235,12 @@ class BridgeAPI:
 
         if selected_path:
             abs_path = set_project_dir(selected_path)
+            # The plan (PLAN.md + its plan.json twin) belongs to the project folder, so the
+            # active plan -- and the plan switcher's list -- has to follow the workspace.
+            # Without this the tree and the raw markdown kept rendering the previously
+            # active folder's plan while the file explorer showed the new workspace, which
+            # is exactly the split the workspace switcher must not create.
+            set_plan_dir(abs_path)
             files = list_workspace_files()
             plans = list_plan_files()
             self.emit_event({
@@ -291,6 +383,33 @@ class BridgeAPI:
         # the return value. A redundant plan_updated emit races and can revert the switch.
         return data
 
+    def validate_plan_structure(self):
+        """Read-only AST structure verdict for the active plan (Normalization Gate).
+
+        The plan switcher calls this after a switch so an imported `.md` without `##`
+        sections or `- [ ]` milestones is caught before it renders as a blank tree. It
+        writes nothing, and a failure degrades to "structured" so a broken check can
+        never block a plan the user actually wants to open.
+        """
+        try:
+            return plan_structure_report()
+        except Exception as e:
+            return {"structured": True, "issues": [], "counts": {},
+                    "summary": f"Structure check unavailable: {e}", "error": str(e)}
+
+    def normalize_plan(self):
+        """Runs the Normalization Gate's reformat as an archived administrative workflow.
+
+        Fire-and-forget, mirroring the action buttons: the workflow streams its progress
+        as normal agent events and emits `plan_updated` when it rewrites the plan, so the
+        UI needs no return value beyond the acknowledgement.
+        """
+        return self.start_execution(
+            "Normalize the active plan into the strict AST structure",
+            "normalize",
+            {},
+        )
+
 
     def extract_plan_steps(self, filename: str = None):
         """Forces extraction of plan steps from the active or specified plan file."""
@@ -327,10 +446,17 @@ class BridgeAPI:
         write_plan_markdown(content)
         parsed = parse_markdown_to_plan_dict(content, clean_name)
         saved = save_plan_state(parsed)
+        # save_plan_state persists the *recompiled* markdown, so that is what the UI must be
+        # handed back. Returning the editor's raw text let the workbench show (and mark
+        # clean) a document that differed from what is on disk and from plan.json.
+        try:
+            canonical = compile_plan_json_to_markdown(saved)
+        except Exception:
+            canonical = content
         data = {
             "success": True,
             "filename": clean_name,
-            "content": content,
+            "content": canonical,
             "tree": saved.get("steps", []),
             "plan_json": saved,
             "plans": list_plan_files()
@@ -338,7 +464,7 @@ class BridgeAPI:
         self.emit_event({
             "type": "plan_updated",
             "filename": clean_name,
-            "content": content,
+            "content": canonical,
             "tree": saved.get("steps", []),
             "plan_json": saved
         })
@@ -426,6 +552,21 @@ class BridgeAPI:
         except Exception as e:
             return {"success": False, "error": str(e), "task_id": task_id, "files": []}
 
+    def run_task_tests(self, task_id: str):
+        """Executes the regression tests a task wrote and returns the real verdict.
+
+        Called by the result view when it opens (on demand), and by the workflow's own
+        verification gate -- so the workflow's event stream is the only thing that runs tests
+        during a run. Read-only with respect to the workspace -- see tools/test_runner.py.
+        """
+        try:
+            return run_task_test_suite(task_id)
+        except Exception as e:
+            return {"success": False, "error": str(e), "task_id": task_id,
+                    "found": False, "ran": False, "verdict": "none", "tests": [],
+                    "totals": {"passed": 0, "failed": 0, "errors": 0, "skipped": 0},
+                    "summary": ""}
+
     def get_preview_source(self, filename: str = None):
         """Reads the workspace interface file for the live preview. Read-only.
 
@@ -478,18 +619,123 @@ class BridgeAPI:
                     "saved": [], "ignored": [], "error": str(e)}
 
     def stop_execution(self):
-        """Signals active workflow to stop and emit completion."""
+        """Signals the active workflow to stop.
+
+        The terminal event is left to the *run*: the runner emits ``workflow_complete``
+        (status ``stopped``) when the branch it dispatched actually unwinds, so the UI no
+        longer declares the run halted while the backend is still writing. Only when no
+        run is live does this emit the terminal event itself, so a stray Stop click still
+        returns the UI to a resting state.
+        """
         registry.stop_workflow()
-        self.emit_event({
-            "type": "workflow_stopped",
-            "message": "Task halted by user."
-        })
+        if not (self._execution_thread and self._execution_thread.is_alive()):
+            self.emit_event({
+                "type": "workflow_stopped",
+                "message": "Task halted by user."
+            })
         return {"status": "stopped"}
 
     def retry_execution(self, agent_id: str = None, user_message: str = None):
         """Retries the execution from the failed agent or last message."""
         prompt = user_message or "Retry current architectural step"
         return self.start_execution(prompt)
+
+    # -------------------------------------------------------------
+    # Detached console (hybrid console: inline drawer + second window)
+    # -------------------------------------------------------------
+    def open_console_window(self, backlog=None):
+        """Opens the transcript in a real second native window (`webview.create_window`).
+
+        This runs on the webview's JS-API thread, which is precisely the thread pywebview
+        expects for a window created after `start` -- it creates such a window immediately
+        rather than deferring it to the main loop. Spawning is still handed to its own
+        daemon thread and the bridge returns at once, so window creation can never hold the
+        caller; success or failure arrives as a `console_detached` / `console_detach_failed`
+        event instead of a return value.
+        """
+        def _spawn():
+            try:
+                window = webview.create_window(
+                    title="DeepAgents \u2022 Console",
+                    html=_console_window_html(backlog),
+                    width=760,
+                    height=440,
+                    background_color="#0a0c10",
+                )
+            except Exception as e:
+                print(f"[BridgeAPI] Detached console failed: {e}", file=sys.stderr)
+                self.emit_event({"type": "console_detach_failed", "error": str(e)})
+                return
+            if not window:
+                self.emit_event({"type": "console_detach_failed", "error": "window was not created"})
+                return
+            with self._console_lock:
+                self._console_window = window
+                self._console_buffer = []
+            # Lines pushed before the document finishes loading are buffered; this flushes
+            # them once it has, so the second window catches up instead of missing them.
+            window.events.loaded += self._flush_console_buffer
+            window.events.closed += self._forget_console_window
+            self.emit_event({"type": "console_detached"})
+
+        threading.Thread(target=_spawn, daemon=True).start()
+        return {"success": True, "pending": True}
+
+    def _forget_console_window(self):
+        """Drops the reference once the user closes the detached window."""
+        with self._console_lock:
+            self._console_window = None
+            self._console_buffer = []
+
+    def _flush_console_buffer(self):
+        """Replays transcript lines that arrived before the detached window loaded."""
+        with self._console_lock:
+            window = self._console_window
+            if not window:
+                return
+            pending, self._console_buffer = self._console_buffer, []
+        for kind, text in pending:
+            try:
+                _eval_console_line(window, kind, text)
+            except Exception as e:
+                print(f"[BridgeAPI] Detached console push failed: {e}", file=sys.stderr)
+                with self._console_lock:
+                    self._console_window = None
+                return
+
+    def push_console_line(self, kind, text):
+        """Mirrors one transcript line into the detached window, if one is open."""
+        with self._console_lock:
+            window = self._console_window
+            if not window:
+                return {"success": False, "error": "console window is not open"}
+            try:
+                if not window.events.loaded.is_set():
+                    self._console_buffer.append((kind, text))
+                    return {"success": True, "buffered": True}
+                if self._console_buffer:
+                    pending, self._console_buffer = self._console_buffer, []
+                else:
+                    pending = []
+            except Exception as e:
+                # A closed window raises here; dropping the reference stops the mirror rather
+                # than retrying against a window that no longer exists.
+                self._console_window = None
+                return {"success": False, "error": str(e)}
+        # Pushes happen outside the lock so a slow webview cannot stall the workflow
+        # thread that is emitting into it.
+        for pending_kind, pending_text in pending:
+            try:
+                _eval_console_line(window, pending_kind, pending_text)
+            except Exception as e:
+                self._console_window = None
+                return {"success": False, "error": str(e)}
+        try:
+            _eval_console_line(window, kind, text)
+            return {"success": True}
+        except Exception as e:
+            self._console_window = None
+            return {"success": False, "error": str(e)}
 
 
 def main(argv=None):

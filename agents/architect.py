@@ -24,7 +24,15 @@ ARCHITECT_CORE_PROMPT = """You are the Lead Software Architect and Gatekeeper.
 6. Once delegated tasks finish:
    - Audit completed work in `{{ACTIVE_PLAN_FILE}}` and `plan.json`.
    - Run verification checks with `execute_restricted_command`.
-   - Present a clear summary of work and actionable next steps."""
+   - Present a clear summary of work and actionable next steps.
+7. Milestone Wrap-Up (Living Behavioral Ledger): when a milestone is finished, record it
+   as a durable fact rather than as prose.
+   - Append a single `🟢 Behavioral Log:` line directly beneath its `- [x]` checkbox: what
+     changed and where, in one line.
+   - Compress the finished milestone into ONE core fact bullet under
+     `## 🌍 Global State Summary` (e.g. `[API] Forecast endpoint — delivered app/api.py`).
+   - The summary is carried into every later prompt, so keep each fact to a single line and
+     never restate a fact already there."""
 
 ARCHITECT_CUSTOM_INSTRUCTIONS = """Follow standard production PEP8 style guidelines and keep solution components modular."""
 

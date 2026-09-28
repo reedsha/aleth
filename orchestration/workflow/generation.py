@@ -115,6 +115,10 @@ class GeneratedFile:
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # The model's chain of thought, when the provider exposes one. It is *not* part of the
+    # deliverable -- it is what the agent's card shows so the reasoning behind the file can
+    # be read rather than guessed at.
+    reasoning: str = ""
     error: str = ""
 
     def usage_line(self) -> str:
@@ -252,6 +256,7 @@ def generate_code(
         model=getattr(completion, "model", ""),
         prompt_tokens=getattr(completion, "prompt_tokens", 0) or 0,
         completion_tokens=getattr(completion, "completion_tokens", 0) or 0,
+        reasoning=getattr(completion, "reasoning", "") or "",
     )
 
 
