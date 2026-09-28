@@ -23,6 +23,8 @@ from tools.workspace import (
     BACKUP_SUBDIR,
     PLAN_JSON_FILE,
     get_active_plan_filename,
+    get_plan_json_path,
+    get_plan_markdown_path,
     get_project_dir,
     walk_workspace,
 )
@@ -32,6 +34,61 @@ def get_backup_dir() -> str:
     path = os.path.join(get_project_dir(), BACKUP_SUBDIR)
     os.makedirs(path, exist_ok=True)
     return path
+
+
+# A single "before" slot for the whole plan: the plan.json + markdown exactly as they were
+# immediately before the last agent-driven revision. Distinct from the per-task deliverable
+# snapshots above -- this captures the roadmap document itself, so a revision can be undone.
+PLAN_REVISION_SUBDIR = "plan_revision"
+
+
+def _plan_revision_dir() -> str:
+    path = os.path.join(get_backup_dir(), PLAN_REVISION_SUBDIR)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def snapshot_plan_revision() -> bool:
+    """Captures the plan's current files into the revision slot, before a change is written.
+
+    Returns ``False`` when there is no plan on disk yet (nothing to capture) -- a first-ever
+    revision has no prior state, so there is nothing to revert to. Nothing raises: a missing
+    snapshot must never be able to fail the plan edit that is about to be made.
+    """
+    dest = _plan_revision_dir()
+    captured = False
+    for src in (get_plan_json_path(), get_plan_markdown_path()):
+        if os.path.isfile(src):
+            shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
+            captured = True
+    return captured
+
+
+def revert_plan_revision() -> Dict[str, Any]:
+    """Restores the plan captured by the last :func:`snapshot_plan_revision`.
+
+    The snapshot is a whole-plan "before", so this reverses the last revision rather than
+    nudging one task's status. ``save_plan_state`` is used rather than a raw file copy so the
+    restored state goes through the same canonicalisation and metric recomputation as every
+    other write, and the markdown is recompiled from it rather than trusted as-is.
+    """
+    snap_json = os.path.join(_plan_revision_dir(), PLAN_JSON_FILE)
+    if not os.path.isfile(snap_json):
+        return {"success": False, "error": "There is no captured plan revision to restore."}
+    try:
+        with open(snap_json, "r", encoding="utf-8") as f:
+            plan_dict = json.load(f)
+    except Exception as e:
+        return {"success": False, "error": f"Could not read the captured revision: {e}"}
+
+    saved = save_plan_state(plan_dict)
+    recompiled = compile_plan_json_to_markdown(saved)
+    return {
+        "success": True,
+        "plan_json": saved,
+        "content": recompiled,
+        "tree": saved.get("steps", []),
+    }
 
 
 # A single source file larger than this is reported by name and size instead of by

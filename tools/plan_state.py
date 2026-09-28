@@ -25,6 +25,15 @@ from tools.workspace import (
 )
 
 
+class PlanWriteError(RuntimeError):
+    """A plan write (or its markdown compile) failed.
+
+    Raised rather than swallowed: a caller must not be able to report ``success`` for state
+    the disk never received. The workflow runner turns this into an ``agent_error`` plus a
+    terminal ``workflow_complete``; a bridge method lets it surface as a rejected call.
+    """
+
+
 def _fold_ui_flag(entry: Dict[str, Any]) -> None:
     """Folds a legacy ``is_ui`` boolean into the entry's ``tag``, in place.
 
@@ -182,6 +191,10 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Persists updated machine state to plan.json and instantly compiles back to PLAN.md.
     Recalculates all progress metrics automatically.
+
+    Raises :class:`PlanWriteError` if either write fails, so a caller cannot report success
+    for a plan the disk never received -- the plan displayed to the user and the plan on disk
+    must not be allowed to silently diverge.
     """
     base_dir = get_plan_dir()
     plan_md_path = get_plan_markdown_path()
@@ -233,12 +246,13 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
     plan_dict["updated_at"] = time.time()
     plan_dict["plan_file"] = get_active_plan_filename()
 
-    # 1. Write plan.json
+    # 1. Write plan.json. A failure here must propagate: returning the dict regardless
+    # reported success for a plan the disk never received (audit C2).
     try:
         with open(plan_json_path, "w", encoding="utf-8", newline="\n") as f:
             json.dump(plan_dict, f, indent=2)
     except Exception as e:
-        print(f"[DualSync] Failed writing plan.json: {e}")
+        raise PlanWriteError(f"Failed writing plan.json: {e}") from e
 
     # 2. Compile and write PLAN.md
     try:
@@ -246,7 +260,7 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
         with open(plan_md_path, "w", encoding="utf-8", newline="\n") as f:
             f.write(compiled_md)
     except Exception as e:
-        print(f"[DualSync] Failed compiling to PLAN.md: {e}")
+        raise PlanWriteError(f"Failed compiling to PLAN.md: {e}") from e
 
     return plan_dict
 
@@ -269,3 +283,43 @@ def update_plan_task_status(task_id: str, new_status: str, detail_note: Optional
                     task.setdefault("files", []).extend(files)
                 return save_plan_state(plan_dict)
     return plan_dict
+
+
+def append_pending_task(
+    plan_state: Dict[str, Any],
+    title: str,
+    note: Optional[str] = None,
+    tag: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Adds a pending task to the plan's last section, creating one for an empty plan.
+
+    One definition of the shape of a task added to a plan, shared by the Architect's
+    Update Plan action and the result view's one-click "Add to Plan", so the two callers
+    cannot drift about what a new milestone looks like. The ``tag`` is the caller's to
+    decide because the UI inference (``agents.laya.inferred_ui``) lives a layer up; the
+    shape itself belongs here, next to the metrics that count it.
+    """
+    sections = plan_state.setdefault("sections", [])
+    if sections:
+        target_section = sections[-1]
+    else:
+        # A plan with no sections yet (an empty or freshly-imported one) needs its first
+        # section created and *attached*: save_plan_state rebuilds `steps` from `sections`,
+        # so a bare local dict would be written to and then discarded.
+        target_section = {"id": "sec-1", "title": "General", "tasks": []}
+        sections.append(target_section)
+    task = {
+        "id": f"task-{len(plan_state.get('steps', [])) + 1}",
+        "section": target_section.get("title"),
+        "title": title,
+        "status": "pending",
+        "tag": tag,
+        "details": [note] if note else [],
+        "files": [],
+        # The same keys, in the same order, that the parser writes (tools/plan_parser.py),
+        # so a task added here is shaped exactly like one read out of the markdown (audit M12).
+        "behavioral_log": [],
+        "sub_steps": [],
+    }
+    target_section.setdefault("tasks", []).append(task)
+    return task

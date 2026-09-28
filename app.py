@@ -34,12 +34,14 @@ from tools.file_tools import (
     resolve_sync_plan_to_codebase,
     resolve_sync_code_to_plan,
     rollback_task_state,
+    revert_plan_revision,
     task_diff,
     read_preview_source,
     read_environment_variables
 )
 from tools.settings import read_settings, save_settings as write_settings
-from tools.plan_state import plan_structure_report, write_plan_markdown
+from tools.plan_state import append_pending_task, plan_structure_report, write_plan_markdown
+from tools.task_tags import UI_TAG
 from tools.test_runner import run_task_tests as run_task_test_suite
 
 
@@ -310,6 +312,82 @@ class BridgeAPI:
         })
         return data
 
+    def add_plan_task(self, title: str):
+        """Adds a recommendation to the plan as a real pending task and persists it.
+
+        The one-click half of the result view's "Add to Plan": the card's own click is
+        the confirmation, so it does not route through the Update Plan drawer or a
+        second, thinner plan endpoint. The write is the ordinary one -- append +
+        ``save_plan_state`` + compile, then a ``plan_updated`` event -- so the tree, the
+        workbench and the progress meter all re-render from it exactly as they do for any
+        other save.
+        """
+        # Called at the call site: agents.laya reaches back into the workflow package, so
+        # importing it at module scope here would close an import cycle. One vocabulary.
+        from agents.laya import inferred_ui
+
+        clean = (title or "").strip()
+        if not clean:
+            return {"success": False, "error": "A task needs a title."}
+
+        plan_state = load_plan_state()
+        task = append_pending_task(
+            plan_state,
+            clean,
+            note="Added from an Architect recommendation.",
+            tag=UI_TAG if inferred_ui(clean) else None,
+        )
+        saved = save_plan_state(plan_state)
+        filename = get_active_plan_filename()
+        content = compile_plan_json_to_markdown(saved)
+        data = {
+            "success": True,
+            "filename": filename,
+            "task_id": task.get("id"),
+            "content": content,
+            "tree": saved.get("steps", []),
+            "plan_json": saved,
+            "plans": list_plan_files()
+        }
+        self.emit_event({
+            "type": "plan_updated",
+            "filename": filename,
+            "content": content,
+            "tree": saved.get("steps", []),
+            "plan_json": saved
+        })
+        return data
+
+    def revert_plan_update(self):
+        """Restores the roadmap to the state captured before the last plan revision.
+
+        The honest counterpart to the auto-commit: an Update Plan run writes the plan as it
+        finishes, so the result view cannot offer an "Approve" that gates the write. What it
+        can offer is a one-click undo of that write, and this endpoint is it -- the plan
+        files are restored from the snapshot taken immediately before the revision, then
+        announced with the usual ``plan_updated`` so the tree and progress re-derive.
+        """
+        res = revert_plan_revision()
+        if not res.get("success"):
+            return res
+        filename = get_active_plan_filename()
+        data = {
+            "success": True,
+            "filename": filename,
+            "content": res.get("content", ""),
+            "tree": res.get("tree", []),
+            "plan_json": res.get("plan_json", {}),
+            "plans": list_plan_files()
+        }
+        self.emit_event({
+            "type": "plan_updated",
+            "filename": filename,
+            "content": data["content"],
+            "tree": data["tree"],
+            "plan_json": data["plan_json"]
+        })
+        return data
+
     def sync_plan(self):
         """Checks disk mtimes and synchronizes plan.json and PLAN.md."""
         synced = sync_plan_on_disk()
@@ -376,6 +454,11 @@ class BridgeAPI:
 
     def set_active_plan(self, filename: str):
         """Switches the active plan file, re-hydrates state, and notifies the UI."""
+        if self._execution_thread and self._execution_thread.is_alive():
+            # A live run captured the old plan and writes it back at *save* time
+            # (save_plan_state resolves the path then), so switching now would let the run
+            # serialize the old plan over the newly-opened one (audit H5).
+            return {"success": False, "error": "A run is in progress; switch plans after it finishes."}
         clean_name = set_active_plan_filename(filename)
         load_plan_state(force_sync=True)
         data = registry.get_current_plan_data()
@@ -479,11 +562,14 @@ class BridgeAPI:
         Supports intent-driven Gatekeeper actions and administrative bypass.
         """
         if not user_message or not user_message.strip():
-            return {"error": "Prompt cannot be empty"}
+            return {"success": False, "error": "Prompt cannot be empty"}
 
         if self._execution_thread and self._execution_thread.is_alive():
-            registry.stop_workflow()
-            self._execution_thread.join(timeout=1.0)
+            # Server-authoritative run lock (audit H6/H10). The client lock can be defeated by
+            # a reload, a retry, or the normalize path; refusing here is what actually stops
+            # two runs from interleaving their plan writes. Previously the old run was asked
+            # to stop and joined for one second -- best-effort, and a second thread ran anyway.
+            return {"success": False, "error": "A run is already in progress."}
 
         def target_runner():
             registry.run_agent_workflow(
@@ -496,7 +582,16 @@ class BridgeAPI:
         self._execution_thread = threading.Thread(target=target_runner, daemon=True)
         self._execution_thread.start()
 
-        return {"status": "started", "message": user_message, "action_type": action_type}
+        return {"success": True, "status": "started", "message": user_message, "action_type": action_type}
+
+    def get_run_state(self):
+        """Whether a workflow is live, so a reloaded UI can re-arm its lock and Stop.
+
+        ``state.isExecuting`` is client-only and resets on reload while this thread keeps
+        running, leaving Stop hidden and a second run launchable (audit H6). This is the
+        server-side home for that flag.
+        """
+        return {"running": bool(self._execution_thread and self._execution_thread.is_alive())}
 
     def audit_codebase_sync(self):
         """Audits discrepancies between workspace files and plan.json."""
@@ -631,6 +726,7 @@ class BridgeAPI:
         if not (self._execution_thread and self._execution_thread.is_alive()):
             self.emit_event({
                 "type": "workflow_stopped",
+                "status": "stopped",
                 "message": "Task halted by user."
             })
         return {"status": "stopped"}

@@ -493,6 +493,56 @@ class PlanStateTests(WorkspaceTestCase):
         after = self.read_state()
         self.assertEqual([s["status"] for s in before["steps"]], [s["status"] for s in after["steps"]])
 
+    def test_append_pending_task_lands_in_the_last_section(self):
+        from tools.plan_state import append_pending_task
+
+        self._save_demo()
+        state = self.read_state()
+        task = append_pending_task(state, "Survey the telemetry surface", note="Proposed by the architect.")
+        saved = self.save_state(state)
+
+        self.assertEqual(task["id"], "task-6")
+        self.assertEqual(task["section"], "2. Build")
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["details"], ["Proposed by the architect."])
+        self.assertEqual(task["files"], [])
+        self.assertIsNone(task["tag"])
+        # The task must survive the write: save_plan_state rebuilds `steps` from `sections`,
+        # so a section that was not attached to the plan would discard the task silently.
+        self.assertEqual(saved["steps"][-1]["title"], "Survey the telemetry surface")
+        self.assertEqual(self.read_state()["steps"][-1]["title"], "Survey the telemetry surface")
+
+    def test_append_pending_task_creates_a_general_section_for_an_empty_plan(self):
+        from tools.plan_state import append_pending_task
+
+        plan = {"title": "Empty", "sections": [], "steps": []}
+        task = append_pending_task(plan, "First milestone", note="From a recommendation.")
+        saved = self.save_state(plan)
+
+        self.assertEqual(task["id"], "task-1")
+        self.assertEqual(task["section"], "General")
+        self.assertEqual(plan["sections"][0]["id"], "sec-1")
+        self.assertEqual(saved["steps"][0]["title"], "First milestone")
+
+    def test_append_pending_task_none_note_yields_empty_details(self):
+        from tools.plan_state import append_pending_task
+
+        plan = {"sections": [{"id": "sec-1", "title": "1. Setup", "tasks": []}], "steps": []}
+        task = append_pending_task(plan, "Untitled", tag=UI_TAG)
+        self.assertEqual(task["details"], [])
+        self.assertEqual(task["tag"], UI_TAG)
+
+    def test_save_plan_state_raises_rather_than_reporting_a_failed_write(self):
+        from tools.plan_state import PlanWriteError
+
+        self._save_demo()
+        # A failure in either half of the plan pair must not return the state as if it had
+        # been written -- that is what let the UI show a plan the disk did not hold.
+        with mock.patch("tools.plan_state.compile_plan_json_to_markdown",
+                        side_effect=RuntimeError("compile exploded")):
+            with self.assertRaises(PlanWriteError):
+                ft.save_plan_state(self.read_state())
+
     def test_sync_plan_on_disk_returns_state(self):
         self._save_demo()
         self.assertEqual(len(ft.sync_plan_on_disk()["steps"]), 5)
@@ -679,6 +729,41 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
         res = ft.rollback_task_state("ghost")
         self.assertFalse(res["success"])
         self.assertIn("not found in active plan", res["error"])
+
+    # --- whole-plan revision snapshot / revert ---------------------------------
+
+    def test_snapshot_then_revert_restores_the_previous_plan(self):
+        self.save_state({
+            "title": "Rev",
+            "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
+                {"id": "task-1", "section": "1. S", "title": "Original", "status": "pending",
+                 "details": [], "files": []},
+            ]}],
+        })
+        self.assertTrue(ft.snapshot_plan_revision())
+
+        # A revision lands: the original milestone is rewritten.
+        self.save_state({
+            "title": "Rev",
+            "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
+                {"id": "task-1", "section": "1. S", "title": "Rewritten", "status": "pending",
+                 "details": [], "files": []},
+            ]}],
+        })
+        self.assertEqual([s["title"] for s in self.read_state()["steps"]], ["Rewritten"])
+
+        res = ft.revert_plan_revision()
+        self.assertTrue(res["success"])
+        self.assertEqual([s["title"] for s in res["tree"]], ["Original"])
+        self.assertEqual([s["title"] for s in self.read_state()["steps"]], ["Original"])
+
+    def test_revert_without_a_snapshot_is_refused_not_raised(self):
+        res = ft.revert_plan_revision()
+        self.assertFalse(res["success"])
+        self.assertIn("no captured plan revision", res["error"])
+
+    def test_snapshot_with_no_plan_on_disk_reports_nothing_captured(self):
+        self.assertFalse(ft.snapshot_plan_revision())
 
 
 class TaskDiffTests(WorkspaceTestCase):
@@ -1329,6 +1414,37 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertEqual(summary["files"], ["PLAN.md"])
         self.assertEqual(events[-1]["message"], "All steps complete.")
 
+    def test_fix_bug_treats_an_uncollectable_regression_suite_as_a_failure(self):
+        """verdict 'error' (the suite could not be collected) must not read as a pass.
+
+        The canned regression suite imports a symbol the target need not define, which
+        surfaces as a collection error -- 'error', not 'failed' (audit H2).
+        """
+        self._seed_buggy_main()
+        with mock.patch("orchestration.workflow.actions_impl.run_task_tests",
+                        return_value={"verdict": "error", "summary": "1 error"}):
+            events = self._collect("fix_bug", "[ACTION: FIX_BUG] something broke",
+                                   {"bugDescription": "IndexError in run()"})
+
+        summary = [e for e in events if e["type"] == "architect_summary"][0]["summary"]
+        self.assertEqual(summary["status"], "Verification Failed")
+
+    def test_custom_verification_failure_is_reported_not_assumed(self):
+        """The Architect's verdict must come from the compile check, not a literal.
+
+        ``v_res`` used to be computed and discarded, so broken custom code still read as
+        'Verified & Approved' (audit C1). The compile is mocked to fail here.
+        """
+        self._seed_scaffold()
+        with mock.patch("orchestration.workflow.actions_impl.execute_restricted_command") as fake:
+            fake.invoke.return_value = "[Exit Code: 1]\nSyntaxError: invalid syntax"
+            events = self._collect("custom", "add a login endpoint")
+
+        summary = [e for e in events if e["type"] == "architect_summary"][0]["summary"]
+        self.assertEqual(summary["status"], "Verification Failed")
+        self.assertIn("Verification failed:", summary["deliverables"][1])
+        self.assertIn("verification failed", events[-1]["message"])
+
     def _seed_buggy_main(self):
         self._seed_scaffold()
         # The canned regression suite asserts ``run()`` returns ``verified: True``, so the
@@ -1946,6 +2062,204 @@ class WorkspaceLocationTests(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(foreign, "my_project_workspace")))
         finally:
             shutil.rmtree(foreign, ignore_errors=True)
+
+
+class AddPlanTaskBridgeTests(WorkspaceTestCase):
+    """BridgeAPI.add_plan_task -- the one-click "Add to Plan" write.
+
+    The result view calls this directly rather than routing a proposal through the Update
+    Plan drawer, so the contract is the ordinary one: a real pending task appended to the
+    active plan, persisted, and announced with a single ``plan_updated``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def _api(self):
+        api = self.app.BridgeAPI()
+        api._events = []
+        api.emit_event = api._events.append
+        return api
+
+    def test_adds_a_pending_task_and_announces_it_once(self):
+        self.save_state(ft.parse_markdown_to_plan_dict(PLAN_MD, "PLAN.md"))
+        api = self._api()
+
+        res = api.add_plan_task("Dashboard view")
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["filename"], "PLAN.md")
+        self.assertEqual(res["task_id"], "task-6")
+        self.assertEqual(res["tree"][-1]["title"], "Dashboard view")
+        self.assertEqual(res["tree"][-1]["status"], "pending")
+        self.assertEqual([e["type"] for e in api._events], ["plan_updated"])
+        # The write is real: a reload from disk sees the task.
+        self.assertEqual(ft.load_plan_state()["steps"][-1]["title"], "Dashboard view")
+
+    def test_an_empty_title_fails_and_writes_nothing(self):
+        self.save_state(ft.parse_markdown_to_plan_dict(PLAN_MD, "PLAN.md"))
+        before = self.read_state()
+        api = self._api()
+
+        res = api.add_plan_task("   ")
+
+        self.assertFalse(res["success"])
+        self.assertNotIn("task_id", res)
+        self.assertEqual(api._events, [])
+        after = self.read_state()
+        self.assertEqual(len(after["steps"]), len(before["steps"]))
+
+
+class RevertPlanUpdateBridgeTests(WorkspaceTestCase):
+    """BridgeAPI.revert_plan_update -- the one-click undo of a saved plan revision.
+
+    Update Plan auto-commits, so the result view's revert control is the only way back to the
+    previous roadmap. This is the endpoint behind it: restore the snapshot taken immediately
+    before the revision, then announce it with the usual ``plan_updated``.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def _api(self):
+        api = self.app.BridgeAPI()
+        api._events = []
+        api.emit_event = api._events.append
+        return api
+
+    def test_reverts_to_the_captured_revision_and_announces_it(self):
+        self.save_state(ft.parse_markdown_to_plan_dict(PLAN_MD, "PLAN.md"))
+        ft.snapshot_plan_revision()
+        # A revision lands through the same one-click endpoint the UI uses.
+        self._api().add_plan_task("A later addition")
+
+        api = self._api()
+        res = api.revert_plan_update()
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["filename"], "PLAN.md")
+        titles = [t["title"] for t in res["tree"]]
+        self.assertNotIn("A later addition", titles)
+        self.assertEqual([e["type"] for e in api._events], ["plan_updated"])
+        self.assertEqual([t["title"] for t in self.read_state()["steps"]], titles)
+
+    def test_revert_without_a_captured_revision_fails_and_emits_nothing(self):
+        self.save_state(ft.parse_markdown_to_plan_dict(PLAN_MD, "PLAN.md"))
+        api = self._api()
+
+        res = api.revert_plan_update()
+
+        self.assertFalse(res["success"])
+        self.assertEqual(api._events, [])
+
+
+class WorkflowWriteGuardTests(WorkspaceTestCase):
+    """_write_checked turns file_ops' error *string* into a raised failure.
+
+    ``write_file`` does not raise on a failed write, so the code actions used to narrate
+    "Successfully patched" and complete the task regardless (audit H1).
+    """
+
+    def test_a_failed_write_raises(self):
+        from orchestration.workflow import actions_impl
+
+        with mock.patch("orchestration.workflow.actions_impl.write_file") as fake:
+            fake.invoke.return_value = "Error writing file x.py: permission denied"
+            with self.assertRaises(RuntimeError):
+                actions_impl._write_checked("coder-standard", "x.py", "code")
+
+    def test_a_successful_write_returns_the_writer_message(self):
+        from orchestration.workflow import actions_impl
+
+        message = actions_impl._write_checked("coder-standard", "ok.py", "x = 1\n")
+        self.assertTrue(message.startswith("Successfully wrote"))
+        self.assertEqual(self.read("ok.py"), "x = 1\n")
+
+
+class StopExecutionBridgeTests(WorkspaceTestCase):
+    """stop_execution's terminal event must carry a status.
+
+    With no run live the endpoint emits ``workflow_stopped`` itself; ``finalizeWorkflow``
+    branches on ``status``, so omitting it made a halt read as a clean finish (audit H4).
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def test_a_stray_stop_reports_the_stopped_status(self):
+        import registry as registry_module
+
+        registry_module.registry.stop_event.clear()
+        self.addCleanup(registry_module.registry.stop_event.clear)
+        api = self.app.BridgeAPI()
+        api._events = []
+        api.emit_event = api._events.append
+
+        # No run is live, so the endpoint emits the terminal event itself.
+        res = api.stop_execution()
+
+        self.assertEqual(res["status"], "stopped")
+        self.assertEqual([e["type"] for e in api._events], ["workflow_stopped"])
+        self.assertEqual(api._events[0]["status"], "stopped")
+
+
+class RunLockBridgeTests(WorkspaceTestCase):
+    """The run lock is server-authoritative (audit H5/H6/H10).
+
+    The client lock can be defeated by a reload, a retry or the normalize path; these pin the
+    backend refusals that actually stop two runs interleaving their plan writes.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def _api_with_live_run(self):
+        """A BridgeAPI whose "run" is a thread that stays alive until cleanup."""
+        import threading
+
+        api = self.app.BridgeAPI()
+        stop = threading.Event()
+        thread = threading.Thread(target=stop.wait, daemon=True)
+        thread.start()
+        self.addCleanup(stop.set)
+        api._execution_thread = thread
+        return api
+
+    def test_get_run_state_is_idle_with_no_thread(self):
+        self.assertFalse(self.app.BridgeAPI().get_run_state()["running"])
+
+    def test_get_run_state_reports_a_live_run(self):
+        self.assertTrue(self._api_with_live_run().get_run_state()["running"])
+
+    def test_a_second_start_is_refused_while_a_run_is_live(self):
+        res = self._api_with_live_run().start_execution("do something else")
+        self.assertFalse(res["success"])
+        self.assertIn("already in progress", res["error"])
+
+    def test_switching_plans_is_refused_while_a_run_is_live(self):
+        res = self._api_with_live_run().set_active_plan("OTHER.md")
+        self.assertFalse(res["success"])
+        self.assertIn("run is in progress", res["error"])
 
 
 if __name__ == "__main__":

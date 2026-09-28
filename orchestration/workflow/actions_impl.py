@@ -43,6 +43,21 @@ from tools.task_tags import UI_TAG
 from tools.test_runner import run_task_tests
 
 
+def _write_checked(agent_id: str, filename: str, content: str) -> str:
+    """Writes a deliverable and makes a failure loud.
+
+    ``write_file`` returns an error *string* on failure (``tools/file_ops.py``) rather than
+    raising, so callers that ignored its return value narrated "Successfully patched" and
+    went on to complete the task even when nothing was written. Raising here lets the runner
+    turn it into the ``agent_error`` + terminal ``workflow_complete`` it already emits, which
+    aborts the action before a false verdict is recorded.
+    """
+    result = write_file.invoke({"filename": filename, "content": content})
+    if isinstance(result, str) and result.startswith("Error writing file"):
+        raise RuntimeError(f"{agent_id} could not write {filename}: {result}")
+    return result
+
+
 def fix_bug_action(
     ctx: WorkflowContext,
     plan_state: Dict[str, Any],
@@ -215,9 +230,19 @@ def fix_bug_action(
     generated = generation.generate_code(
         coder_id=target_coder_id,
         filename=target_file,
+        # An attached log or report has to reach the Coder, not just the sufficiency gate: the
+        # attachment's name alone was used as a truthiness check, so the evidence the user
+        # supplied never informed the patch (audit H8). Injected into the context here rather
+        # than as a new narration line, so the pinned event stream is unchanged.
         context_text=(
             f"Bug report:\n{clean_bug}\n\n"
-            f"Current contents of `{target_file}`:\n{curr_code}"
+            + (
+                f"Attachment ({action_params.get('bugAttachment', 'attachment')}):\n"
+                f"{(action_params.get('bugAttachmentContent') or '').strip()}\n\n"
+                if (action_params.get("bugAttachmentContent") or "").strip()
+                else ""
+            )
+            + f"Current contents of `{target_file}`:\n{curr_code}"
         ),
         task_title=f"Fix bug in {target_file}",
         plan_file=ctx.plan_file,
@@ -240,7 +265,7 @@ def fix_bug_action(
         f"Applying surgical bug patch to {target_file}"
     ))
     time.sleep(0.3)
-    write_file.invoke({"filename": target_file, "content": generated.code})
+    _write_checked(target_coder_id, target_file, generated.code)
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Successfully patched {target_file}"
@@ -254,7 +279,7 @@ def fix_bug_action(
     ))
     time.sleep(0.3)
     test_code = templates.BUGFIX_REGRESSION_TEST
-    write_file.invoke({"filename": test_file, "content": test_code})
+    _write_checked(target_coder_id, test_file, test_code)
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Regression tests updated in {test_file}"
@@ -311,7 +336,11 @@ def fix_bug_action(
         "software-architect", "run_task_tests", f"Tests: {test_summary}"
     ))
 
-    fix_failed = bool(compile_error) or test_verdict.get("verdict") == "failed"
+    # A regression suite that cannot even be collected (its import fails against this target)
+    # reports verdict "error", not "failed". Treating only "failed" as failure let an
+    # untrusted verdict read as a pass -- the canned suite imports a symbol the target need
+    # not define (audit H2).
+    fix_failed = bool(compile_error) or test_verdict.get("verdict") in ("failed", "error")
     failure_reason = ""
     if fix_failed:
         failure_reason = compile_error.splitlines()[-1] if compile_error else f"tests did not pass ({test_summary})"
@@ -546,7 +575,7 @@ def next_step_action(
         f"Writing module deliverables to {out_filename}"
     ))
     time.sleep(0.3)
-    write_file.invoke({"filename": out_filename, "content": out_code})
+    _write_checked(target_coder_id, out_filename, out_code)
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Wrote {len(out_code)} chars to {out_filename}"
@@ -557,7 +586,7 @@ def next_step_action(
         f"Writing test suite to {out_test}"
     ))
     time.sleep(0.3)
-    write_file.invoke({"filename": out_test, "content": out_test_code})
+    _write_checked(target_coder_id, out_test, out_test_code)
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Wrote {len(out_test_code)} chars to {out_test}"
@@ -880,8 +909,8 @@ def custom_action(
         reasoning.stream_thought(ctx.stream_text, target_coder_id, generated.reasoning)
     backup_file_for_task("custom", filename)
     ctx.stream_text(target_coder_id, f"> Writing custom code solution to `{filename}`...", delay=0.02)
-    write_file.invoke({"filename": filename, "content": code_content})
-    write_file.invoke({"filename": test_filename, "content": test_content})
+    _write_checked(target_coder_id, filename, code_content)
+    _write_checked(target_coder_id, test_filename, test_content)
 
     ctx.emit_fn({
         "type": "coder_summary",
@@ -901,16 +930,27 @@ def custom_action(
     ctx.stream_text("software-architect", f"> Verifying custom implementation via restricted shell...", delay=0.02)
     v_res = execute_restricted_command.invoke({"command": f"python -m py_compile {filename}"})
 
+    # The verdict is the check's, not a literal. ``v_res`` was previously computed and never
+    # read, so a directive that wrote broken code still reported "Verified & Approved"
+    # (audit C1). ``command_failed`` reads the ``[Exit Code: N]`` header the shell tool
+    # always emits -- the same gate ``next_step_action`` uses.
+    verified = not command_failed(v_res)
+    verify_deliverable = (
+        "Syntax verified clean via restricted shell."
+        if verified
+        else "Verification failed: "
+             + ((v_res.strip().splitlines() or ["py_compile reported errors"])[-1])
+    )
     ctx.emit_fn({
         "type": "architect_summary",
         "agent": "software-architect",
         "summary": {
             "title": "Lead Architect Verification",
-            "status": "Verified & Approved",
+            "status": "Verified & Approved" if verified else "Verification Failed",
             "files": [filename, test_filename],
             "deliverables": [
                 f"Validated custom code in `{filename}`.",
-                "Syntax verified clean via restricted shell."
+                verify_deliverable
             ],
             "proposals": [
                 "Execute Next Step to advance roadmap.",
@@ -922,5 +962,9 @@ def custom_action(
     ctx.emit_fn({
         "type": "workflow_complete",
         "status": "finished",
-        "message": "Custom task completed and verified."
+        "message": (
+            "Custom task completed and verified."
+            if verified
+            else "Custom task completed, but verification failed and needs attention."
+        )
     })

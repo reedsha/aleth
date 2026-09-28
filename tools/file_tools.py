@@ -35,6 +35,7 @@ from tools.plan_parser import (
     parse_plan_tree,
 )
 from tools.plan_state import (
+    PlanWriteError,
     load_plan_state,
     plan_structure_report,
     save_plan_state,
@@ -47,7 +48,9 @@ from tools.recovery import (
     get_backup_dir,
     resolve_sync_code_to_plan,
     resolve_sync_plan_to_codebase,
+    revert_plan_revision,
     rollback_task_state,
+    snapshot_plan_revision,
     task_diff,
 )
 from tools.workspace import (
@@ -88,6 +91,7 @@ __all__ = [
     "load_plan_state",
     "plan_structure_report",
     "save_plan_state",
+    "PlanWriteError",
     "sync_plan_on_disk",
     "update_plan_task_status",
     # file operations
@@ -112,6 +116,8 @@ __all__ = [
     "resolve_sync_code_to_plan",
     "rollback_task_state",
     "task_diff",
+    "snapshot_plan_revision",
+    "revert_plan_revision",
     # constants
     "PLAN_JSON_FILE",
     "BACKUP_SUBDIR",

@@ -27,9 +27,9 @@ from tools.file_tools import (
     parse_markdown_to_plan_dict,
     save_plan_state,
 )
-from tools.plan_state import read_plan_markdown
-from tools.recovery import get_backup_dir
-from tools.shell_tools import execute_restricted_command
+from tools.plan_state import append_pending_task, read_plan_markdown
+from tools.recovery import get_backup_dir, snapshot_plan_revision
+from tools.shell_tools import command_failed, execute_restricted_command
 from tools.task_tags import UI_TAG
 
 
@@ -68,28 +68,15 @@ def update_plan_action(
         new_task_title = re.sub(r'^(add|new|create|include)\s+task\s*:?', '', clean_inst, flags=re.I).strip()
         if not new_task_title:
             new_task_title = "Implement additional system requirement"
-        # A plan with no sections yet (an empty or freshly-imported one) needs its
-        # first section created and *attached*: a bare local dict would be written to
-        # and then discarded, and save_plan_state rebuilds `steps` from `sections`, so
-        # the new task would silently vanish.
-        if sections:
-            target_sec = sections[-1]
-        else:
-            target_sec = {"id": "sec-1", "title": "General", "tasks": []}
-            plan_state.setdefault("sections", []).append(target_sec)
-        task_id = f"task-{len(plan_state.get('steps', [])) + 1}"
-        new_task = {
-            "id": task_id,
-            "section": target_sec.get("title"),
-            "title": new_task_title,
-            "status": "pending",
-            # The same inference the parser uses, so a task added here is tagged exactly as
-            # it would be had it been read from the markdown -- one vocabulary, one rule.
-            "tag": UI_TAG if inferred_ui(new_task_title) else None,
-            "details": [f"Added via Architect Administrative Bypass: {clean_inst[:60]}"],
-            "files": []
-        }
-        target_sec.setdefault("tasks", []).append(new_task)
+        # The same inference the parser uses, so a task added here is tagged exactly as it
+        # would be had it been read from the markdown -- one vocabulary, one rule. The task
+        # shape itself is shared with the result view's one-click "Add to Plan".
+        append_pending_task(
+            plan_state,
+            new_task_title,
+            note=f"Added via Architect Administrative Bypass: {clean_inst[:60]}",
+            tag=UI_TAG if inferred_ui(new_task_title) else None,
+        )
         updated = True
     else:
         # General refinement of pending milestones
@@ -99,6 +86,12 @@ def update_plan_action(
                     t.setdefault("details", []).append(f"Architect directive: {clean_inst[:80]}")
                     updated = True
                     break
+
+    if updated:
+        # The result view offers a one-click revert of this revision, which needs the plan as
+        # it was *before* the edit. The write immediately below is what replaces it on disk,
+        # so this is the last moment the old state can still be captured.
+        snapshot_plan_revision()
 
     saved_plan = save_plan_state(plan_state)
     latest_markdown = compile_plan_json_to_markdown(saved_plan)
@@ -250,7 +243,11 @@ def analyze_action(ctx: WorkflowContext) -> None:
         tested_files.append(pyf)
         ctx.emit_fn(tool_result(
             "software-architect", "execute_restricted_command",
-            "Syntax check clean" if not comp_res.strip() else comp_res.strip()
+            # run_command_in_workspace always returns a non-empty "[Exit Code: N]..." block,
+            # so `not comp_res.strip()` was always False and the raw shell header was shown
+            # for a clean run (audit M4). `command_failed` reads the exit code, as
+            # actions_impl does.
+            comp_res.strip() if command_failed(comp_res) else "Syntax check clean"
         ))
 
     # The Architect's own findings, when a provider is configured. Read-only and still no
