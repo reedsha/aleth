@@ -26,6 +26,16 @@ async function onPyWebViewReady() {
     if (!planData.exists && (!planData.plans || planData.plans.length === 0)) {
       openCreatePlanModal();
     }
+
+    // A reload mid-run leaves the backend thread alive while `state.isExecuting` resets, so
+    // Stop stays hidden and a second run is launchable. Ask the backend and re-arm the lock
+    // (audit H6). Guarded: an older bridge without the method keeps the old behaviour.
+    if (typeof window.pywebview.api.get_run_state === "function") {
+      const runState = await window.pywebview.api.get_run_state();
+      if (runState && runState.running && typeof beginRunUi === "function") {
+        beginRunUi();
+      }
+    }
   } catch (err) {
     console.warn("[PyWebView] Init notice:", err);
     // A failure in the handshake above used to be silent: the window stayed fully
@@ -69,8 +79,11 @@ function reportPlanDiagnostics(planData) {
 // project the user does not have.
 function isDemoModeRequested() {
   try {
+    // A proper `demo=1` match, not a substring test: `?x=demo` enabled the preview path,
+    // and the flag is a deliberate opt-in (audit M9). A regex rather than URLSearchParams
+    // so the check has no host dependency.
     const search = window.location && window.location.search;
-    return typeof search === "string" && search.indexOf("demo") !== -1;
+    return typeof search === "string" && /(?:^|[?&])demo=1(?:&|$)/.test(search);
   } catch (_err) {
     return false;
   }

@@ -19,9 +19,10 @@ function openActionDrawer(actionType, extraParams = {}) {
   state.targetTaskId = extraParams.targetTaskId || null;
   state.targetTaskTitle = extraParams.targetTaskTitle || null;
 
-  // Reset inputs. `prefill` lets a caller hand the drawer a directive it is asking the
-  // user to confirm -- the result view's "Add to Plan" routes a proposal through this same
-  // Update Plan form rather than through a second, thinner endpoint.
+  // Reset inputs. `prefill` lets a caller hand the drawer a directive the user is asked to
+  // confirm before it runs. No caller uses it today: the result view's "Add to Plan" now
+  // writes through the bridge's `add_plan_task` and never opens this drawer. The hook is
+  // kept for a future caller that wants the Update Plan form's confirm step.
   if (DOM.inputActionCustomInstructions) DOM.inputActionCustomInstructions.value = extraParams.prefill || "";
   if (DOM.inputBugDescription) DOM.inputBugDescription.value = "";
   if (DOM.inputBugAttachment) DOM.inputBugAttachment.value = "";
@@ -158,6 +159,23 @@ function closeActionDrawer() {
   setDockDrawerOpen(false);
 }
 
+// The webview sandbox cannot be read by the backend, so an attached log has to be handed
+// over with the request. Capped so a huge file cannot bloat the prompt; a binary file yields
+// "" and remains a named reference only.
+const MAX_ATTACHMENT_CHARS = 8000;
+
+async function readAttachmentText(file) {
+  try {
+    if (!file || typeof file.text !== "function") return "";
+    const text = await file.text();
+    return text.length > MAX_ATTACHMENT_CHARS
+      ? text.slice(0, MAX_ATTACHMENT_CHARS) + "\n... [attachment truncated]"
+      : text;
+  } catch (_err) {
+    return "";
+  }
+}
+
 async function handleActionParamConfirm() {
   const actionType = state.selectedAction || "custom";
   const customInstructions = DOM.inputActionCustomInstructions ? DOM.inputActionCustomInstructions.value.trim() : "";
@@ -180,7 +198,12 @@ async function handleActionParamConfirm() {
     if (DOM.bugValidationMsg) DOM.bugValidationMsg.style.display = "none";
     actionParams.bugDescription = bugDesc;
     if (hasAttachment) {
-      actionParams.bugAttachment = DOM.inputBugAttachment.files[0].name;
+      const attachmentFile = DOM.inputBugAttachment.files[0];
+      actionParams.bugAttachment = attachmentFile.name;
+      // Hand the backend the log/report's *text*, not just its name: the name was only a
+      // truthiness gate, so attached evidence never reached the diagnosis (audit H8). Empty
+      // for a binary image, which stays a named reference.
+      actionParams.bugAttachmentContent = await readAttachmentText(attachmentFile);
     }
     prompt = `[ACTION: FIX_BUG]\nBug Report: ${bugDesc}`;
     if (hasAttachment) {
@@ -229,13 +252,11 @@ async function handleActionParamConfirm() {
 // Execution Lifecycle
 // ============================================================================
 
-async function executeConfirmedTask(promptText, actionType = "custom", actionParams = {}) {
-  const text = promptText || state.pendingPrompt;
-  if (!text) return;
-
+// The client-side half of the run lock: the state the UI shows while a run is live. Extracted
+// so the retry, normalize and reload-recovery paths arm the *same* state a normal launch does
+// -- each starts a real backend run, and previously showed "Idle" with no Stop (audit H5/H6/H7).
+function beginRunUi() {
   state.isExecuting = true;
-  state.pendingPrompt = text;
-
   // Reveal Stop in the top bar for the duration of the run
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "inline-flex";
   // The bento header's live tile reports the run state, so it moves with it.
@@ -248,8 +269,32 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
     DOM.actionDockCard.classList.add("pulsing");
   }
 
-  // Disable action buttons during run
   setActionButtonsDisabled(true);
+}
+
+// Undoes beginRunUi when a launch did not actually start -- the backend refused because a run
+// was already live, or the call rejected. Without it the UI kept a Stop button and a
+// "Multi-Agent Active" label for a run that never began (audit H7).
+function abortRunUi(message) {
+  state.isExecuting = false;
+  if (DOM.btnStopRun) DOM.btnStopRun.style.display = "none";
+  const hasTasks = state.planTree && state.planTree.length > 0;
+  updateStrictPlanLock(!hasTasks);
+  if (hasTasks) setActionButtonsDisabled(false);
+  DOM.btnCloseArchitect.disabled = false;
+  DOM.btnCloseCoder.disabled = false;
+  DOM.systemStatusDot.className = "status-dot ready";
+  DOM.systemStatusLabel.textContent = "Ready";
+  if (typeof updateBentoStats === "function") updateBentoStats();
+  if (message) showToast(message, "error");
+}
+
+async function executeConfirmedTask(promptText, actionType = "custom", actionParams = {}) {
+  const text = promptText || state.pendingPrompt;
+  if (!text) return;
+
+  state.pendingPrompt = text;
+  beginRunUi();
 
   // A new run supersedes whatever the last one left on screen, including the payloads the
   // result view holds, so the previous result cannot be reopened over this one.
@@ -277,9 +322,17 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
 
   if (window.pywebview && window.pywebview.api) {
     try {
-      await window.pywebview.api.start_execution(text, actionType, actionParams);
+      const res = await window.pywebview.api.start_execution(text, actionType, actionParams);
+      // The backend refuses a second run while one is live; undo the optimistic lock so the
+      // UI does not claim a run it never started (audit H7).
+      if (res && res.success === false) {
+        abortRunUi(res.error || "A run is already in progress.");
+      }
     } catch (err) {
       console.error("[Execution] Start failed:", err);
+      // A launch that rejected never produced a terminal event, so the lock has to be undone
+      // here or the UI stays "running" forever.
+      abortRunUi(`Could not launch task: ${(err && err.message) || err}`);
       handleAgentEvent({
         type: "agent_error",
         agent: "software-architect",
@@ -302,7 +355,9 @@ async function handleStopClick() {
       await window.pywebview.api.stop_execution();
       showToast("Stopping the active run\u2026", "info");
     } catch (err) {
-      console.error("[Execution] Stop failed:", err);
+      // Invisible in the packaged app (debug=False): the user believes the run is stopping
+      // when the halt request actually failed (audit H10).
+      showToast(`Could not stop the run: ${(err && err.message) || err}`, "error");
     }
   } else {
     handleAgentEvent({
@@ -340,8 +395,13 @@ function finalizeWorkflow(status) {
   DOM.btnCloseArchitect.disabled = false;
   DOM.btnCloseCoder.disabled = false;
 
-  DOM.systemStatusDot.className = "status-dot ready";
-  DOM.systemStatusLabel.textContent = status === "stopped" ? "Halted" : "Ready";
+  // The runner reports a crash as `workflow_complete(status="error")`; treating every
+  // non-stopped status as success reported a failed run as "Task concluded successfully!"
+  // (audit H3). A halt and a crash each get their own label.
+  const failed = status === "error";
+  DOM.systemStatusDot.className = failed ? "status-dot failed" : "status-dot ready";
+  DOM.systemStatusLabel.textContent =
+    status === "stopped" ? "Halted" : (failed ? "Run Failed" : "Ready");
 
   // A run that rewrote the interface should not leave a stale one on screen. The preview
   // only reads the file from disk, so re-reading it can never be wrong, whatever the run
@@ -350,7 +410,9 @@ function finalizeWorkflow(status) {
     refreshPreview();
   }
 
-  showToast(status === "stopped" ? "Task halted by user" : "Task concluded successfully!", status === "stopped" ? "info" : "success");
+  if (status === "stopped") showToast("Task halted by user", "info");
+  else if (failed) showToast("The run failed \u2014 see the console for details.", "error");
+  else showToast("Task concluded successfully!", "success");
   // The run is over, which is a fact the bento header's live tile states.
   if (typeof updateBentoStats === "function") updateBentoStats();
 }

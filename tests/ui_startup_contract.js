@@ -549,6 +549,10 @@ const healthyWiring = (() => {
     added === 1 && removed === 1 && changed === 1,
     `added=${added} removed=${removed} changed=${changed}`);
 
+  const revertButtons = (body.innerHTML.match(/data-result-action="revert-plan"/g) || []).length;
+  check("a plan update offers a one-click revert of the saved revision", revertButtons === 1,
+    `revert buttons=${revertButtons}`);
+
   const rendered = body.innerHTML;
   route('state.selectedAction = "recommend"; state.lastRunRefused = true; mountResultView();');
   check("a refusal is reported as a request for input, not as a result",
@@ -567,6 +571,19 @@ const healthyWiring = (() => {
     /status-badge failed/.test(badge.className || "") && (badge.textContent || "") === "Failed" &&
       pinned === true,
     `badge = ${JSON.stringify(badge.textContent)} / ${badge.className}`);
+
+  // The runner reports a crash as workflow_complete(status="error") and a stray Stop as
+  // workflow_stopped(status="stopped"). Neither may read as a clean finish (audit H3/H4/Go 15).
+  route('finalizeWorkflow("error");');
+  const errorLabel = run.elements.get("systemStatusLabel").textContent;
+  check("an errored run is not reported as a clean finish",
+    errorLabel === "Run Failed" &&
+      /status-dot failed/.test(run.elements.get("systemStatusDot").className || ""),
+    `label = ${JSON.stringify(errorLabel)}`);
+  route('finalizeWorkflow("stopped");');
+  const stoppedLabel = run.elements.get("systemStatusLabel").textContent;
+  check("a halted run reports Halted, not Ready", stoppedLabel === "Halted",
+    `label = ${JSON.stringify(stoppedLabel)}`);
 
   route('state.lastRunRefused = false; state.selectedAction = "analyze";' +
     ' state.lastSummary = {title: "Analysis", status: "Analysis Complete",' +

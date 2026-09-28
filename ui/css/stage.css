@@ -41,18 +41,10 @@
   color: var(--text-muted);
 }
 
-/* The active plan's completion figure. It used to live in the dock's read-only status row;
-   with that row retired it sits beside the plan badge it describes, so "what am I working on"
-   and "how far in" read as one cluster. */
-.top-progress-pill {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-dim);
-}
 
 /* Stop, rehomed from the dock's status row. It is hidden until a run starts (the same
-   inline display toggle ui/js/actions.js drives) and sits next to the progress figure, so
-   the run's "how far in / halt it" pair stays together. */
+   inline display toggle ui/js/actions.js drives) and sits beside the active-plan badge in the
+   top bar; the completion figure it used to pair with now lives in the workbench bento tile. */
 .btn-stop-run {
   display: inline-flex;
   align-items: center;
@@ -90,6 +82,12 @@
   background: #38bdf8;
   box-shadow: 0 0 10px rgba(56, 189, 248, 0.8);
   animation: pulseDot 1s infinite alternate;
+}
+
+/* A run that ended in an error: the app's stop/danger red (--accent-stop). */
+.status-dot.failed {
+  background: #ef4444;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.7);
 }
 
 @keyframes pulseDot {

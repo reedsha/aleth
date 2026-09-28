@@ -111,11 +111,18 @@ function closePromptEditor() {
   document.querySelectorAll(".agent-list-item").forEach((el) => el.classList.remove("active-agent"));
 }
 
+// The gutter is rebuilt only when the line count changes: identical counts produce identical
+// numbers, so re-rendering it on every keystroke was wasted work (audit M11).
+let lastEditorLineCount = -1;
+
 function updateEditorMetrics() {
   const text = DOM.txtSystemPrompt.value;
   const lines = text.split("\n");
   DOM.promptCharCount.textContent = `${text.length} chars • ${lines.length} lines`;
-  DOM.editorLineNumbers.innerHTML = lines.map((_, i) => i + 1).join("<br>");
+  if (lines.length !== lastEditorLineCount) {
+    lastEditorLineCount = lines.length;
+    DOM.editorLineNumbers.innerHTML = lines.map((_, i) => i + 1).join("<br>");
+  }
 }
 
 async function saveCurrentSystemPrompt() {
@@ -123,6 +130,9 @@ async function saveCurrentSystemPrompt() {
   const agentId = state.activeAgentForEditor.id;
   const newPrompt = DOM.txtSystemPrompt.value;
 
+  // Disable while in flight so a double-click cannot issue two writes (audit M10).
+  const btn = DOM.btnSavePrompt;
+  if (btn) btn.disabled = true;
   try {
     let res;
     if (window.pywebview && window.pywebview.api) {
@@ -140,5 +150,7 @@ async function saveCurrentSystemPrompt() {
     }
   } catch (err) {
     showToast(`Error saving prompt: ${err.message}`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }

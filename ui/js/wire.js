@@ -189,19 +189,35 @@ function initEventListeners() {
   });
 
   // Retry buttons
-  on(DOM.btnRetryArchitect, "click", () => {
-    DOM.architectErrorBadge.style.display = "none";
-    if (window.pywebview && window.pywebview.api) {
-      window.pywebview.api.retry_execution("software-architect", state.pendingPrompt);
-    }
-  });
-
-  on(DOM.btnRetryCoder, "click", () => {
-    DOM.coderErrorBadge.style.display = "none";
-    if (window.pywebview && window.pywebview.api) {
-      window.pywebview.api.retry_execution("coder", state.pendingPrompt);
-    }
-  });
+  // Retry starts a real workflow (retry_execution -> start_execution), so it arms the same
+  // lock a normal launch does, disables itself while in flight, and surfaces a refusal or a
+  // rejection. The fire-and-forget version left unhandled rejections and could queue runs
+  // with no Stop ever shown (audit H7).
+  const wireRetry = (btn, badge, agentId) => {
+    on(btn, "click", async () => {
+      if (badge) badge.style.display = "none";
+      if (!(window.pywebview && window.pywebview.api)) {
+        showToast("Retry is available in the desktop app window", "info");
+        return;
+      }
+      if (state.isExecuting) {
+        showToast("A run is already in progress.", "info");
+        return;
+      }
+      btn.disabled = true;
+      beginRunUi();
+      try {
+        const res = await window.pywebview.api.retry_execution(agentId, state.pendingPrompt);
+        if (res && res.success === false) abortRunUi(res.error || "A run is already in progress.");
+      } catch (err) {
+        abortRunUi(`Retry failed: ${(err && err.message) || err}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  };
+  wireRetry(DOM.btnRetryArchitect, DOM.architectErrorBadge, "software-architect");
+  wireRetry(DOM.btnRetryCoder, DOM.coderErrorBadge, "coder");
 
   // Prompt Editor Navigation
   on(DOM.btnBackToChat, "click", closePromptEditor);
@@ -224,15 +240,18 @@ function initEventListeners() {
   on(DOM.tabSidebarFiles, "click", () => setSidebarTab("files"));
   on(DOM.tabSidebarEnv, "click", () => setSidebarTab("env"));
 
-  // Files: the top bar opens the sidebar's Files tab; the modal is reached from the tab's own
-  // expand button (it stays in the DOM, it is just no longer the primary entry point).
-  on(DOM.btnNavFiles, "click", openFilesTab);
+  // Files: the modal is reached from the sidebar Files tab's own expand button (it stays in the
+  // DOM, it is just not the primary entry point).
   on(DOM.btnExpandFilesModal, "click", openWorkspaceFilesModal);
   if (DOM.btnCloseFilesModal) DOM.btnCloseFilesModal.addEventListener("click", closeWorkspaceFilesModal);
   if (DOM.btnCloseFilesModalFooter) DOM.btnCloseFilesModalFooter.addEventListener("click", closeWorkspaceFilesModal);
   if (DOM.inputSearchWorkspaceFiles) {
+    let filterTimer = null;
     DOM.inputSearchWorkspaceFiles.addEventListener("input", (e) => {
-      renderFilteredWorkspaceFiles(e.target.value);
+      // Debounced: this re-filters and re-renders up to 250 rows per keystroke (audit M11).
+      clearTimeout(filterTimer);
+      const value = e.target.value;
+      filterTimer = setTimeout(() => renderFilteredWorkspaceFiles(value), 150);
     });
   }
   if (DOM.filesModalOverlay) {
@@ -345,7 +364,15 @@ function checkAllCardsClosed() {
 function handleRetagUiClick() {
   showTaggingPanel();
   if (window.pywebview && window.pywebview.api) {
-    window.pywebview.api.retag_plan_with_laya();
+    // The pass returns at once and streams laya_tagging_* events; the button is disabled
+    // until the done event so a second click cannot start a second pass, and a rejected
+    // call re-enables it rather than leaving a permanent spinner (audit M10/B1.2).
+    if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = true;
+    window.pywebview.api.retag_plan_with_laya().catch((err) => {
+      if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = false;
+      hideTaggingPanel();
+      showToast(`Re-tagging failed: ${(err && err.message) || err}`, "error");
+    });
   } else {
     showToast("Re-tagging is available in the desktop app window", "info");
   }

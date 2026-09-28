@@ -24,6 +24,7 @@
 // The two code actions also ask the backend to run the test file the task wrote
 // (run_task_tests), so their pass/fail strip is a real verdict instead of a guess.
 //   update_plan -> state.planTreeBeforeUpdate vs state.planTree (captured in plan_updated)
+//         plus a one-click revert of the revision the run already saved
 //   analyze     -> summary.files + summary.deliverables   (no complexity/security metrics exist)
 //   recommend   -> summary.proposals                      (one card per proposal)
 //   custom      -> nothing; the plain stream is the answer
@@ -423,10 +424,7 @@ function renderPlanUpdateResult(kind, token) {
   if (counted === 0) {
     DOM.resultBody.innerHTML = `
       <div class="result-note">The roadmap's tasks are unchanged; only the surrounding text may differ.</div>
-      <div class="result-plan-footer">
-        <span class="result-pill result-pill-ok">Applied to ${escapeHtml(state.activePlan || "PLAN.md")}</span>
-        <button class="result-action" data-result-action="view-plan" type="button">View in workbench</button>
-      </div>
+      ${planUpdateFooterHtml()}
     `;
     return;
   }
@@ -447,8 +445,19 @@ function renderPlanUpdateResult(kind, token) {
            </section>`
         : ""}
     </div>
+    ${planUpdateFooterHtml()}
+  `;
+}
+
+// Update Plan writes the plan as the run finishes, so there is nothing left to "approve" -- the
+// write has already happened by the time this renders. The honest control is an undo, and the
+// note says so, so the button's effect matches its label. The plan is only touched on the click.
+function planUpdateFooterHtml() {
+  return `
+    <div class="result-note">This revision is already saved. "Revert Changes" restores the roadmap to the state before this run.</div>
     <div class="result-plan-footer">
       <span class="result-pill result-pill-ok">Applied to ${escapeHtml(state.activePlan || "PLAN.md")}</span>
+      <button class="result-action" data-result-action="revert-plan" type="button">Revert Changes</button>
       <button class="result-action" data-result-action="view-plan" type="button">View in workbench</button>
     </div>
   `;
@@ -559,9 +568,9 @@ function renderAnalyzeResult(kind, token) {
 
 // --- Recommend: one actionable card per proposal ---------------------------
 // The proposals already existed as a plain <ul> in the architect's summary. As cards with
-// an action they become the interactive objects they are: each one can be turned into a
-// real plan revision through the existing update_plan flow, which is the only plan-editing
-// endpoint the bridge has.
+// an action they become the interactive objects they are: each one is a real plan mutation
+// through the bridge's add_plan_task endpoint, which appends the proposal as a pending task
+// and saves it -- one click, no confirm step, because the click is the confirmation.
 function renderRecommendResult(kind, token) {
   const summary = state.lastSummary || {};
   const proposals = (summary.proposals || []).filter(Boolean);
@@ -595,7 +604,7 @@ function renderRecommendResult(kind, token) {
              <ul class="result-list">${findings.map((f) => `<li>${escapeHtml(f)}</li>`).join("")}</ul>
            </section>`
         : ""}
-      <div class="result-note">"Add to Plan" opens the Update Plan command with this proposal as its directive; the plan changes only when you confirm it.</div>
+      <div class="result-note">"Add to Plan" appends this proposal to the active plan as a pending task and saves it \u2014 the click is the confirmation, so there is no second step.</div>
     </div>
   `;
 }
@@ -623,11 +632,65 @@ function handleResultViewClick(event) {
   if (action === "add-to-plan") {
     const directive = String(value).trim();
     if (!directive) return;
-    closeResultView();
-    // Routed through the existing Update Plan command rather than a new endpoint: the
-    // drawer is where a plan change is confirmed, and this prefills it with the proposal.
-    openActionDrawer("update_plan", { prefill: `Add this to the plan: ${directive}` });
+    addRecommendationToPlan(directive, button);
     return;
+  }
+  if (action === "revert-plan") {
+    revertPlanUpdate(button);
+    return;
+  }
+}
+
+// One click, one real mutation: the bridge appends the proposal as a pending task and
+// persists it through the ordinary save_plan_state + plan_updated funnel, so the tree,
+// the workbench and the progress meter refresh from it like any other plan write. The
+// button disables while the write is in flight, then reads "Added" rather than inviting a
+// second click that would add the same task twice.
+async function addRecommendationToPlan(directive, button) {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.add_plan_task !== "function") {
+    showToast("Adding to the plan needs the desktop app; this view is read-only.", "info");
+    return;
+  }
+  if (button) button.disabled = true;
+  try {
+    const res = await api.add_plan_task(directive);
+    if (res && res.success) {
+      if (button) button.textContent = "Added";
+      showToast(`Added to ${res.filename || "the plan"} as a pending task.`, "success");
+    } else {
+      if (button) button.disabled = false;
+      showToast((res && res.error) || "Could not add the task.", "error");
+    }
+  } catch (err) {
+    if (button) button.disabled = false;
+    showToast(`Could not add the task: ${err}`, "error");
+  }
+}
+
+// The counterpart of "Add to Plan": a real mutation, in the opposite direction. The run has
+// already written the plan, so reverting restores the snapshot the backend took immediately
+// before that write. The button disables while the round-trip is in flight, then reads
+// "Reverted" rather than inviting a second click that would roll the plan back twice.
+async function revertPlanUpdate(button) {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.revert_plan_update !== "function") {
+    showToast("Reverting needs the desktop app; this view is read-only.", "info");
+    return;
+  }
+  if (button) button.disabled = true;
+  try {
+    const res = await api.revert_plan_update();
+    if (res && res.success) {
+      if (button) button.textContent = "Reverted";
+      showToast("Roadmap restored to its previous revision.", "success");
+    } else {
+      if (button) button.disabled = false;
+      showToast((res && res.error) || "Could not revert the revision.", "error");
+    }
+  } catch (err) {
+    if (button) button.disabled = false;
+    showToast(`Could not revert the revision: ${err}`, "error");
   }
 }
 

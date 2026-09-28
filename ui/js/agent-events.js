@@ -43,6 +43,10 @@ function handleAgentEvent(event) {
       break;
 
     case "delegation":
+      // The architect is handing off rather than thinking: while the coder works, only the coder
+      // pulses. The architect's pulse stops here and resumes on coder_summary, when it takes the
+      // work back for verification.
+      setAgentThinking(event.from_agent || "software-architect", false);
       triggerDelegationAnimation(event.target_agent, event.target_name);
       break;
 
@@ -56,6 +60,9 @@ function handleAgentEvent(event) {
       DOM.coderStatusBadge.textContent = "Completed";
       DOM.coderStatusBadge.className = "status-badge coder-status completed";
       setAgentThinking(event.agent, false);
+      // The coder is done and the architect takes the work back to verify it, so the main agent's
+      // pulse resumes for that window (cleared again on architect_summary).
+      setAgentThinking("software-architect", true);
       break;
 
     case "architect_summary":
@@ -114,6 +121,8 @@ function handleAgentEvent(event) {
       // The tree re-renders from the separate plan_updated event, so this only reports
       // the outcome of the pass itself.
       hideTaggingPanel();
+      // The pass is over, so the trigger is usable again (audit M10).
+      if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = false;
       if (event.success) {
         const changed = Array.isArray(event.changed) ? event.changed : [];
         // The word list is the fallback, not the intended engine: re-tagging with it only
@@ -154,7 +163,10 @@ function handleAgentEvent(event) {
       // The result view is the point of the run, so what the action produced is mounted
       // here -- except after a halt, where the output is partial and "Halted" is the
       // answer the user asked for, so the transcript stays the surface instead.
-      if (event.status !== "stopped" && typeof mountResultView === "function") {
+      // Only a clean finish mounts the result view. A halt resolved to the transcript, and
+      // a crashed run resolved to the error it reported, so neither has a result to show
+      // (audit H3).
+      if (event.status === "finished" && typeof mountResultView === "function") {
         mountResultView();
       }
       break;

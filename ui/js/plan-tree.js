@@ -607,7 +607,6 @@ function updateProgressMeter(completed, total, inProgress = 0, failed = 0) {
   if (DOM.planProgressBarFill) DOM.planProgressBarFill.style.width = `${doneWidth}%`;
   if (DOM.planProgressBarActive) DOM.planProgressBarActive.style.width = `${activeWidth}%`;
   if (DOM.planProgressBarFailed) DOM.planProgressBarFailed.style.width = `${failedWidth}%`;
-  if (DOM.txtTopProgress) DOM.txtTopProgress.textContent = `${completed}/${total} (${percent}%)`;
   updateBentoProgressChip(completed, total, inProgress, failed);
 }
 

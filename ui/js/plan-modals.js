@@ -70,15 +70,28 @@ function closeNormalizeGateModal() {
   DOM.normalizeGateModalOverlay.style.display = "none";
 }
 
-// Fire-and-forget, like the action buttons: the backend workflow streams its progress as
-// normal agent events and emits plan_updated when it rewrites the file.
-function handleNormalizeGateConfirm() {
+// The normalize workflow is a real run (normalize_plan -> start_execution), so it arms the run
+// lock and Stop like any other launch -- it used to bypass both, letting a second action stop
+// it mid-write while the UI showed no run at all (audit M2/H7). Progress still streams as
+// normal agent events.
+async function handleNormalizeGateConfirm() {
   closeNormalizeGateModal();
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.normalize_plan) {
-    showToast("Formatting plan via Architect...", "info");
-    window.pywebview.api.normalize_plan();
-  } else {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.normalize_plan !== "function") {
     showToast("Formatting is available in the desktop app window", "info");
+    return;
+  }
+  if (state.isExecuting) {
+    showToast("A run is already in progress.", "info");
+    return;
+  }
+  showToast("Formatting plan via Architect...", "info");
+  beginRunUi();
+  try {
+    const res = await api.normalize_plan();
+    if (res && res.success === false) abortRunUi(res.error || "A run is already in progress.");
+  } catch (err) {
+    abortRunUi(`Could not format the plan: ${(err && err.message) || err}`);
   }
 }
 
@@ -110,13 +123,27 @@ function renderExistingPlansList() {
     chip.textContent = planName;
     chip.addEventListener("click", async () => {
       closeSwitchPlanModal();
-      if (window.pywebview && window.pywebview.api) {
-        const res = await window.pywebview.api.set_active_plan(planName);
+      const api = window.pywebview && window.pywebview.api;
+      if (!api) return;
+      if (state.isExecuting) {
+        showToast("A run is in progress; switch plans after it finishes.", "info");
+        return;
+      }
+      // Mirrors switchActivePlan: the await needs a try/catch, or a rejection is silent and
+      // the switch just does not happen (audit M1).
+      try {
+        const res = await api.set_active_plan(planName);
+        if (res && res.error) {
+          showToast(res.error, "error");
+          return;
+        }
         applyPlanData(res);
         showToast(`Switched active plan to: ${planName}`, "success");
         // The gate is advisory and read-only: it only opens a modal when the file it just
         // switched to cannot be read as a milestone plan.
         checkPlanStructureGate(planName);
+      } catch (err) {
+        showToast(`Could not switch plan: ${(err && err.message) || err}`, "error");
       }
     });
     DOM.existingPlansList.appendChild(chip);

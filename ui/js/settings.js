@@ -105,6 +105,9 @@ async function saveSettingsFromForm() {
     return;
   }
   setSettingsStatus("Saving\u2026");
+  // Disable while in flight so a double-click cannot issue two saves (audit M10).
+  const btn = DOM.btnSaveSettings;
+  if (btn) btn.disabled = true;
   try {
     const res = await window.pywebview.api.save_settings(collectSettingsValues());
     renderSettings(res);
@@ -116,6 +119,8 @@ async function saveSettingsFromForm() {
     }
   } catch (_err) {
     setSettingsStatus("The settings could not be saved.", "error");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

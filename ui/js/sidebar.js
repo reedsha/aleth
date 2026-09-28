@@ -176,8 +176,16 @@ async function switchActivePlan(planName) {
     showToast("Switching plans needs the desktop app; this view is read-only.", "info");
     return;
   }
+  if (state.isExecuting) {
+    showToast("A run is in progress; switch plans after it finishes.", "info");
+    return;
+  }
   try {
     const res = await api.set_active_plan(planName);
+    if (res && res.error) {
+      showToast(res.error, "error");
+      return;
+    }
     applyPlanData(res);
     showToast(`Switched active plan to: ${planName}`, "success");
     checkPlanStructureGate(planName);

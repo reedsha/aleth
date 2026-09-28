@@ -45,9 +45,8 @@ function initDOMElements() {
   DOM.commandPaletteInput = document.getElementById("commandPaletteInput");
   DOM.commandPaletteList = document.getElementById("commandPaletteList");
   DOM.btnCommandPalette = document.getElementById("btnCommandPalette");
-  // The run controls live in the top bar now that the dock's read-only status row is gone:
-  // the progress figure and Stop sit beside the active-plan badge, not in the dock head.
-  DOM.txtTopProgress = document.getElementById("txtTopProgress");
+  // Stop lives in the top bar now that the dock's read-only status row is gone; the completion
+  // figure is rendered by the workbench's bento progress tile, not the top bar.
   DOM.btnStopRun = document.getElementById("btnStopRun");
 
   // Docked command drawer (the parameter form of the action strip above it)
@@ -159,7 +158,6 @@ function initDOMElements() {
   DOM.btnResetPrompt = document.getElementById("btnResetPrompt");
 
   // Files Modal & Status Bar
-  DOM.btnNavFiles = document.getElementById("btnNavFiles");
   DOM.filesModalOverlay = document.getElementById("filesModalOverlay");
   DOM.btnCloseFilesModal = document.getElementById("btnCloseFilesModal");
   DOM.btnCloseFilesModalFooter = document.getElementById("btnCloseFilesModalFooter");

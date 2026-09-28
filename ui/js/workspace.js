@@ -12,6 +12,8 @@ async function openWorkspaceFilesModal() {
       const info = await window.pywebview.api.get_workspace_info();
       files = info.files || [];
     } catch (e) {
+      // A failed read must not render as "No files in workspace yet." (audit H11).
+      showToast(`Could not read the workspace: ${(e && e.message) || e}`, "error");
       files = [];
     }
   } else {
@@ -316,7 +318,6 @@ async function handleConfirmRollback() {
       const step = state.planTree.find(t => t.id === taskId);
       if (step) step.status = "pending";
       renderPlanTree();
-      updateNextStepButtonPreview();
       res = { success: true };
     }
 

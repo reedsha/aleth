@@ -568,18 +568,10 @@ body {
   color: var(--text-muted);
 }
 
-/* The active plan's completion figure. It used to live in the dock's read-only status row;
-   with that row retired it sits beside the plan badge it describes, so "what am I working on"
-   and "how far in" read as one cluster. */
-.top-progress-pill {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-dim);
-}
 
 /* Stop, rehomed from the dock's status row. It is hidden until a run starts (the same
-   inline display toggle ui/js/actions.js drives) and sits next to the progress figure, so
-   the run's "how far in / halt it" pair stays together. */
+   inline display toggle ui/js/actions.js drives) and sits beside the active-plan badge in the
+   top bar; the completion figure it used to pair with now lives in the workbench bento tile. */
 .btn-stop-run {
   display: inline-flex;
   align-items: center;
@@ -617,6 +609,12 @@ body {
   background: #38bdf8;
   box-shadow: 0 0 10px rgba(56, 189, 248, 0.8);
   animation: pulseDot 1s infinite alternate;
+}
+
+/* A run that ended in an error: the app's stop/danger red (--accent-stop). */
+.status-dot.failed {
+  background: #ef4444;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.7);
 }
 
 @keyframes pulseDot {
@@ -2441,78 +2439,6 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 100;
-}
-
-/* Execution Confirmation Dialog Card */
-.confirm-dialog-card {
-  width: 440px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-glass);
-  border-radius: var(--radius-lg);
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(14, 165, 233, 0.15);
-  animation: fadeIn 0.25s ease forwards;
-}
-
-.confirm-icon-badge {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: rgba(14, 165, 233, 0.18);
-  border: 1px solid rgba(14, 165, 233, 0.35);
-  color: #38bdf8;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 14px;
-}
-
-.confirm-title {
-  font-size: 18px;
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-
-.confirm-desc {
-  font-size: 13px;
-  color: var(--text-muted);
-  line-height: 1.45;
-  margin-bottom: 16px;
-}
-
-.confirm-prompt-preview {
-  width: 100%;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  text-align: left;
-  margin-bottom: 20px;
-}
-
-.preview-label {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.8px;
-  color: var(--text-dim);
-}
-
-.preview-text {
-  font-size: 13px;
-  color: #e2e8f0;
-  margin-top: 4px;
-  word-break: break-word;
-}
-
-.confirm-actions-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
 }
 
 /* Modal Footer & Dialog Buttons */
@@ -6177,7 +6103,6 @@ button.result-file-chip.is-action:hover {
             </svg>
             <span id="txtTopActivePlanName">PLAN.md</span>
           </span>
-          <span class="top-progress-pill" id="txtTopProgress" title="Tasks completed of the active plan">0/0 (0%)</span>
           <button class="btn-stop-run" id="btnStopRun" type="button" style="display: none;" title="Halt current running workflow">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="2"/>
@@ -6199,13 +6124,6 @@ button.result-file-chip.is-action:hover {
               <circle cx="12" cy="12" r="3"/>
             </svg>
             <span>Preview</span>
-          </button>
-          <button class="btn-top-action" id="btnNavFiles" title="Workspace Files Explorer">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
-              <polyline points="14 2 14 8 20 8"/>
-            </svg>
-            <span>Files</span>
           </button>
         </div>
       </header>
@@ -6815,31 +6733,6 @@ button.result-file-chip.is-action:hover {
   </div>
 
   <!-- ============================================================ -->
-  <!-- MODAL: TASK EXECUTION CONFIRMATION POP-UP                    -->
-  <!-- ============================================================ -->
-  <div class="modal-overlay" id="confirmModalOverlay" style="display: none;">
-    <div class="confirm-dialog-card">
-      <div class="confirm-icon-badge">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-        </svg>
-      </div>
-      <h3 class="confirm-title">Confirm Task Execution</h3>
-      <p class="confirm-desc">Are you sure you want to execute this task against the active plan (<strong id="confirmPlanFileName">PLAN.md</strong>)?</p>
-      
-      <div class="confirm-prompt-preview">
-        <span class="preview-label">TARGET PROMPT:</span>
-        <div class="preview-text" id="confirmPromptText">Task description here...</div>
-      </div>
-
-      <div class="confirm-actions-row">
-        <button class="btn-dialog-secondary" id="btnCancelExecution">Cancel</button>
-        <button class="btn-dialog-primary" id="btnConfirmExecution">Confirm & Execute</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- ============================================================ -->
   <!-- MODAL: CREATE / SELECT PLAN MODAL                            -->
   <!-- ============================================================ -->
   <!-- MODAL: SWITCH PLAN (Select Existing Plan File)                       -->
@@ -7221,9 +7114,8 @@ function initDOMElements() {
   DOM.commandPaletteInput = document.getElementById("commandPaletteInput");
   DOM.commandPaletteList = document.getElementById("commandPaletteList");
   DOM.btnCommandPalette = document.getElementById("btnCommandPalette");
-  // The run controls live in the top bar now that the dock's read-only status row is gone:
-  // the progress figure and Stop sit beside the active-plan badge, not in the dock head.
-  DOM.txtTopProgress = document.getElementById("txtTopProgress");
+  // Stop lives in the top bar now that the dock's read-only status row is gone; the completion
+  // figure is rendered by the workbench's bento progress tile, not the top bar.
   DOM.btnStopRun = document.getElementById("btnStopRun");
 
   // Docked command drawer (the parameter form of the action strip above it)
@@ -7335,7 +7227,6 @@ function initDOMElements() {
   DOM.btnResetPrompt = document.getElementById("btnResetPrompt");
 
   // Files Modal & Status Bar
-  DOM.btnNavFiles = document.getElementById("btnNavFiles");
   DOM.filesModalOverlay = document.getElementById("filesModalOverlay");
   DOM.btnCloseFilesModal = document.getElementById("btnCloseFilesModal");
   DOM.btnCloseFilesModalFooter = document.getElementById("btnCloseFilesModalFooter");
@@ -7477,6 +7368,16 @@ async function onPyWebViewReady() {
     if (!planData.exists && (!planData.plans || planData.plans.length === 0)) {
       openCreatePlanModal();
     }
+
+    // A reload mid-run leaves the backend thread alive while `state.isExecuting` resets, so
+    // Stop stays hidden and a second run is launchable. Ask the backend and re-arm the lock
+    // (audit H6). Guarded: an older bridge without the method keeps the old behaviour.
+    if (typeof window.pywebview.api.get_run_state === "function") {
+      const runState = await window.pywebview.api.get_run_state();
+      if (runState && runState.running && typeof beginRunUi === "function") {
+        beginRunUi();
+      }
+    }
   } catch (err) {
     console.warn("[PyWebView] Init notice:", err);
     // A failure in the handshake above used to be silent: the window stayed fully
@@ -7520,8 +7421,11 @@ function reportPlanDiagnostics(planData) {
 // project the user does not have.
 function isDemoModeRequested() {
   try {
+    // A proper `demo=1` match, not a substring test: `?x=demo` enabled the preview path,
+    // and the flag is a deliberate opt-in (audit M9). A regex rather than URLSearchParams
+    // so the check has no host dependency.
     const search = window.location && window.location.search;
-    return typeof search === "string" && search.indexOf("demo") !== -1;
+    return typeof search === "string" && /(?:^|[?&])demo=1(?:&|$)/.test(search);
   } catch (_err) {
     return false;
   }
@@ -8261,7 +8165,6 @@ function updateProgressMeter(completed, total, inProgress = 0, failed = 0) {
   if (DOM.planProgressBarFill) DOM.planProgressBarFill.style.width = `${doneWidth}%`;
   if (DOM.planProgressBarActive) DOM.planProgressBarActive.style.width = `${activeWidth}%`;
   if (DOM.planProgressBarFailed) DOM.planProgressBarFailed.style.width = `${failedWidth}%`;
-  if (DOM.txtTopProgress) DOM.txtTopProgress.textContent = `${completed}/${total} (${percent}%)`;
   updateBentoProgressChip(completed, total, inProgress, failed);
 }
 
@@ -8307,9 +8210,10 @@ function openActionDrawer(actionType, extraParams = {}) {
   state.targetTaskId = extraParams.targetTaskId || null;
   state.targetTaskTitle = extraParams.targetTaskTitle || null;
 
-  // Reset inputs. `prefill` lets a caller hand the drawer a directive it is asking the
-  // user to confirm -- the result view's "Add to Plan" routes a proposal through this same
-  // Update Plan form rather than through a second, thinner endpoint.
+  // Reset inputs. `prefill` lets a caller hand the drawer a directive the user is asked to
+  // confirm before it runs. No caller uses it today: the result view's "Add to Plan" now
+  // writes through the bridge's `add_plan_task` and never opens this drawer. The hook is
+  // kept for a future caller that wants the Update Plan form's confirm step.
   if (DOM.inputActionCustomInstructions) DOM.inputActionCustomInstructions.value = extraParams.prefill || "";
   if (DOM.inputBugDescription) DOM.inputBugDescription.value = "";
   if (DOM.inputBugAttachment) DOM.inputBugAttachment.value = "";
@@ -8446,6 +8350,23 @@ function closeActionDrawer() {
   setDockDrawerOpen(false);
 }
 
+// The webview sandbox cannot be read by the backend, so an attached log has to be handed
+// over with the request. Capped so a huge file cannot bloat the prompt; a binary file yields
+// "" and remains a named reference only.
+const MAX_ATTACHMENT_CHARS = 8000;
+
+async function readAttachmentText(file) {
+  try {
+    if (!file || typeof file.text !== "function") return "";
+    const text = await file.text();
+    return text.length > MAX_ATTACHMENT_CHARS
+      ? text.slice(0, MAX_ATTACHMENT_CHARS) + "\n... [attachment truncated]"
+      : text;
+  } catch (_err) {
+    return "";
+  }
+}
+
 async function handleActionParamConfirm() {
   const actionType = state.selectedAction || "custom";
   const customInstructions = DOM.inputActionCustomInstructions ? DOM.inputActionCustomInstructions.value.trim() : "";
@@ -8468,7 +8389,12 @@ async function handleActionParamConfirm() {
     if (DOM.bugValidationMsg) DOM.bugValidationMsg.style.display = "none";
     actionParams.bugDescription = bugDesc;
     if (hasAttachment) {
-      actionParams.bugAttachment = DOM.inputBugAttachment.files[0].name;
+      const attachmentFile = DOM.inputBugAttachment.files[0];
+      actionParams.bugAttachment = attachmentFile.name;
+      // Hand the backend the log/report's *text*, not just its name: the name was only a
+      // truthiness gate, so attached evidence never reached the diagnosis (audit H8). Empty
+      // for a binary image, which stays a named reference.
+      actionParams.bugAttachmentContent = await readAttachmentText(attachmentFile);
     }
     prompt = `[ACTION: FIX_BUG]\nBug Report: ${bugDesc}`;
     if (hasAttachment) {
@@ -8517,13 +8443,11 @@ async function handleActionParamConfirm() {
 // Execution Lifecycle
 // ============================================================================
 
-async function executeConfirmedTask(promptText, actionType = "custom", actionParams = {}) {
-  const text = promptText || state.pendingPrompt;
-  if (!text) return;
-
+// The client-side half of the run lock: the state the UI shows while a run is live. Extracted
+// so the retry, normalize and reload-recovery paths arm the *same* state a normal launch does
+// -- each starts a real backend run, and previously showed "Idle" with no Stop (audit H5/H6/H7).
+function beginRunUi() {
   state.isExecuting = true;
-  state.pendingPrompt = text;
-
   // Reveal Stop in the top bar for the duration of the run
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "inline-flex";
   // The bento header's live tile reports the run state, so it moves with it.
@@ -8536,8 +8460,32 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
     DOM.actionDockCard.classList.add("pulsing");
   }
 
-  // Disable action buttons during run
   setActionButtonsDisabled(true);
+}
+
+// Undoes beginRunUi when a launch did not actually start -- the backend refused because a run
+// was already live, or the call rejected. Without it the UI kept a Stop button and a
+// "Multi-Agent Active" label for a run that never began (audit H7).
+function abortRunUi(message) {
+  state.isExecuting = false;
+  if (DOM.btnStopRun) DOM.btnStopRun.style.display = "none";
+  const hasTasks = state.planTree && state.planTree.length > 0;
+  updateStrictPlanLock(!hasTasks);
+  if (hasTasks) setActionButtonsDisabled(false);
+  DOM.btnCloseArchitect.disabled = false;
+  DOM.btnCloseCoder.disabled = false;
+  DOM.systemStatusDot.className = "status-dot ready";
+  DOM.systemStatusLabel.textContent = "Ready";
+  if (typeof updateBentoStats === "function") updateBentoStats();
+  if (message) showToast(message, "error");
+}
+
+async function executeConfirmedTask(promptText, actionType = "custom", actionParams = {}) {
+  const text = promptText || state.pendingPrompt;
+  if (!text) return;
+
+  state.pendingPrompt = text;
+  beginRunUi();
 
   // A new run supersedes whatever the last one left on screen, including the payloads the
   // result view holds, so the previous result cannot be reopened over this one.
@@ -8565,9 +8513,17 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
 
   if (window.pywebview && window.pywebview.api) {
     try {
-      await window.pywebview.api.start_execution(text, actionType, actionParams);
+      const res = await window.pywebview.api.start_execution(text, actionType, actionParams);
+      // The backend refuses a second run while one is live; undo the optimistic lock so the
+      // UI does not claim a run it never started (audit H7).
+      if (res && res.success === false) {
+        abortRunUi(res.error || "A run is already in progress.");
+      }
     } catch (err) {
       console.error("[Execution] Start failed:", err);
+      // A launch that rejected never produced a terminal event, so the lock has to be undone
+      // here or the UI stays "running" forever.
+      abortRunUi(`Could not launch task: ${(err && err.message) || err}`);
       handleAgentEvent({
         type: "agent_error",
         agent: "software-architect",
@@ -8590,7 +8546,9 @@ async function handleStopClick() {
       await window.pywebview.api.stop_execution();
       showToast("Stopping the active run\u2026", "info");
     } catch (err) {
-      console.error("[Execution] Stop failed:", err);
+      // Invisible in the packaged app (debug=False): the user believes the run is stopping
+      // when the halt request actually failed (audit H10).
+      showToast(`Could not stop the run: ${(err && err.message) || err}`, "error");
     }
   } else {
     handleAgentEvent({
@@ -8628,8 +8586,13 @@ function finalizeWorkflow(status) {
   DOM.btnCloseArchitect.disabled = false;
   DOM.btnCloseCoder.disabled = false;
 
-  DOM.systemStatusDot.className = "status-dot ready";
-  DOM.systemStatusLabel.textContent = status === "stopped" ? "Halted" : "Ready";
+  // The runner reports a crash as `workflow_complete(status="error")`; treating every
+  // non-stopped status as success reported a failed run as "Task concluded successfully!"
+  // (audit H3). A halt and a crash each get their own label.
+  const failed = status === "error";
+  DOM.systemStatusDot.className = failed ? "status-dot failed" : "status-dot ready";
+  DOM.systemStatusLabel.textContent =
+    status === "stopped" ? "Halted" : (failed ? "Run Failed" : "Ready");
 
   // A run that rewrote the interface should not leave a stale one on screen. The preview
   // only reads the file from disk, so re-reading it can never be wrong, whatever the run
@@ -8638,7 +8601,9 @@ function finalizeWorkflow(status) {
     refreshPreview();
   }
 
-  showToast(status === "stopped" ? "Task halted by user" : "Task concluded successfully!", status === "stopped" ? "info" : "success");
+  if (status === "stopped") showToast("Task halted by user", "info");
+  else if (failed) showToast("The run failed \u2014 see the console for details.", "error");
+  else showToast("Task concluded successfully!", "success");
   // The run is over, which is a fact the bento header's live tile states.
   if (typeof updateBentoStats === "function") updateBentoStats();
 }
@@ -8716,15 +8681,28 @@ function closeNormalizeGateModal() {
   DOM.normalizeGateModalOverlay.style.display = "none";
 }
 
-// Fire-and-forget, like the action buttons: the backend workflow streams its progress as
-// normal agent events and emits plan_updated when it rewrites the file.
-function handleNormalizeGateConfirm() {
+// The normalize workflow is a real run (normalize_plan -> start_execution), so it arms the run
+// lock and Stop like any other launch -- it used to bypass both, letting a second action stop
+// it mid-write while the UI showed no run at all (audit M2/H7). Progress still streams as
+// normal agent events.
+async function handleNormalizeGateConfirm() {
   closeNormalizeGateModal();
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.normalize_plan) {
-    showToast("Formatting plan via Architect...", "info");
-    window.pywebview.api.normalize_plan();
-  } else {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.normalize_plan !== "function") {
     showToast("Formatting is available in the desktop app window", "info");
+    return;
+  }
+  if (state.isExecuting) {
+    showToast("A run is already in progress.", "info");
+    return;
+  }
+  showToast("Formatting plan via Architect...", "info");
+  beginRunUi();
+  try {
+    const res = await api.normalize_plan();
+    if (res && res.success === false) abortRunUi(res.error || "A run is already in progress.");
+  } catch (err) {
+    abortRunUi(`Could not format the plan: ${(err && err.message) || err}`);
   }
 }
 
@@ -8756,13 +8734,27 @@ function renderExistingPlansList() {
     chip.textContent = planName;
     chip.addEventListener("click", async () => {
       closeSwitchPlanModal();
-      if (window.pywebview && window.pywebview.api) {
-        const res = await window.pywebview.api.set_active_plan(planName);
+      const api = window.pywebview && window.pywebview.api;
+      if (!api) return;
+      if (state.isExecuting) {
+        showToast("A run is in progress; switch plans after it finishes.", "info");
+        return;
+      }
+      // Mirrors switchActivePlan: the await needs a try/catch, or a rejection is silent and
+      // the switch just does not happen (audit M1).
+      try {
+        const res = await api.set_active_plan(planName);
+        if (res && res.error) {
+          showToast(res.error, "error");
+          return;
+        }
         applyPlanData(res);
         showToast(`Switched active plan to: ${planName}`, "success");
         // The gate is advisory and read-only: it only opens a modal when the file it just
         // switched to cannot be read as a milestone plan.
         checkPlanStructureGate(planName);
+      } catch (err) {
+        showToast(`Could not switch plan: ${(err && err.message) || err}`, "error");
       }
     });
     DOM.existingPlansList.appendChild(chip);
@@ -8929,11 +8921,18 @@ function closePromptEditor() {
   document.querySelectorAll(".agent-list-item").forEach((el) => el.classList.remove("active-agent"));
 }
 
+// The gutter is rebuilt only when the line count changes: identical counts produce identical
+// numbers, so re-rendering it on every keystroke was wasted work (audit M11).
+let lastEditorLineCount = -1;
+
 function updateEditorMetrics() {
   const text = DOM.txtSystemPrompt.value;
   const lines = text.split("\n");
   DOM.promptCharCount.textContent = `${text.length} chars • ${lines.length} lines`;
-  DOM.editorLineNumbers.innerHTML = lines.map((_, i) => i + 1).join("<br>");
+  if (lines.length !== lastEditorLineCount) {
+    lastEditorLineCount = lines.length;
+    DOM.editorLineNumbers.innerHTML = lines.map((_, i) => i + 1).join("<br>");
+  }
 }
 
 async function saveCurrentSystemPrompt() {
@@ -8941,6 +8940,9 @@ async function saveCurrentSystemPrompt() {
   const agentId = state.activeAgentForEditor.id;
   const newPrompt = DOM.txtSystemPrompt.value;
 
+  // Disable while in flight so a double-click cannot issue two writes (audit M10).
+  const btn = DOM.btnSavePrompt;
+  if (btn) btn.disabled = true;
   try {
     let res;
     if (window.pywebview && window.pywebview.api) {
@@ -8958,6 +8960,8 @@ async function saveCurrentSystemPrompt() {
     }
   } catch (err) {
     showToast(`Error saving prompt: ${err.message}`, "error");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
   </script>
@@ -8976,6 +8980,8 @@ async function openWorkspaceFilesModal() {
       const info = await window.pywebview.api.get_workspace_info();
       files = info.files || [];
     } catch (e) {
+      // A failed read must not render as "No files in workspace yet." (audit H11).
+      showToast(`Could not read the workspace: ${(e && e.message) || e}`, "error");
       files = [];
     }
   } else {
@@ -9280,7 +9286,6 @@ async function handleConfirmRollback() {
       const step = state.planTree.find(t => t.id === taskId);
       if (step) step.status = "pending";
       renderPlanTree();
-      updateNextStepButtonPreview();
       res = { success: true };
     }
 
@@ -9347,6 +9352,10 @@ function handleAgentEvent(event) {
       break;
 
     case "delegation":
+      // The architect is handing off rather than thinking: while the coder works, only the coder
+      // pulses. The architect's pulse stops here and resumes on coder_summary, when it takes the
+      // work back for verification.
+      setAgentThinking(event.from_agent || "software-architect", false);
       triggerDelegationAnimation(event.target_agent, event.target_name);
       break;
 
@@ -9360,6 +9369,9 @@ function handleAgentEvent(event) {
       DOM.coderStatusBadge.textContent = "Completed";
       DOM.coderStatusBadge.className = "status-badge coder-status completed";
       setAgentThinking(event.agent, false);
+      // The coder is done and the architect takes the work back to verify it, so the main agent's
+      // pulse resumes for that window (cleared again on architect_summary).
+      setAgentThinking("software-architect", true);
       break;
 
     case "architect_summary":
@@ -9418,6 +9430,8 @@ function handleAgentEvent(event) {
       // The tree re-renders from the separate plan_updated event, so this only reports
       // the outcome of the pass itself.
       hideTaggingPanel();
+      // The pass is over, so the trigger is usable again (audit M10).
+      if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = false;
       if (event.success) {
         const changed = Array.isArray(event.changed) ? event.changed : [];
         // The word list is the fallback, not the intended engine: re-tagging with it only
@@ -9458,7 +9472,10 @@ function handleAgentEvent(event) {
       // The result view is the point of the run, so what the action produced is mounted
       // here -- except after a halt, where the output is partial and "Halted" is the
       // answer the user asked for, so the transcript stays the surface instead.
-      if (event.status !== "stopped" && typeof mountResultView === "function") {
+      // Only a clean finish mounts the result view. A halt resolved to the transcript, and
+      // a crashed run resolved to the error it reported, so neither has a result to show
+      // (audit H3).
+      if (event.status === "finished" && typeof mountResultView === "function") {
         mountResultView();
       }
       break;
@@ -10960,8 +10977,16 @@ async function switchActivePlan(planName) {
     showToast("Switching plans needs the desktop app; this view is read-only.", "info");
     return;
   }
+  if (state.isExecuting) {
+    showToast("A run is in progress; switch plans after it finishes.", "info");
+    return;
+  }
   try {
     const res = await api.set_active_plan(planName);
+    if (res && res.error) {
+      showToast(res.error, "error");
+      return;
+    }
     applyPlanData(res);
     showToast(`Switched active plan to: ${planName}`, "success");
     checkPlanStructureGate(planName);
@@ -11211,8 +11236,11 @@ async function refreshEnvironmentVariables() {
   try {
     const res = await window.pywebview.api.get_environment_variables();
     renderEnvironmentVariables((res && res.variables) || []);
-  } catch (_err) {
+  } catch (err) {
+    // A read failure must not render as the empty state -- "No environment variables are
+    // configured." is indistinguishable from a real failure with no signal (audit H9).
     renderEnvironmentVariables([]);
+    showToast(`Could not read environment variables: ${(err && err.message) || err}`, "error");
   }
 }
 
@@ -11331,6 +11359,9 @@ async function saveSettingsFromForm() {
     return;
   }
   setSettingsStatus("Saving\u2026");
+  // Disable while in flight so a double-click cannot issue two saves (audit M10).
+  const btn = DOM.btnSaveSettings;
+  if (btn) btn.disabled = true;
   try {
     const res = await window.pywebview.api.save_settings(collectSettingsValues());
     renderSettings(res);
@@ -11342,6 +11373,8 @@ async function saveSettingsFromForm() {
     }
   } catch (_err) {
     setSettingsStatus("The settings could not be saved.", "error");
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -11495,6 +11528,7 @@ function initCommandPalette() {
 // The two code actions also ask the backend to run the test file the task wrote
 // (run_task_tests), so their pass/fail strip is a real verdict instead of a guess.
 //   update_plan -> state.planTreeBeforeUpdate vs state.planTree (captured in plan_updated)
+//         plus a one-click revert of the revision the run already saved
 //   analyze     -> summary.files + summary.deliverables   (no complexity/security metrics exist)
 //   recommend   -> summary.proposals                      (one card per proposal)
 //   custom      -> nothing; the plain stream is the answer
@@ -11894,10 +11928,7 @@ function renderPlanUpdateResult(kind, token) {
   if (counted === 0) {
     DOM.resultBody.innerHTML = `
       <div class="result-note">The roadmap's tasks are unchanged; only the surrounding text may differ.</div>
-      <div class="result-plan-footer">
-        <span class="result-pill result-pill-ok">Applied to ${escapeHtml(state.activePlan || "PLAN.md")}</span>
-        <button class="result-action" data-result-action="view-plan" type="button">View in workbench</button>
-      </div>
+      ${planUpdateFooterHtml()}
     `;
     return;
   }
@@ -11918,8 +11949,19 @@ function renderPlanUpdateResult(kind, token) {
            </section>`
         : ""}
     </div>
+    ${planUpdateFooterHtml()}
+  `;
+}
+
+// Update Plan writes the plan as the run finishes, so there is nothing left to "approve" -- the
+// write has already happened by the time this renders. The honest control is an undo, and the
+// note says so, so the button's effect matches its label. The plan is only touched on the click.
+function planUpdateFooterHtml() {
+  return `
+    <div class="result-note">This revision is already saved. "Revert Changes" restores the roadmap to the state before this run.</div>
     <div class="result-plan-footer">
       <span class="result-pill result-pill-ok">Applied to ${escapeHtml(state.activePlan || "PLAN.md")}</span>
+      <button class="result-action" data-result-action="revert-plan" type="button">Revert Changes</button>
       <button class="result-action" data-result-action="view-plan" type="button">View in workbench</button>
     </div>
   `;
@@ -12030,9 +12072,9 @@ function renderAnalyzeResult(kind, token) {
 
 // --- Recommend: one actionable card per proposal ---------------------------
 // The proposals already existed as a plain <ul> in the architect's summary. As cards with
-// an action they become the interactive objects they are: each one can be turned into a
-// real plan revision through the existing update_plan flow, which is the only plan-editing
-// endpoint the bridge has.
+// an action they become the interactive objects they are: each one is a real plan mutation
+// through the bridge's add_plan_task endpoint, which appends the proposal as a pending task
+// and saves it -- one click, no confirm step, because the click is the confirmation.
 function renderRecommendResult(kind, token) {
   const summary = state.lastSummary || {};
   const proposals = (summary.proposals || []).filter(Boolean);
@@ -12066,7 +12108,7 @@ function renderRecommendResult(kind, token) {
              <ul class="result-list">${findings.map((f) => `<li>${escapeHtml(f)}</li>`).join("")}</ul>
            </section>`
         : ""}
-      <div class="result-note">"Add to Plan" opens the Update Plan command with this proposal as its directive; the plan changes only when you confirm it.</div>
+      <div class="result-note">"Add to Plan" appends this proposal to the active plan as a pending task and saves it \u2014 the click is the confirmation, so there is no second step.</div>
     </div>
   `;
 }
@@ -12094,11 +12136,65 @@ function handleResultViewClick(event) {
   if (action === "add-to-plan") {
     const directive = String(value).trim();
     if (!directive) return;
-    closeResultView();
-    // Routed through the existing Update Plan command rather than a new endpoint: the
-    // drawer is where a plan change is confirmed, and this prefills it with the proposal.
-    openActionDrawer("update_plan", { prefill: `Add this to the plan: ${directive}` });
+    addRecommendationToPlan(directive, button);
     return;
+  }
+  if (action === "revert-plan") {
+    revertPlanUpdate(button);
+    return;
+  }
+}
+
+// One click, one real mutation: the bridge appends the proposal as a pending task and
+// persists it through the ordinary save_plan_state + plan_updated funnel, so the tree,
+// the workbench and the progress meter refresh from it like any other plan write. The
+// button disables while the write is in flight, then reads "Added" rather than inviting a
+// second click that would add the same task twice.
+async function addRecommendationToPlan(directive, button) {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.add_plan_task !== "function") {
+    showToast("Adding to the plan needs the desktop app; this view is read-only.", "info");
+    return;
+  }
+  if (button) button.disabled = true;
+  try {
+    const res = await api.add_plan_task(directive);
+    if (res && res.success) {
+      if (button) button.textContent = "Added";
+      showToast(`Added to ${res.filename || "the plan"} as a pending task.`, "success");
+    } else {
+      if (button) button.disabled = false;
+      showToast((res && res.error) || "Could not add the task.", "error");
+    }
+  } catch (err) {
+    if (button) button.disabled = false;
+    showToast(`Could not add the task: ${err}`, "error");
+  }
+}
+
+// The counterpart of "Add to Plan": a real mutation, in the opposite direction. The run has
+// already written the plan, so reverting restores the snapshot the backend took immediately
+// before that write. The button disables while the round-trip is in flight, then reads
+// "Reverted" rather than inviting a second click that would roll the plan back twice.
+async function revertPlanUpdate(button) {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || typeof api.revert_plan_update !== "function") {
+    showToast("Reverting needs the desktop app; this view is read-only.", "info");
+    return;
+  }
+  if (button) button.disabled = true;
+  try {
+    const res = await api.revert_plan_update();
+    if (res && res.success) {
+      if (button) button.textContent = "Reverted";
+      showToast("Roadmap restored to its previous revision.", "success");
+    } else {
+      if (button) button.disabled = false;
+      showToast((res && res.error) || "Could not revert the revision.", "error");
+    }
+  } catch (err) {
+    if (button) button.disabled = false;
+    showToast(`Could not revert the revision: ${err}`, "error");
   }
 }
 
@@ -12298,19 +12394,35 @@ function initEventListeners() {
   });
 
   // Retry buttons
-  on(DOM.btnRetryArchitect, "click", () => {
-    DOM.architectErrorBadge.style.display = "none";
-    if (window.pywebview && window.pywebview.api) {
-      window.pywebview.api.retry_execution("software-architect", state.pendingPrompt);
-    }
-  });
-
-  on(DOM.btnRetryCoder, "click", () => {
-    DOM.coderErrorBadge.style.display = "none";
-    if (window.pywebview && window.pywebview.api) {
-      window.pywebview.api.retry_execution("coder", state.pendingPrompt);
-    }
-  });
+  // Retry starts a real workflow (retry_execution -> start_execution), so it arms the same
+  // lock a normal launch does, disables itself while in flight, and surfaces a refusal or a
+  // rejection. The fire-and-forget version left unhandled rejections and could queue runs
+  // with no Stop ever shown (audit H7).
+  const wireRetry = (btn, badge, agentId) => {
+    on(btn, "click", async () => {
+      if (badge) badge.style.display = "none";
+      if (!(window.pywebview && window.pywebview.api)) {
+        showToast("Retry is available in the desktop app window", "info");
+        return;
+      }
+      if (state.isExecuting) {
+        showToast("A run is already in progress.", "info");
+        return;
+      }
+      btn.disabled = true;
+      beginRunUi();
+      try {
+        const res = await window.pywebview.api.retry_execution(agentId, state.pendingPrompt);
+        if (res && res.success === false) abortRunUi(res.error || "A run is already in progress.");
+      } catch (err) {
+        abortRunUi(`Retry failed: ${(err && err.message) || err}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  };
+  wireRetry(DOM.btnRetryArchitect, DOM.architectErrorBadge, "software-architect");
+  wireRetry(DOM.btnRetryCoder, DOM.coderErrorBadge, "coder");
 
   // Prompt Editor Navigation
   on(DOM.btnBackToChat, "click", closePromptEditor);
@@ -12333,15 +12445,18 @@ function initEventListeners() {
   on(DOM.tabSidebarFiles, "click", () => setSidebarTab("files"));
   on(DOM.tabSidebarEnv, "click", () => setSidebarTab("env"));
 
-  // Files: the top bar opens the sidebar's Files tab; the modal is reached from the tab's own
-  // expand button (it stays in the DOM, it is just no longer the primary entry point).
-  on(DOM.btnNavFiles, "click", openFilesTab);
+  // Files: the modal is reached from the sidebar Files tab's own expand button (it stays in the
+  // DOM, it is just not the primary entry point).
   on(DOM.btnExpandFilesModal, "click", openWorkspaceFilesModal);
   if (DOM.btnCloseFilesModal) DOM.btnCloseFilesModal.addEventListener("click", closeWorkspaceFilesModal);
   if (DOM.btnCloseFilesModalFooter) DOM.btnCloseFilesModalFooter.addEventListener("click", closeWorkspaceFilesModal);
   if (DOM.inputSearchWorkspaceFiles) {
+    let filterTimer = null;
     DOM.inputSearchWorkspaceFiles.addEventListener("input", (e) => {
-      renderFilteredWorkspaceFiles(e.target.value);
+      // Debounced: this re-filters and re-renders up to 250 rows per keystroke (audit M11).
+      clearTimeout(filterTimer);
+      const value = e.target.value;
+      filterTimer = setTimeout(() => renderFilteredWorkspaceFiles(value), 150);
     });
   }
   if (DOM.filesModalOverlay) {
@@ -12454,7 +12569,15 @@ function checkAllCardsClosed() {
 function handleRetagUiClick() {
   showTaggingPanel();
   if (window.pywebview && window.pywebview.api) {
-    window.pywebview.api.retag_plan_with_laya();
+    // The pass returns at once and streams laya_tagging_* events; the button is disabled
+    // until the done event so a second click cannot start a second pass, and a rejected
+    // call re-enables it rather than leaving a permanent spinner (audit M10/B1.2).
+    if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = true;
+    window.pywebview.api.retag_plan_with_laya().catch((err) => {
+      if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = false;
+      hideTaggingPanel();
+      showToast(`Re-tagging failed: ${(err && err.message) || err}`, "error");
+    });
   } else {
     showToast("Re-tagging is available in the desktop app window", "info");
   }

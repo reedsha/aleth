@@ -79,8 +79,11 @@ async function refreshEnvironmentVariables() {
   try {
     const res = await window.pywebview.api.get_environment_variables();
     renderEnvironmentVariables((res && res.variables) || []);
-  } catch (_err) {
+  } catch (err) {
+    // A read failure must not render as the empty state -- "No environment variables are
+    // configured." is indistinguishable from a real failure with no signal (audit H9).
     renderEnvironmentVariables([]);
+    showToast(`Could not read environment variables: ${(err && err.message) || err}`, "error");
   }
 }
 
