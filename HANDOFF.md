@@ -77,6 +77,8 @@ deepagents/
 │   │                          #   Global State Summary, [UI] detection, deliverables
 │   ├── plan_state.py          # Dual-sync: plan.json <-> the active markdown plan
 │   ├── recovery.py            # Backups, codebase/plan audit, sync resolution, rollback
+│   ├── code_metrics.py        # Static source metrics (complexity, security) for Analyze
+│   ├── test_runner.py         # Runs the test a task wrote; the result view's real verdict
 │   ├── workspace.py           # Project dir + active-plan pointer (process-wide state)
 │   ├── shell_tools.py         # Full shell (Coders) + restricted shell (Architect)
 │   └── build_ui_bundle.py     # Inlines ui/js/*.js + ui/css/*.css into ui/index.html
@@ -430,32 +432,32 @@ plan as a read/write document:
 - Rollback asks for confirmation through the rollback modal; a task with no recorded
   edits reports "This task has recorded no file edits."
 
-### 4. Bottom Dock — 240px default, resizable (minimum 160px)
+### 4. Bottom Dock — 240px when the console is shown, resizable (floor 120px)
 
-Anchored flush above nothing and below the centre pane — no longer a floating island.
+Anchored flush below the centre pane — no longer a floating island.
 Pane order is load-bearing:
 
 ```
 #dockResizeHandle  ->  #actionControlPanelContainer  ->  #dockLogs
-                         └── #actionDockCard              ├── .console-bar (title + Clear)
-                             ├── .action-buttons-grid     └── #consoleStream
-                             ├── #actionDrawerPanel  (the open action's parameter form,
-                             │                        flush under the strip, and the dock
-                             │                        raises its own floor while it is open)
-                             └── .action-dock-bottom-row  (status pill, progress, Stop)
+                         ├── #actionPanelLockOverlay      ├── .console-bar (title + actions)
+                         └── #actionDockCard              └── #consoleStream
+                             └── #actionDrawerPanel  (the open action's parameter form;
+                                                      the dock raises its own floor while
+                                                      it is open)
 ```
 
-- **Action toolbar:** six flat, squared buttons with monochrome SVG icons — `Fix Bug`,
-  `Execute Next Step` (primary), `Update Plan`, `Analyze Code`, `Recommend`,
-  `Custom Action`. Each opens the **command drawer**: a pane of the dock, not an overlay.
-  It is `display:none` at rest and `.bottom-dock.drawer-open` reveals it, while the dock's
-  own `min-height` (240 + the drawer's 184) keeps the console the size it had. Re-clicking
-  the same button folds the drawer away without clearing what was typed into it.
-- **Status row:** the read-only `Active Plan:` pill, the dock progress pill, and the
-  `Stop Task` button (hidden at rest).
-- The dock is a CSS **container** (`container-type: inline-size`); under 700px of
-  container width the button labels are hidden and only the icons remain. This is why
-  collapsing a side pane must produce a real width change.
+- **Action entry point:** the command palette (Ctrl/Cmd+K) or the top bar's `Commands`
+  button. The six-button intent strip was a permanent ~90px tax on the dock; it is gone
+  (Wave 4) and the palette opens the **command drawer** instead — a pane of the dock, not an
+  overlay. It is `display:none` at rest; `.bottom-dock.drawer-open` reveals it.
+- **No status row.** Wave 7 retired the read-only `Active Plan:` pill and the dock progress
+  pill (the top bar already showed the plan) and moved the completion figure and `Stop Task`
+  into the top status bar; the console toggle is at the foot of the right rail. With no drawer
+  open the dock head is `display:none`, so at idle the dock is just its top border — unless the
+  plan-lock notice is up, which is the one thing that still gives the head height.
+- The dock is a CSS **container** (`container-type: inline-size`); the command drawer reflows
+  by container width (`@container (max-width: 860px)` drops the subtitle, `620px` stacks the
+  body). This is why collapsing a side pane must produce a real width change.
 
 ### 5. Modals
 
