@@ -1090,6 +1090,280 @@ chips (asserting nothing is invented), the progress badge + bar width, and the t
 
 ---
 
+### Go 12 — Final visual-pass corrections: top-bar trim + agent pulse (**landed**)
+
+The post–Wave-7 visual pass produced four items; two became code here, one was an explanation
+request, one was declined.
+
+**Top bar, two removals.** Both were duplicate homes, not features:
+
+- **`#txtTopProgress`** — the completion figure's third home (Go 7 moved it up here beside the plan
+  badge; the workbench's pinned bento `#bentoProgressTile` is the other). Removed with the by-now
+  standard four edits: the markup span, its `dom.js` line, the `if (DOM.txtTopProgress)` write in
+  `updateProgressMeter()`, and the dead `.top-progress-pill` rule in `ui/css/stage.css`.
+- **`#btnNavFiles`** — the top bar's "Files" button. The left sidebar's `#tabSidebarFiles` is the
+  primary entry to that tab and the tab's own `#btnExpandFilesModal` still opens the modal, so the
+  button was a third route to the same place. Its handler was `openFilesTab()`; the **function stays**
+  (it is still called by the "reveal-file" action in `ui/js/result-view.js`), only the button, its
+  `dom.js` line and its `wire.js` binding went.
+
+**Kept deliberately.** The `Ready` / active-plan pill (`#systemStatusPill` + `#topActivePlanBadge`) is
+ the app's only global readout, and **Stop** (`#btnStopRun`) must stay reachable while a run is in
+ flight — trimming the bar must not hide the way to halt it.
+
+**Agent pulse semantics** (`ui/js/agent-events.js`). The sidebar thinking dot previously stayed lit on
+ the architect straight through a delegation. Now:
+
+- `delegation` clears the architect's `.thinking` (`event.from_agent`), so **only the coder pulses**
+  while the coder works;
+- `coder_summary` clears the coder and **re-marks the architect**, which takes the work back to verify
+  it, before `architect_summary` clears it for good.
+
+**Reading implemented:** *the main agent pulses while it is working, stops while it is delegated, and
+ resumes to verify.* The literal alternative — the architect stays dark from delegation to the end —
+ is one line, but the architect genuinely works in the `coder_summary` → `architect_summary` window, so
+ the resume is the faithful reading. Flagged here so it is a one-line reversal if the strict "only the
+ coder pulses once delegated" reading was the intent.
+
+Gates after Go 12: contract **ALL CHECKS PASSED** (23 classes, 211 ids, 84 listeners) · bundle
+ `--check` up to date (21 modules, 19 stylesheets) · **378 tests OK** (unchanged) · div balance
+ **236/236**.
+
+**Eyeball checklist.**
+
+- The top bar reads `Ready` · the active-plan pill · (Stop, only mid-run) on the left, and `Commands` ·
+  `Preview` on the right. No `n/m (pct%)` and no `Files` button.
+- The completion figure is still visible — in the workbench bento progress tile, which never scrolls.
+- The Files tab is still one click away in the left sidebar, and "reveal-file" in a result view still
+  jumps to it.
+- During a run: the main agent's dot pulses, **stops** the moment it delegates (only the coder's pulses
+  then), and pulses again for verification.
+
+**Open, offered not taken.**
+
+- The "Approve Changes" control from the 2ND-pass polymorphic spec was **not built**, and does not
+  need to be: `PLAN.md` is written by the backend *before* `plan_updated` reaches the UI, so the change
+  is already saved by the time the result renders and an approve button could only be theatre. ("Add to
+  Plan", by contrast, **does** exist — see **Go 13**, where it became a real endpoint rather than the
+  drawer router it was when this was written.) Recorded so the omission is a decision, not an
+  oversight.
+- `HANDOFF.md` §9/§10 remain stale; the user said **"leave it for now."**
+
+---
+
+### Go 13 — A real "Add to Plan": the `add_plan_task` endpoint (**landed**)
+
+The 2ND-pass polymorphic spec asked for each Architect recommendation to be its own card with a
+one-click **"Add to Plan"**. Go 6 wired the button to the Update Plan drawer as a *router* — the
+proposal was prefilled and the change only happened on confirm. That is two steps behind a one-click
+label, so this go gives the button the real endpoint it implies.
+
+**The endpoint.** `BridgeAPI.add_plan_task(title)` (`app.py`) validates a non-empty title, appends the
+proposal to the active plan as a **pending** task, saves it through the ordinary `save_plan_state` +
+`compile_plan_json_to_markdown` funnel, and emits a single `plan_updated`. That is the same write any
+other plan edit makes, so the tree, the workbench bento and the progress meter all re-derive from it
+with no new wire type.
+
+**One shape, two callers.** The task's structure moved into `tools.plan_state.append_pending_task()`,
+shared by the new endpoint and the Architect's existing **Update Plan** admin bypass
+(`orchestration/workflow/actions_admin.py`): same id scheme (`task-{n}`), same `sec-1`/"General"
+fallback for an empty plan, same `details`/`files` shape. The `tag` is *passed in*, because the `[UI]`
+inference (`agents.laya.inferred_ui`) lives a layer up and importing it at `app.py` module scope would
+close an import cycle — so it is imported and called at the call site.
+
+**Frontend.** `ui/js/result-view.js`'s card note now states the truth ("the click is the confirmation,
+so there is no second step"), and `addRecommendationToPlan()` awaits the endpoint, disables the button
+while the write is in flight, then reads **"Added"** so a second click cannot add the task twice. The
+`openActionDrawer()` `prefill` hook it used to ride is kept, but its comment now says no caller uses it
+rather than naming a router that no longer exists.
+
+Gates after Go 13: contract **ALL CHECKS PASSED** (23 classes, 211 ids, 84 listeners) · bundle
+`--check` up to date (21 modules, 19 stylesheets) · **383 tests OK** (+5) · div balance **236/236**.
+The five new tests: three for `append_pending_task` (last-section append, the empty-plan General
+fallback, a `None` note) and two for the endpoint (a pending task added with exactly one
+`plan_updated`; a blank title failing and writing nothing).
+
+**Eyeball checklist.**
+
+- In a Recommend result, a card's **"Add to Plan"** puts the proposal into the plan tree at once;
+  the button then reads **"Added"** and the plan tree / progress meter tick up.
+- The card's footnote says the click is the confirmation — **no drawer** opens.
+
+**Open, offered not taken.**
+
+- **"Approve Changes"** is still not built; it needs a *decision*, not just code. Two shapes were
+  offered: **(a)** split `update_plan_action` into propose → review → commit (the run ends "Awaiting
+  Approval", Approve reuses `save_plan_json`, and a new `plan_proposed` event is needed — which
+  **reverses** `test_update_plan_action_event_sequence`), or **(b)** keep the auto-commit and make
+  Approve a real *revert-to-before*. Not built unprompted. **(Resolved in Go 14 — the user chose (b).)**
+
+---
+
+### Go 14 — "Approve Changes", answered as an honest revert (**landed**)
+
+The 2ND-pass spec asked for an **"Approve Changes"** button beside the roadmap tree diff. Go 12
+explained why a literal Approve would be theatre: `PLAN.md` is written by the backend *before*
+`plan_updated` reaches the UI, so by the time the diff renders the change is already saved and an
+"approve" could only pretend to gate it. Two shapes were offered, and the user chose **(b)** — keep
+the auto-commit, and make the control a real **revert-to-before**. That is the honest reading: the
+button is an **Undo**, and it is labelled as one.
+
+**Snapshot, then revert.** `tools/recovery.py` gained a single whole-plan "before" slot
+(`.deepagents_backups/plan_revision/`):
+
+- `snapshot_plan_revision()` copies the current `plan.json` + markdown into the slot. It returns
+  `False` (never raises) when there is no plan on disk to capture, so a first-ever revision with no
+  prior state cannot be failed by its own safety net.
+- `revert_plan_revision()` restores it through `save_plan_state` — not a raw file copy — so the
+  restored state passes the same canonicalisation and metric recomputation as every other write, and
+  the markdown is recompiled from it rather than trusted as-is. Nothing captured ⇒ a clean refusal.
+
+The slot is distinct from the per-task deliverable backups: those reverse a *task*'s file edits,
+this reverses the *roadmap document*. It is inside `.deepagents_backups/`, which is already pruned
+from the file listing and the audit, so the snapshot never shows up as an untracked file.
+
+**Where the snapshot is taken.** `update_plan_action()` (`orchestration/workflow/actions_admin.py`)
+captures it immediately before `save_plan_state`, and only when `updated` is true — that is the last
+moment the pre-revision plan is still on disk, and a no-op run therefore does not overwrite a
+genuinely-earlier revision with an identical copy of itself.
+
+**The endpoint.** `BridgeAPI.revert_plan_update()` (`app.py`) restores the slot and announces it with
+the usual single `plan_updated`, so the tree, the workbench bento and the progress meter re-derive
+with no new wire type — the same contract `add_plan_task` uses.
+
+**Frontend.** `renderPlanUpdateResult()` (`ui/js/result-view.js`) grew a shared `planUpdateFooterHtml()`
+carrying the existing "Applied to …" pill, a **"Revert Changes"** button (`data-result-action="revert-plan"`)
+and "View in workbench". The footer states the truth — *"This revision is already saved. \"Revert
+Changes\" restores the roadmap to the state before this run."* — so the button's effect matches its
+label. `revertPlanUpdate()` disables the button while the round-trip is in flight, then reads
+**"Reverted"**, mirroring `addRecommendationToPlan()`.
+
+Gates after Go 14: contract **ALL CHECKS PASSED** (23 classes, 211 ids, 84 listeners) · bundle
+`--check` up to date (21 modules, 19 stylesheets) · **388 tests OK** (+5) · div balance **236/236**.
+The five new tests: three for the snapshot/revert helpers (a round-trip that restores the prior
+revision, a refusal with no snapshot, and "nothing captured" on an empty plan) and two bridge tests
+for `revert_plan_update` (a revision undone with exactly one `plan_updated`; no snapshot ⇒ failure
+and no event). The pinned `test_update_plan_action_event_sequence` still passes unchanged — the
+snapshot writes a file, not a wire event.
+
+**Why (a) was declined.** The propose→commit split is the literal "Approve", but it reverses a pinned
+wire contract (`test_update_plan_action_event_sequence` pins `plan_updated` on this path) and changes
+what a finished run *means* (from "done" to "awaiting approval"). The user preferred the smaller
+honest control, and the button says what it does.
+
+**Eyeball checklist.**
+
+- An Update Plan result shows the tree diff, the note that the revision is already saved, and a
+  **"Revert Changes"** button.
+- Clicking it restores the previous roadmap — the added tasks disappear, removed ones return — the
+  button reads **"Reverted"**, and the workbench tree / progress meter follow.
+- Clicking it on a run that captured no prior plan (a brand-new plan's first revision) reports that
+  there is nothing to restore and changes nothing.
+
+**Open, offered not taken.**
+
+- The snapshot slot is **one deep**: a second revision supersedes the ability to revert the first.
+  A revision *stack* (undo/redo history) would be a larger feature; noted, not built.
+- `HANDOFF.md` §9/§10 remain stale; the user said **"leave it for now."**
+
+---
+
+### Go 15 — Pre-launch audit: false successes, the run lock, and silent failures (**landed**)
+
+An exhaustive audit was run against five criteria (frontend/backend parity, end-to-end data
+flow, user flows, robustness/error handling, edge cases/concurrency), adapted to the real
+architecture: this is a pywebview desktop app with no HTTP server, auth, billing or database, so
+"database" is the plan/workspace on disk and "route guards" are the run lock and plan-switch
+preconditions. Every Critical/High finding was verified by reading the code before it was fixed.
+
+The fixes landed in three layers.
+
+**Layer 1 — the backend's false successes.**
+
+- **C1 — `custom_action` ignored its own verification.** `v_res` was computed and never read, so a
+  custom directive that wrote broken code still reported *"Verified & Approved / Syntax verified
+  clean"*. The verdict now comes from `command_failed(v_res)`, mirroring `next_step_action`.
+- **C2 — `save_plan_state` reported success for a failed write.** The two `except: print(...)`
+  blocks swallowed the failure and returned the dict, so every caller emitted `plan_updated` for
+  state the disk never received. It now raises `PlanWriteError` (exported through the façade); the
+  runner turns that into `agent_error` + a terminal `workflow_complete`, and the tagger's existing
+  guard turns it into `laya_tagging_done{success:false}`.
+- **H1 — `write_file.invoke` results were ignored.** `file_ops.write_file` returns an error
+  *string* rather than raising, so a failed write still narrated "Successfully patched" and
+  completed the task. A new `_write_checked()` guard (used at all six call sites) raises instead,
+  and the runner aborts the action before a false verdict is recorded.
+- **H2 — the fix-bug gate could not fail.** `fix_failed` only counted `verdict == "failed"`, but a
+  regression suite that cannot be collected (the canned suite imports a symbol the target need not
+  define) reports `"error"`. `"error"` now counts as failure.
+
+**Layer 2 — the wire.**
+
+- **H3 — a crashed run was reported as success.** `workflow_complete{status:"error"}` fell into the
+  "not stopped ⇒ Ready + *Task concluded successfully!*" branch and even mounted a result view.
+  `finalizeWorkflow` now branches on `status`: **Halted** / **Ready** / **Run Failed** (red dot,
+  error toast), and only `status === "finished"` mounts the result view.
+- **H4 — `workflow_stopped` carried no `status`,** so `finalizeWorkflow(event.status)` read it as
+  undefined and the console printed `exit done`. The payload now carries `"status": "stopped"`.
+
+**Layer 3 — the run lock and the silent failures.**
+
+- **H5/H6 — a server-authoritative run lock.** `start_execution` now *refuses* while a run is live
+  (`{success:false, error:"A run is already in progress."}`) instead of asking the old run to stop
+  and joining for one second; `set_active_plan` refuses too, since a live run writes the plan it
+  captured at start over whatever file is active at save time. A new `get_run_state()` is read on
+  boot so a reload mid-run re-arms Stop and the lock instead of showing "Idle".
+- **H7/M2 — retry and normalize arm the same lock.** Both start real workflows; they now use
+  extracted `beginRunUi()` / `abortRunUi()` helpers, disable their button in flight, and surface a
+  refusal or a rejection (the old handlers were fire-and-forget with unhandled rejections).
+- **H9/H10/H11 — failures no longer look like empty states.** `env.js` and the files modal toast on
+  a failed read instead of rendering "No environment variables…" / "No files in workspace yet.",
+  and a failed Stop toasts instead of `console.error` (invisible with `debug=False`).
+- **M1, M3, M4, M9, M10, M11, M12** — the switcher's `set_active_plan` gained the try/catch its
+  sibling already had; the offline rollback's call to the removed `updateNextStepButtonPreview()`
+  is gone; the analyze syntax check uses `command_failed` (its "clean" branch was unreachable);
+  `?demo=1` is matched properly instead of by substring; Save Prompt / Save Settings / re-tag are
+  disabled while in flight; the file search is debounced and the prompt gutter only redraws when
+  the line count changes; `append_pending_task` writes the parser's full task shape.
+- **M13 — the dead Confirm modal removed** (markup in `ui/index.html` + its `.confirm-*` /
+  `.preview-*` CSS: `0` JS references, not even cached in `dom.js`).
+- **H8 (partial) — the bug attachment now reaches the diagnosis.** The attachment's *name* was only
+  a truthiness gate. The drawer now reads the file's text (capped at 8000 chars) into
+  `bugAttachmentContent`, and `fix_bug_action` injects it into the Coder's `context_text` — no new
+  narration line, so the pinned event stream is unchanged. A binary/image file still yields `""`
+  and remains a named reference only (true image vision is **not** implemented; offered below).
+
+Gates after Go 15: contract **ALL CHECKS PASSED** (23 classes, 211 ids, 84 listeners) plus three
+new checks (errored/halted labels, the revert button) · bundle `--check` up to date (21 modules,
+19 stylesheets) · **398 tests OK** (+10) · div balance **230/230** (down from 236 — six balanced
+`<div>`s went with the dead modal).
+
+**Eyeball checklist.**
+
+- A custom directive that writes broken code shows **Verification Failed**, not "Verified &
+  Approved".
+- A run that crashes shows **Run Failed** with a red dot and an error toast — not "Task concluded
+  successfully!".
+- Reload mid-run: Stop reappears and the palette stays locked.
+- Launching a second run, switching plans mid-run, or clicking Retry/Normalize during a run is
+  refused with a message.
+- A failed env read, workspace read, or Stop request raises a toast.
+- Double-clicking Save Prompt / Save Settings / re-tag does not double-write.
+- The Confirm-modal markup no longer appears in `ui/index.html`.
+
+**Open, offered not taken.**
+
+- **True image vision** for `[UI]` tasks: the mockup is still a *named reference*, not analyzed.
+  Passing the bytes to a vision model is a genuine feature, not a fix.
+- The remaining Low/Medium audit items that were not taken: the dead backend surface
+  (`get_agent` / `get_plan_json` / `save_plan_json` / `sync_plan`), the dead event fields
+  (`can_retry`, `role`, `task`, `message`, the `laya_tagging_done` extras), sub-step fields written
+  but never rendered, `plan_json.metrics` computed in Python and recomputed in JS, the `plan.json`
+  unreadable→empty-plan degradation, and the rollback that reports success when a file restore
+  failed. Each is recorded in the audit and can be turned into a Go on request.
+- `HANDOFF.md` §9/§10 remain stale; the user said **"leave it for now."**
+
+---
+
 ## Part H — Why this order, in one paragraph
 
 Theme first because it cascades into everything built afterwards; the small additive wins next
