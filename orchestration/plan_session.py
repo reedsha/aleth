@@ -13,7 +13,12 @@ import time
 from typing import Any, Dict
 
 from tools.plan_parser import compile_plan_json_to_markdown
-from tools.plan_state import load_plan_state, read_plan_markdown, save_plan_state
+from tools.plan_state import (
+    last_plan_load_error,
+    load_plan_state,
+    read_plan_markdown,
+    save_plan_state,
+)
 from tools.workspace import (
     get_active_plan_filename,
     get_plan_markdown_path,
@@ -178,5 +183,8 @@ def read_current_plan() -> Dict[str, Any]:
         "content": content if exists else "",
         "tree": plan_state.get("steps", []),
         "plan_json": plan_state,
-        "plans": list_plan_files()
+        "plans": list_plan_files(),
+        # Why plan.json could not be read, if it could not. The UI explains a blank tree with
+        # it instead of letting a corrupt machine-state file look like an empty roadmap (F3).
+        "load_error": last_plan_load_error(),
     }

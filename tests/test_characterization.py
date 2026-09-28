@@ -547,6 +547,27 @@ class PlanStateTests(WorkspaceTestCase):
         self._save_demo()
         self.assertEqual(len(ft.sync_plan_on_disk()["steps"]), 5)
 
+    def test_a_corrupt_plan_json_is_reported_not_hidden(self):
+        # A readable markdown plan and a plan.json that cannot be parsed: the plan is recovered
+        # from the markdown, and the corruption is explained rather than shown as an empty tree
+        # (audit F3).
+        from tools.plan_state import last_plan_load_error
+
+        self.write("PLAN.md", "# P\n\n## 1. S\n- [ ] Do a thing\n")
+        self.write("plan.json", "{not valid json")
+
+        state = ft.load_plan_state()
+
+        self.assertIn("plan.json could not be read", last_plan_load_error())
+        self.assertEqual(len(state["steps"]), 1)
+
+    def test_a_readable_plan_reports_no_load_error(self):
+        from tools.plan_state import last_plan_load_error
+
+        self._save_demo()
+        ft.load_plan_state()
+        self.assertEqual(last_plan_load_error(), "")
+
     def test_files_survive_rehydration_from_markdown(self):
         """Both rehydration sides must now agree on a task's deliverables.
 

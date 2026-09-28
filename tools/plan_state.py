@@ -34,6 +34,16 @@ class PlanWriteError(RuntimeError):
     """
 
 
+# The most recent reason plan.json could not be read, if any. Read by the UI so a corrupt
+# machine-state file is explained rather than silently shown as an empty plan (audit F3).
+_LAST_LOAD_ERROR = ""
+
+
+def last_plan_load_error() -> str:
+    """The reason the last plan load could not read plan.json, or "" when it was fine."""
+    return _LAST_LOAD_ERROR
+
+
 def _fold_ui_flag(entry: Dict[str, Any]) -> None:
     """Folds a legacy ``is_ui`` boolean into the entry's ``tag``, in place.
 
@@ -88,10 +98,14 @@ def _empty_plan(title: str) -> Dict[str, Any]:
 
 def _read_plan_json(plan_json_path: str) -> Optional[Dict[str, Any]]:
     """Read plan.json, or return ``None`` when it is missing or unreadable."""
+    global _LAST_LOAD_ERROR
     try:
         with open(plan_json_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
+        # Remember *why*: a corrupt machine-state file is otherwise indistinguishable from an
+        # empty plan, and the UI shows a blank tree with no explanation (audit F3).
+        _LAST_LOAD_ERROR = f"plan.json could not be read ({e})"
         print(f"[DualSync] Error reading plan.json: {e}")
         return None
 
@@ -119,6 +133,9 @@ def load_plan_state(force_sync: bool = False) -> Dict[str, Any]:
     Detects external disk edits to PLAN.md: If PLAN.md is newer than plan.json,
     re-hydrates plan.json using markdown-it-py AST parser.
     """
+    global _LAST_LOAD_ERROR
+    _LAST_LOAD_ERROR = ""
+
     base_dir = get_plan_dir()
     plan_md_path = get_plan_markdown_path()
     plan_json_path = get_plan_json_path()

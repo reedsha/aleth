@@ -26,7 +26,6 @@ from tools.file_tools import (
     parse_plan_tree,
     load_plan_state,
     save_plan_state,
-    sync_plan_on_disk,
     compile_plan_json_to_markdown,
     parse_markdown_to_plan_dict,
     read_file,
@@ -165,10 +164,6 @@ class BridgeAPI:
         except Exception as e:
             return {"error": str(e), "main_agents": [], "coder_agents": [], "workspace_dir": get_project_dir()}
 
-    def get_agent(self, agent_id: str):
-        """Fetch metadata and system prompt for a single agent."""
-        return registry.get_agent(agent_id) or {"error": f"Agent {agent_id} not found"}
-
     def save_system_prompt(self, agent_id: str, new_prompt: str, is_custom_only: bool = False):
         """Persists updated system prompt or custom instructions to disk and reloads registry without restart."""
         try:
@@ -291,32 +286,6 @@ class BridgeAPI:
         """Fetches the active plan state including plan.json machine state."""
         return registry.get_current_plan_data()
 
-    def get_plan_json(self):
-        """Directly fetches the plan.json machine state dictionary."""
-        return load_plan_state()
-
-    def save_plan_json(self, plan_data: dict):
-        """Persists plan.json directly and compiles back to PLAN.md."""
-        saved = save_plan_state(plan_data)
-        filename = get_active_plan_filename()
-        content = compile_plan_json_to_markdown(saved)
-        data = {
-            "success": True,
-            "filename": filename,
-            "content": content,
-            "tree": saved.get("steps", []),
-            "plan_json": saved,
-            "plans": list_plan_files()
-        }
-        self.emit_event({
-            "type": "plan_updated",
-            "filename": filename,
-            "content": content,
-            "tree": saved.get("steps", []),
-            "plan_json": saved
-        })
-        return data
-
     def add_plan_task(self, title: str):
         """Adds a recommendation to the plan as a real pending task and persists it.
 
@@ -390,19 +359,6 @@ class BridgeAPI:
             "content": data["content"],
             "tree": data["tree"],
             "plan_json": data["plan_json"]
-        })
-        return data
-
-    def sync_plan(self):
-        """Checks disk mtimes and synchronizes plan.json and PLAN.md."""
-        synced = sync_plan_on_disk()
-        data = registry.get_current_plan_data()
-        self.emit_event({
-            "type": "plan_updated",
-            "filename": data["filename"],
-            "content": data["content"],
-            "tree": data["tree"],
-            "plan_json": data.get("plan_json", {})
         })
         return data
 
