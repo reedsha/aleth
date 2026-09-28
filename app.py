@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import threading
+import traceback
 import html as html_module
 import webview
 
@@ -148,6 +149,10 @@ class BridgeAPI:
             escaped_json = json.dumps(event_data)
             self._window.evaluate_js(f"window.onAgentEvent && window.onAgentEvent({escaped_json});")
         except Exception as e:
+            # A dropped event can be a dropped *terminal* event, which leaves the UI stuck in
+            # its running state. Print the stack so the failure is diagnosable rather than a
+            # one-line mystery (audit M8).
+            traceback.print_exc()
             print(f"[BridgeAPI] Error pushing event to UI: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------
@@ -475,9 +480,13 @@ class BridgeAPI:
         never block a plan the user actually wants to open.
         """
         try:
-            return plan_structure_report()
+            report = plan_structure_report()
+            # A verdict that was actually produced is marked as checked; the degrade path below
+            # marks the opposite, so the two cannot be confused (audit M5).
+            report.setdefault("checked", True)
+            return report
         except Exception as e:
-            return {"structured": True, "issues": [], "counts": {},
+            return {"structured": True, "checked": False, "issues": [], "counts": {},
                     "summary": f"Structure check unavailable: {e}", "error": str(e)}
 
     def normalize_plan(self):

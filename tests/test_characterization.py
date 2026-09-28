@@ -730,6 +730,26 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
         self.assertFalse(res["success"])
         self.assertIn("not found in active plan", res["error"])
 
+    def test_rollback_reports_a_failed_file_restore_instead_of_success(self):
+        # A rollback that could not put a file back must not report success: the task's status
+        # was reset but the workspace still holds the patched code (audit M7).
+        ft.write_file.invoke({"filename": "restored.py", "content": "original\n"})
+        ft.backup_file_for_task("task-1", "restored.py")
+        self.save_state({
+            "title": "RB2",
+            "sections": [{"id": "sec-1", "title": "1. S", "tasks": [
+                {"id": "task-1", "section": "1. S", "title": "Rollback me", "status": "completed",
+                 "details": [], "files": ["restored.py"]},
+            ]}],
+        })
+
+        with mock.patch("tools.recovery.shutil.copy2", side_effect=OSError("disk full")):
+            res = ft.rollback_task_state("task-1")
+
+        self.assertFalse(res["success"])
+        self.assertTrue(res["restore_errors"])
+        self.assertIn("restored.py", res["error"])
+
     # --- whole-plan revision snapshot / revert ---------------------------------
 
     def test_snapshot_then_revert_restores_the_previous_plan(self):
@@ -2260,6 +2280,33 @@ class RunLockBridgeTests(WorkspaceTestCase):
         res = self._api_with_live_run().set_active_plan("OTHER.md")
         self.assertFalse(res["success"])
         self.assertIn("run is in progress", res["error"])
+
+
+class ValidatePlanStructureBridgeTests(WorkspaceTestCase):
+    """A structure check that crashed must not read as 'structured' (audit M5).
+
+    The Normalization Gate is advisory, so a broken check must not block a switch -- but it also
+    must not present itself as a clean verdict. `checked` tells the two apart.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def test_a_crashed_check_is_marked_not_checked(self):
+        api = self.app.BridgeAPI()
+        with mock.patch("app.plan_structure_report", side_effect=RuntimeError("boom")):
+            report = api.validate_plan_structure()
+        self.assertTrue(report["structured"])
+        self.assertFalse(report["checked"])
+
+    def test_a_produced_verdict_is_marked_checked(self):
+        report = self.app.BridgeAPI().validate_plan_structure()
+        self.assertTrue(report["checked"])
 
 
 if __name__ == "__main__":

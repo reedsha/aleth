@@ -206,6 +206,7 @@ def analyze_action(ctx: WorkflowContext) -> None:
     )
     if drift.probability >= laya_gate.DRIFT_THRESHOLD:
         audit_res = audit_codebase_plan_sync()
+        audit_res["audited"] = True
         audit_detail = audit_res["summary"]
     else:
         # The report the rest of this action reads. It carries the pre-flight verdict rather
@@ -216,7 +217,9 @@ def analyze_action(ctx: WorkflowContext) -> None:
             f"{drift.reasons[0][:1].upper()}{drift.reasons[0][1:]}; "
             f"full reconciliation not needed."
         )
-        audit_res = {"summary": audit_detail, "in_sync": True}
+        # `audited` marks the difference between "checked and in sync" and "not re-checked",
+        # so a reader cannot mistake a skipped scan for a clean one (audit L8).
+        audit_res = {"summary": audit_detail, "in_sync": True, "audited": False}
     ctx.emit_fn(tool_result(
         "software-architect", "audit_codebase_plan_sync",
         audit_detail

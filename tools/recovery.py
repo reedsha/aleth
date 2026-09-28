@@ -394,6 +394,7 @@ def rollback_task_state(task_id: str) -> Dict[str, Any]:
 
     # Restore backups if present in .deepagents_backups/<task_id>
     restored_files = []
+    restore_errors = []
     task_backup_dir = os.path.join(get_backup_dir(), target_task.get("id", task_id))
     meta_path = os.path.join(task_backup_dir, "_meta.json")
 
@@ -401,8 +402,12 @@ def rollback_task_state(task_id: str) -> Dict[str, Any]:
         try:
             with open(meta_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
-            for fname, info in meta.items():
-                target_file = os.path.join(base_dir, fname)
+        except Exception as e:
+            restore_errors.append(f"backup metadata unreadable: {e}")
+            meta = {}
+        for fname, info in meta.items():
+            target_file = os.path.join(base_dir, fname)
+            try:
                 if info.get("action") == "modified" and info.get("backup") and os.path.exists(info["backup"]):
                     shutil.copy2(info["backup"], target_file)
                     restored_files.append(f"{fname} (restored prior version)")
@@ -410,18 +415,24 @@ def rollback_task_state(task_id: str) -> Dict[str, Any]:
                     archive_path = target_file + ".rollback_bak"
                     shutil.move(target_file, archive_path)
                     restored_files.append(f"{fname} (archived to .rollback_bak)")
-        except Exception as e:
-            print(f"[Rollback] Backup restoration note: {e}")
+            except Exception as file_err:
+                # A rollback that could not put a file back is not a success: the task's status
+                # was reset but the workspace still holds the patched code (audit M7).
+                restore_errors.append(f"{fname}: {file_err}")
 
     saved = save_plan_state(plan_dict)
     recompiled = compile_plan_json_to_markdown(saved)
 
-    return {
-        "success": True,
+    result = {
+        "success": not restore_errors,
         "task_id": target_task.get("id"),
         "task_title": target_task.get("title"),
         "restored_files": restored_files,
+        "restore_errors": restore_errors,
         "plan_json": saved,
         "content": recompiled,
         "tree": saved.get("steps", [])
     }
+    if restore_errors:
+        result["error"] = "Rollback could not restore: " + "; ".join(restore_errors)
+    return result
