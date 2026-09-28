@@ -1415,6 +1415,48 @@ Gates after Go 16: contract **ALL CHECKS PASSED** · bundle `--check` up to date
 
 ---
 
+### Go 17 — The audit's tail: a corrupt plan is explained, and the dead surface goes (**landed**)
+
+- **F3 — a corrupt `plan.json` is explained instead of silently becoming an empty plan.**
+  `tools/plan_state.py` remembers why the last load could not read `plan.json`
+  (`last_plan_load_error()`), `plan_session.read_current_plan()` carries it as `load_error`, and
+  `reportPlanDiagnostics` toasts it. The plan is still rebuilt from the markdown when it can be;
+  the difference is that the recovery — or the blank tree it degraded to — is now stated rather
+  than left to look like an empty roadmap.
+- **L1 — the four uncalled bridge methods are gone:** `get_agent`, `get_plan_json`,
+  `save_plan_json`, `sync_plan`. None had a single `ui/js` caller (`save_plan_json`'s would-be
+  reuse in the declined "Approve (a)" is moot now that (b) landed), and `sync_plan_on_disk` left
+  the import list with them. `registry.get_agent` stays — it is the internal lookup the registry
+  tests pin.
+- **L3 — a sub-step's `tag`, `files` and `details` are rendered.** They were persisted and
+  compiled into `PLAN.md` but shown nowhere; a sub-step now draws the same domain pill, file
+  chips and detail bullets a task does. The step-card contract check only requires
+  `plan-tree-item-row`, `btn-inline-rollback` and `plan-substep-item` to be present, so the tier
+  markup is unchanged.
+
+Gates after Go 17: contract **ALL CHECKS PASSED** · bundle `--check` up to date · **403 tests OK**
+(+2: the corrupt-plan report and its clean counter-case) · div balance **230/230**.
+
+**Eyeball checklist.**
+
+- With a corrupt `plan.json`, the app says it could not be read and was rebuilt from the markdown.
+- A sub-step shows its domain pill, its file chips and its detail bullets inside the task card.
+
+**Open, offered not taken** — each needs a *deliberate* contract change or is a feature, not a fix:
+
+- **L2 — the unread event fields** (`can_retry`, `role`, `task`, `message`, the `laya_tagging_done`
+  extras, `coder_summary.status`/`files`). Removing them reverses pinned payload tests, and
+  `delegation.task` is more useful *surfaced* (in the console/card) than dropped — a small UI job,
+  not a cleanup.
+- **L4 — `plan_json.metrics` vs the JS recount.** They cannot diverge in practice: the tree is
+  derived from `plan_json.steps`, so the JS counts the same list the backend measured. A refactor
+  with real contract-test surface for no behavioural change, so left alone.
+- **M14/M15 — the canned `root_cause` and the `main.py`/`test_main.py` target fallbacks.** Both are
+  behaviour changes with pinned tests; deriving a real diagnosis is System-2 work.
+- **True image vision** for `[UI]` tasks, and `HANDOFF.md` §9/§10 (still stale).
+
+---
+
 ## Part H — Why this order, in one paragraph
 
 Theme first because it cascades into everything built afterwards; the small additive wins next
