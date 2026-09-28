@@ -2,9 +2,24 @@
 // ============================================================================
 // Plan Setup & Creation Modals (Split: Switch vs Create)
 // ============================================================================
-function openSwitchPlanModal() {
-  renderExistingPlansList();
+async function openSwitchPlanModal() {
+  if (!DOM.switchPlanModalOverlay) return;
   DOM.switchPlanModalOverlay.style.display = "flex";
+  // The set of plan files is a backend fact, not something to remember from the last
+  // payload. Fetch it fresh every time the switcher opens: a save, sync or Laya re-tag
+  // sends a `plan_updated` event that carries the plan's *content* but no file list, and
+  // remembering the list across those is what left the modal showing only the active
+  // file. Asking the backend here makes the list correct regardless of what state holds.
+  const api = window.pywebview && window.pywebview.api;
+  if (api && typeof api.get_plan_files === "function") {
+    try {
+      const plans = await api.get_plan_files();
+      if (Array.isArray(plans)) state.availablePlans = plans;
+    } catch (_err) {
+      /* offline / no bridge: fall back to the list already in state */
+    }
+  }
+  renderExistingPlansList();
 }
 
 function closeSwitchPlanModal() {
@@ -22,14 +37,73 @@ function closeCreatePlanModal() {
   DOM.createPlanModalOverlay.style.display = "none";
 }
 
+// ----------------------------------------------------------------------------
+// Normalization Gate
+// ----------------------------------------------------------------------------
+// An imported .md that carries neither `##` sections nor `- [ ]` milestones renders as a
+// blank plan tree with every action locked. The switch flow asks the backend for a
+// structure verdict and offers a 1-click reformat when it fails. The reformat itself is
+// the deterministic parser's job (zero Coder tokens); this modal is only the gate.
+
+function openNormalizeGateModal(planName, report) {
+  const issues = (report && report.issues) || [];
+  const counts = (report && report.counts) || {};
+
+  DOM.normalizeGateIssues.innerHTML = issues
+    .map((text) => `<li>${escapeHtml(text)}</li>`)
+    .join("");
+
+  const pills = [
+    `sections: ${counts.sections || 0}`,
+    `milestones: ${counts.milestones || 0}`,
+    `bullets: ${counts.bullets || 0}`,
+    planName ? `file: ${planName}` : "",
+  ].filter(Boolean);
+  DOM.normalizeGateCounts.innerHTML = pills
+    .map((text) => `<span class="normalize-gate-pill">${escapeHtml(text)}</span>`)
+    .join("");
+
+  DOM.normalizeGateModalOverlay.style.display = "flex";
+}
+
+function closeNormalizeGateModal() {
+  DOM.normalizeGateModalOverlay.style.display = "none";
+}
+
+// Fire-and-forget, like the action buttons: the backend workflow streams its progress as
+// normal agent events and emits plan_updated when it rewrites the file.
+function handleNormalizeGateConfirm() {
+  closeNormalizeGateModal();
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.normalize_plan) {
+    showToast("Formatting plan via Architect...", "info");
+    window.pywebview.api.normalize_plan();
+  } else {
+    showToast("Formatting is available in the desktop app window", "info");
+  }
+}
+
+// Asks the backend whether the plan just switched to can be read as a milestone plan.
+// Read-only, and a bridge without the method leaves the plan open exactly as before.
+async function checkPlanStructureGate(planName) {
+  const api = window.pywebview && window.pywebview.api;
+  if (!api || !api.validate_plan_structure) return;
+  try {
+    const report = await api.validate_plan_structure();
+    if (report && report.structured === false) openNormalizeGateModal(planName, report);
+  } catch (_err) {
+    /* the gate is advisory: a failed check never blocks the switch */
+  }
+}
+
 function renderExistingPlansList() {
   DOM.existingPlansList.innerHTML = "";
-  if (!state.availablePlans || state.availablePlans.length === 0) {
+  const plans = Array.isArray(state.availablePlans) ? state.availablePlans : [];
+  if (plans.length === 0) {
     DOM.existingPlansList.innerHTML = `<span style="font-size: 11px; color: #64748b;">No existing .md files found in workspace.</span>`;
     return;
   }
 
-  state.availablePlans.forEach(planName => {
+  plans.forEach(planName => {
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = `plan-chip ${planName === state.activePlan ? "active" : ""}`;
@@ -40,6 +114,9 @@ function renderExistingPlansList() {
         const res = await window.pywebview.api.set_active_plan(planName);
         applyPlanData(res);
         showToast(`Switched active plan to: ${planName}`, "success");
+        // The gate is advisory and read-only: it only opens a modal when the file it just
+        // switched to cannot be read as a milestone plan.
+        checkPlanStructureGate(planName);
       }
     });
     DOM.existingPlansList.appendChild(chip);

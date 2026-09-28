@@ -90,16 +90,8 @@
   color: #fff;
 }
 
-/* Progress Meter */
-.plan-progress-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-}
+/* Progress Meter. The card frame and padding belong to the bento header's
+   #bentoProgressTile; these are the meter's own parts. */
 
 .plan-progress-labels {
   display: flex;
@@ -123,39 +115,149 @@
   width: 100%;
   height: 5px;
   background: rgba(255, 255, 255, 0.08);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
   overflow: hidden;
+  display: flex;
 }
 
+/* Four states, bands of one total: solid green for verified completion, a pulsing amber band
+   for the task in flight, a red band for tasks that failed verification, and the track's own
+   neutral for what has not started. The band colours are the state palette, not decoration, so
+   the bar never invents a meaning the task tree does not also carry. */
 .progress-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #0ea5e9, #10b981);
-  border-radius: var(--radius-full);
+  flex: none;
+  background: #10b981;
   transition: width 0.4s ease;
 }
 
-/* Clickable Native Plan Tree */
+.progress-bar-active {
+  height: 100%;
+  flex: none;
+  background: var(--accent-amber);
+  transition: width 0.4s ease;
+  animation: activeBandPulse 1.2s ease-in-out infinite alternate;
+}
+
+/* Failed is not animated: a failure is a state to notice and act on, not a live process. */
+.progress-bar-failed {
+  height: 100%;
+  flex: none;
+  background: #ef4444;
+  transition: width 0.4s ease;
+}
+
+@keyframes activeBandPulse {
+  from { opacity: 0.5; }
+  to   { opacity: 1; }
+}
+
+/* Clickable Native Plan Tree. The bento dashboard above it is the fixed part of the view, so
+   this is the flex item that takes the leftover height and scrolls. */
 .plan-tree-container {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding-top: 14px;
+  padding-bottom: 14px;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
+/* The tree scrolls; it never squeezes. A card here carries `overflow: hidden` (that is what
+   curves its rounded corners and clips the 3px state accent), and a flex item whose overflow
+   is not `visible` has an automatic minimum size of ZERO -- so without this the column would
+   compress the cards to fit its height and clip their contents instead of overflowing, giving
+   a tree that is cut off and cannot be scrolled. `flex: none` keeps every card at its natural
+   height and lets the container scroll, whether the phases are expanded or all folded away. */
+.plan-tree-container > *,
+.plan-phase-body > * {
+  flex: none;
+}
+
+/* --------------------------------------------------------------------------
+   Level 1: the phase card
+   A section is the tree's top tier, so it is a card rather than floating text: a header
+   that folds its children away, the phase's own domain tags, and how many of its tasks
+   are done. The step cards it holds are level 2, indented and nested inside it.
+   -------------------------------------------------------------------------- */
 .plan-tree-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.plan-phase-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.plan-phase-header:hover {
+  background: var(--bg-glass-hover);
+  border-color: var(--border-glass);
+}
+
+.plan-phase-header:focus-visible {
+  outline: 1px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.phase-chevron {
+  flex: none;
+  font-size: 9px;
+  color: var(--text-dim);
+  transition: transform var(--transition-fast);
+}
+
+.plan-tree-section.collapsed .phase-chevron {
+  transform: rotate(-90deg);
+}
+
+.phase-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* How many of this phase's tasks are done. A count, not a state, so it stays monochrome. */
+.phase-count {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.05);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.plan-phase-body {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.plan-tree-section-header {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.8px;
-  color: var(--text-dim);
-  padding: 2px 4px;
+.plan-tree-section.collapsed .plan-phase-body {
+  display: none;
 }
 
 /* --------------------------------------------------------------------------
@@ -169,19 +271,30 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* Level 2: indented one step under its phase card. */
+  margin-left: 16px;
   padding: 8px 9px 8px 10px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-left: 2px solid #3c4654;
+  /* The left edge carries the task's state, so a scan down the tree reads as a progress bar;
+     `overflow: hidden` clips that band into the card's rounded left corner. */
+  border-left: 3px solid #3c4654;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
   cursor: pointer;
+  overflow: hidden;
   transition: background var(--transition-fast), border-color var(--transition-fast);
 }
 
 .plan-tree-item:hover {
   background: var(--bg-glass-hover);
   border-color: var(--border-glass);
+}
+
+/* Keyboard path: the cards are focusable, so focus needs to be visible. */
+.plan-tree-item:focus-visible {
+  outline: 1px solid var(--accent-blue);
+  outline-offset: 1px;
 }
 
 .plan-tree-item.step-completed {
@@ -224,6 +337,12 @@
   animation: pulseDot 1s infinite alternate;
 }
 
+.step-status-icon.failed {
+  background: rgba(239, 68, 68, 0.18);
+  border: 1px solid #ef4444;
+  color: #f87171;
+}
+
 .step-status-icon.pending {
   background: transparent;
   border: 1.5px solid #4b5563;
@@ -242,6 +361,12 @@
 .step-title.completed {
   color: var(--text-dim);
   text-decoration: line-through;
+}
+
+/* A failed task keeps its text legible -- it still needs acting on, so it is tinted rather
+   than struck through like a finished one. */
+.step-title.failed {
+  color: #fca5a5;
 }
 
 /* Plan text still carries its markdown markers; they are rendered rather than printed. */
@@ -365,7 +490,9 @@
    -------------------------------------------------------------------------- */
 .btn-inline-execute,
 .btn-inline-rollback,
-.btn-inline-stop {
+.btn-inline-stop,
+.btn-inline-fix,
+.btn-inline-edit {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -415,6 +542,34 @@
   color: #1a1206;
 }
 
+/* Fix sits beside Retry on a failed card: same recovery family, so it borrows the amber the
+   running state uses instead of the blue an execute carries. */
+.btn-inline-fix {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  color: var(--accent-amber);
+}
+
+.btn-inline-fix:hover {
+  background: var(--accent-amber);
+  border-color: var(--accent-amber);
+  color: #1a1206;
+}
+
+/* Edit is on every card, whatever the state, so it stays the quietest of the inline actions:
+   the state-specific affordance keeps the emphasis. */
+.btn-inline-edit {
+  background: rgba(148, 163, 184, 0.06);
+  border: 1px solid var(--border-glass);
+  color: var(--text-dim);
+}
+
+.btn-inline-edit:hover {
+  background: rgba(14, 165, 233, 0.14);
+  border-color: rgba(14, 165, 233, 0.35);
+  color: var(--accent-blue-hover);
+}
+
 /* Shown for an in-progress task while no run is active to stop. */
 .task-state-chip {
   display: inline-flex;
@@ -450,7 +605,8 @@
 .step-details-drawer {
   display: none;
   margin-top: 2px;
-  padding: 6px 0 0 22px;
+  /* No indent of its own: level 3 sets its own, so the two do not compound. */
+  padding: 6px 0 0 0;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
   font-size: 10.5px;
   color: var(--text-muted);
@@ -466,7 +622,7 @@
   gap: 6px;
   margin-bottom: 3px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11.5px;
   overflow-wrap: anywhere;
 }
 
@@ -517,6 +673,16 @@
   margin-bottom: 6px;
 }
 
+/* Level 3: the sub-deliverables, indented a further step under the step card. Each is a
+   rounded inner row, so the deepest tier still reads as a card rather than as loose text. */
+.plan-substep-item {
+  margin-left: 32px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
 .sub-step-row {
   display: flex;
   align-items: flex-start;
@@ -532,6 +698,35 @@
   font-size: 7px;
 }
 
+/* The Living Behavioral Ledger: evidence from work already done, green-marked and ruled
+   off from the task's own detail bullets so a finished milestone never reads as another
+   pending instruction. */
+.behavioral-log-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 4px 0 5px 0;
+  padding-left: 8px;
+  border-left: 2px solid rgba(52, 211, 153, 0.35);
+}
+
+.behavioral-log-block.behavioral-log-sub {
+  margin-left: 32px;
+}
+
+.behavioral-log-row {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: #34d399;
+  overflow-wrap: anywhere;
+}
+
+.behavioral-log-row::before {
+  content: "\1F7E2";
+  margin-right: 6px;
+}
+
 .sub-step-title {
   flex: 1;
   min-width: 0;
@@ -544,6 +739,10 @@
 .sub-step-title.completed {
   color: var(--text-dim);
   text-decoration: line-through;
+}
+
+.sub-step-title.failed {
+  color: #fca5a5;
 }
 
 /* --------------------------------------------------------------------------

@@ -22,7 +22,7 @@
   color: #fb7185;
   background: rgba(244, 63, 94, 0.2);
   padding: 2px 8px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
 }
 
 .ui-vision-subtitle {

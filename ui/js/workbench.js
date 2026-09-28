@@ -145,10 +145,6 @@ function refreshWorkbenchChrome() {
   if (DOM.crumbPlanFile) DOM.crumbPlanFile.textContent = planFile;
   if (DOM.txtWorkbenchPath) DOM.txtWorkbenchPath.textContent = planFile;
 
-  const tasks = state.planTree || [];
-  const completed = tasks.filter((task) => task.status === "completed").length;
-  if (DOM.txtWorkbenchStat) DOM.txtWorkbenchStat.textContent = `${completed}/${tasks.length} tasks`;
-
   // Editing needs the bridge: without one a save has nowhere to go, and pretending
   // otherwise would be the same disguise initFallbackMode refuses to make. The bridge
   // is injected after these modules run, so the flag is read here rather than at init.
@@ -269,6 +265,41 @@ function handleWorkbenchEdit() {
     return;
   }
   setWorkbenchEditing(true);
+}
+
+// "Edit this task" is a jump into the source, not a second editor: the plan markdown is the
+// only copy the agents read, so editing means the raw view. The title is the anchor because
+// that is what the markdown carries; a miss simply opens the top of the file, which is still
+// an edit session rather than a dead click.
+function editTaskInWorkbench(step) {
+  if (!step || !DOM.planEditorInput) return;
+  // Re-anchoring while already editing must not discard the draft: setWorkbenchEditing(true)
+  // rewrites the textarea from the last rendered content, so only enter edit mode if we are
+  // not in it. Then a second "Edit" just moves the caret.
+  if (!workbenchIsEditing()) {
+    handleWorkbenchEdit();
+    if (!workbenchIsEditing()) return;   // the bridge refused; stay where we were
+  }
+  const needle = String(step.title || "").trim();
+  if (!needle) return;
+  const at = DOM.planEditorInput.value.indexOf(needle);
+  if (at < 0) return;
+  const line = DOM.planEditorInput.value.slice(0, at).split("\n").length;
+  DOM.planEditorInput.scrollTop = Math.max(0, (line - 4) * workbenchLineHeight());
+  DOM.planEditorInput.setSelectionRange(at, at + needle.length);
+}
+
+// The line stride is measured, never assumed: the reading surface's size is a theme token, so
+// a hardcoded number would drift the moment the theme changes.
+function workbenchLineHeight() {
+  if (DOM.planEditorInput && typeof getComputedStyle === "function") {
+    const cs = getComputedStyle(DOM.planEditorInput);
+    const px = parseFloat(cs && cs.lineHeight);
+    if (px > 0) return px;
+    const size = parseFloat(cs && cs.fontSize);
+    if (size > 0) return size * 1.65;
+  }
+  return 23;   // 14px x 1.65: the metrics declared in ui/css/workbench.css
 }
 
 function handleWorkbenchDiscard() {

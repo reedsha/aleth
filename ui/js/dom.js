@@ -4,6 +4,16 @@ function initDOMElements() {
   DOM.executionStage = document.getElementById("executionStage");
   DOM.cardsGrid = document.getElementById("cardsGrid");
 
+  // Polymorphic result view: a full-stage overlay the centre stage mounts on the
+  // terminal event, chosen by the action that just ran (ui/js/result-view.js).
+  DOM.resultView = document.getElementById("resultView");
+  DOM.resultIcon = document.getElementById("resultIcon");
+  DOM.resultKind = document.getElementById("resultKind");
+  DOM.resultTitle = document.getElementById("resultTitle");
+  DOM.resultMetrics = document.getElementById("resultMetrics");
+  DOM.resultBody = document.getElementById("resultBody");
+  DOM.btnCloseResultView = document.getElementById("btnCloseResultView");
+
   DOM.cardArchitect = document.getElementById("cardArchitect");
   DOM.architectLogs = document.getElementById("architectLogs");
   DOM.architectStreamContent = document.getElementById("architectStreamContent");
@@ -30,17 +40,15 @@ function initDOMElements() {
   DOM.actionControlPanelContainer = document.getElementById("actionControlPanelContainer");
   DOM.actionPanelLockOverlay = document.getElementById("actionPanelLockOverlay");
   DOM.actionDockCard = document.getElementById("actionDockCard");
-  DOM.btnActionFixBug = document.getElementById("btnActionFixBug");
-  DOM.btnActionNextStep = document.getElementById("btnActionNextStep");
-  DOM.btnActionUpdatePlan = document.getElementById("btnActionUpdatePlan");
-  DOM.btnActionAnalyze = document.getElementById("btnActionAnalyze");
-  DOM.btnActionRecommend = document.getElementById("btnActionRecommend");
-  DOM.btnActionCustom = document.getElementById("btnActionCustom");
-  DOM.lblNextStepTarget = document.getElementById("lblNextStepTarget");
-  DOM.readonlyPlanPill = document.getElementById("readonlyPlanPill");
-  DOM.txtBottomActivePlan = document.getElementById("txtBottomActivePlan");
-  DOM.txtDockProgress = document.getElementById("txtDockProgress");
-  DOM.btnDockStop = document.getElementById("btnDockStop");
+  // Command palette: the six intents the dock strip used to hold.
+  DOM.commandPaletteOverlay = document.getElementById("commandPaletteOverlay");
+  DOM.commandPaletteInput = document.getElementById("commandPaletteInput");
+  DOM.commandPaletteList = document.getElementById("commandPaletteList");
+  DOM.btnCommandPalette = document.getElementById("btnCommandPalette");
+  // The run controls live in the top bar now that the dock's read-only status row is gone:
+  // the progress figure and Stop sit beside the active-plan badge, not in the dock head.
+  DOM.txtTopProgress = document.getElementById("txtTopProgress");
+  DOM.btnStopRun = document.getElementById("btnStopRun");
 
   // Docked command drawer (the parameter form of the action strip above it)
   DOM.actionDrawerPanel = document.getElementById("actionDrawerPanel");
@@ -80,18 +88,36 @@ function initDOMElements() {
   DOM.btnToggleRightSidebar = document.getElementById("btnToggleRightSidebar");
   DOM.sidebarTree = document.getElementById("sidebarTree");
   DOM.countTreeFiles = document.getElementById("countTreeFiles");
+  DOM.btnExpandFilesModal = document.getElementById("btnExpandFilesModal");
   DOM.sidebarEnvList = document.getElementById("sidebarEnvList");
   DOM.countEnvVars = document.getElementById("countEnvVars");
+  DOM.tabSidebarAgents = document.getElementById("tabSidebarAgents");
+  DOM.tabSidebarPlans = document.getElementById("tabSidebarPlans");
+  DOM.tabSidebarFiles = document.getElementById("tabSidebarFiles");
+  DOM.tabSidebarEnv = document.getElementById("tabSidebarEnv");
+  DOM.sidebarPlansList = document.getElementById("sidebarPlansList");
+  DOM.countSidebarPlans = document.getElementById("countSidebarPlans");
+  DOM.btnExpandSwitchPlan = document.getElementById("btnExpandSwitchPlan");
 
   // Top Status Bar & Right Plan Sidebar
   DOM.txtTopActivePlanName = document.getElementById("txtTopActivePlanName");
   DOM.topActivePlanBadge = document.getElementById("topActivePlanBadge");
   DOM.txtSidebarPlanName = document.getElementById("txtSidebarPlanName");
-  DOM.btnSwitchPlan = document.getElementById("btnSwitchPlan");
+
   DOM.btnCreatePlanModal = document.getElementById("btnCreatePlanModal");
   DOM.txtPlanProgressRatio = document.getElementById("txtPlanProgressRatio");
   DOM.planProgressBarFill = document.getElementById("planProgressBarFill");
+  DOM.planProgressBarActive = document.getElementById("planProgressBarActive");
+  DOM.planProgressBarFailed = document.getElementById("planProgressBarFailed");
   DOM.planTreeContainer = document.getElementById("planTreeContainer");
+  // Bento header above the roadmap: the plan's standing context plus its live state.
+  DOM.bentoSummaryTile = document.getElementById("bentoSummaryTile");
+  DOM.bentoSummaryPreview = document.getElementById("bentoSummaryPreview");
+  DOM.btnBentoExpandSummary = document.getElementById("btnBentoExpandSummary");
+  DOM.bentoProgressTile = document.getElementById("bentoProgressTile");
+  DOM.bentoProgressChip = document.getElementById("bentoProgressChip");
+  DOM.bentoStatsTile = document.getElementById("bentoStatsTile");
+  DOM.bentoStatsChips = document.getElementById("bentoStatsChips");
   DOM.btnRetagUi = document.getElementById("btnRetagUi");
   DOM.taggingOverlay = document.getElementById("taggingOverlay");
   DOM.taggingTitle = document.getElementById("taggingTitle");
@@ -105,6 +131,13 @@ function initDOMElements() {
   DOM.btnCloseSwitchPlanModal = document.getElementById("btnCloseSwitchPlanModal");
   DOM.createPlanModalOverlay = document.getElementById("createPlanModalOverlay");
   DOM.btnCloseCreatePlanModal = document.getElementById("btnCloseCreatePlanModal");
+  // Normalization Gate (an imported .md the plan parser cannot read)
+  DOM.normalizeGateModalOverlay = document.getElementById("normalizeGateModalOverlay");
+  DOM.btnCloseNormalizeGate = document.getElementById("btnCloseNormalizeGate");
+  DOM.normalizeGateIssues = document.getElementById("normalizeGateIssues");
+  DOM.normalizeGateCounts = document.getElementById("normalizeGateCounts");
+  DOM.btnSkipNormalize = document.getElementById("btnSkipNormalize");
+  DOM.btnConfirmNormalize = document.getElementById("btnConfirmNormalize");
   DOM.existingPlansList = document.getElementById("existingPlansList");
   DOM.inputNewPlanName = document.getElementById("inputNewPlanName");
   DOM.inputProjectIdea = document.getElementById("inputProjectIdea");
@@ -153,6 +186,10 @@ function initDOMElements() {
   DOM.auditModalOverlay = document.getElementById("auditModalOverlay");
   DOM.btnCloseAuditModal = document.getElementById("btnCloseAuditModal");
   DOM.btnCloseAuditModalFooter = document.getElementById("btnCloseAuditModalFooter");
+  DOM.auditHeaderTitle = document.getElementById("auditHeaderTitle");
+  DOM.auditHeaderSubtitle = document.getElementById("auditHeaderSubtitle");
+  DOM.auditSummarySection = document.getElementById("auditSummarySection");
+  DOM.txtAuditSummaryFull = document.getElementById("txtAuditSummaryFull");
   DOM.auditStatusPill = document.getElementById("auditStatusPill");
   DOM.auditStatusSummary = document.getElementById("auditStatusSummary");
   DOM.badgeMissingFilesCount = document.getElementById("badgeMissingFilesCount");
@@ -177,6 +214,9 @@ function initDOMElements() {
   DOM.dockResizeHandle = document.getElementById("dockResizeHandle");
   DOM.consoleStream = document.getElementById("consoleStream");
   DOM.btnConsoleClear = document.getElementById("btnConsoleClear");
+  DOM.btnConsoleOverlay = document.getElementById("btnConsoleOverlay");
+  DOM.btnConsoleDetach = document.getElementById("btnConsoleDetach");
+  DOM.btnConsoleToggle = document.getElementById("btnConsoleToggle");
 
   // Live preview (the workspace's generated interface, rendered in place)
   DOM.btnTogglePreview = document.getElementById("btnTogglePreview");
@@ -193,7 +233,6 @@ function initDOMElements() {
   DOM.crumbWorkspace = document.getElementById("crumbWorkspace");
   DOM.crumbPlanFile = document.getElementById("crumbPlanFile");
   DOM.crumbDirty = document.getElementById("crumbDirty");
-  DOM.txtWorkbenchStat = document.getElementById("txtWorkbenchStat");
   DOM.btnWorkbenchEdit = document.getElementById("btnWorkbenchEdit");
   DOM.btnWorkbenchSave = document.getElementById("btnWorkbenchSave");
   DOM.btnWorkbenchDiscard = document.getElementById("btnWorkbenchDiscard");
@@ -207,6 +246,8 @@ function initDOMElements() {
   DOM.btnWorkbenchTreeView = document.getElementById("btnWorkbenchTreeView");
   DOM.btnWorkbenchRawMd = document.getElementById("btnWorkbenchRawMd");
   DOM.workbenchTreeView = document.getElementById("workbenchTreeView");
+  // Reopens the last action's result view after it has been dismissed
+  DOM.btnWorkbenchResult = document.getElementById("btnWorkbenchResult");
 
   DOM.systemStatusDot = document.getElementById("systemStatusDot");
   DOM.systemStatusLabel = document.getElementById("systemStatusLabel");

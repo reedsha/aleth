@@ -5,7 +5,7 @@
   width: 660px;
   max-width: 95vw;
   max-height: 84vh;
-  background: rgba(37, 37, 38, 0.96);
+  background: rgba(26, 28, 35, 0.96);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -61,7 +61,7 @@
   font-size: 11px;
   font-weight: 700;
   padding: 3px 10px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
   background: rgba(14, 165, 233, 0.25);
   color: #38bdf8;
   white-space: nowrap;
@@ -127,7 +127,7 @@
   font-size: 10px;
   font-weight: 700;
   padding: 1px 7px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
 }
 
 .audit-col-badge.missing {
@@ -289,5 +289,99 @@
   font-size: 10px;
   opacity: 0.8;
   line-height: 1.3;
+}
+
+/* --------------------------------------------------------------------------
+   RAIL PANEL: the report slides in from the right instead of covering the code it
+   is cross-referenced against. The same element ids as the old modal are kept, so
+   openAuditModal()/closeAuditModal() work untouched -- they only toggle `display`, and
+   this class supplies the layout.
+   -------------------------------------------------------------------------- */
+.side-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(460px, 42vw);
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-subtle);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  z-index: 60;
+  animation: panelSlideIn 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes panelSlideIn {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+/* The panel owns the surface, so the card inside it drops its own frame, blur and shadow. Both
+   hosted cards are the same idea -- the audit report and the plan dialogs
+   (#switchPlanModalOverlay, #createPlanModalOverlay) -- so they share the reset. */
+.side-panel > .audit-dialog-card,
+.side-panel > .plan-setup-modal {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+.side-panel > .audit-dialog-card .modal-body {
+  max-height: none;
+}
+
+/* A rail is tall, so the plan body scrolls inside the panel instead of growing the card past the
+   window the way the centred 480px dialog did. */
+.side-panel > .plan-setup-modal .modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* A rail is narrow: the two-column report and the resolution pair stack instead of cramping. */
+.side-panel .audit-details-grid,
+.side-panel .audit-resolutions-row {
+  grid-template-columns: 1fr;
+}
+
+/* --------------------------------------------------------------------------
+   Summary mode: the same rail, showing the plan's `## Global State Summary` instead of
+   a sync scan. The bento header's "Expand Detail" opens it this way, and the audit's own
+   sections fold away so the two lenses never appear at once. The mode is a class on the
+   overlay, so the switch is one toggle and the markup keeps a single set of ids.
+   -------------------------------------------------------------------------- */
+#auditModalOverlay:not(.summary-mode) .audit-summary-section {
+  display: none;
+}
+
+#auditModalOverlay.summary-mode .audit-status-banner,
+#auditModalOverlay.summary-mode .audit-details-grid,
+#auditModalOverlay.summary-mode .audit-untracked-box,
+#auditModalOverlay.summary-mode .audit-resolutions-section {
+  display: none;
+}
+
+.audit-summary-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The summary is prose the user needs to read and copy, so it takes a normal text selection
+   and the plan tree's own summary card styling rather than a bespoke one. */
+.audit-summary-full {
+  user-select: text;
+}
+
+.audit-summary-full .plan-summary-card {
+  border-left-color: var(--accent-blue);
 }
 

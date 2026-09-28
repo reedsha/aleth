@@ -19,8 +19,10 @@ function openActionDrawer(actionType, extraParams = {}) {
   state.targetTaskId = extraParams.targetTaskId || null;
   state.targetTaskTitle = extraParams.targetTaskTitle || null;
 
-  // Reset inputs
-  if (DOM.inputActionCustomInstructions) DOM.inputActionCustomInstructions.value = "";
+  // Reset inputs. `prefill` lets a caller hand the drawer a directive it is asking the
+  // user to confirm -- the result view's "Add to Plan" routes a proposal through this same
+  // Update Plan form rather than through a second, thinner endpoint.
+  if (DOM.inputActionCustomInstructions) DOM.inputActionCustomInstructions.value = extraParams.prefill || "";
   if (DOM.inputBugDescription) DOM.inputBugDescription.value = "";
   if (DOM.inputBugAttachment) DOM.inputBugAttachment.value = "";
   if (DOM.lblAttachmentName) DOM.lblAttachmentName.textContent = "No file attached";
@@ -54,6 +56,16 @@ function openActionDrawer(actionType, extraParams = {}) {
       DOM.paramPresetDescription.textContent = "The Software Architect will inspect the codebase using file tools to diagnose what the bug is, locate offending lines, formulate an atomic fix plan, and delegate implementation to a Coder sub-agent.";
       DOM.btnConfirmActionText.textContent = "Diagnose & Fix Bug";
       DOM.paramBugSection.style.display = "block";
+      // A fix opened from a failed card names that task and seeds the description with the
+      // recorded failure, so the drawer shows what it is fixing rather than an empty form.
+      if (state.targetTaskId) {
+        if (DOM.inputBugDescription && extraParams.bugPrefill) {
+          DOM.inputBugDescription.value = extraParams.bugPrefill;
+        }
+        DOM.paramTargetBadge.textContent = "Failed Task";
+        DOM.paramTargetTitle.textContent = state.targetTaskTitle || state.targetTaskId;
+        DOM.paramTargetTaskCard.style.display = "flex";
+      }
       setTimeout(() => DOM.inputBugDescription && DOM.inputBugDescription.focus(), 60);
       break;
 
@@ -224,8 +236,10 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
   state.isExecuting = true;
   state.pendingPrompt = text;
 
-  // Show dock stop button
-  if (DOM.btnDockStop) DOM.btnDockStop.style.display = "inline-flex";
+  // Reveal Stop in the top bar for the duration of the run
+  if (DOM.btnStopRun) DOM.btnStopRun.style.display = "inline-flex";
+  // The bento header's live tile reports the run state, so it moves with it.
+  if (typeof updateBentoStats === "function") updateBentoStats();
 
   // Pulse Action Dock
   if (DOM.actionDockCard) {
@@ -236,6 +250,10 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
 
   // Disable action buttons during run
   setActionButtonsDisabled(true);
+
+  // A new run supersedes whatever the last one left on screen, including the payloads the
+  // result view holds, so the previous result cannot be reopened over this one.
+  if (typeof resetResultView === "function") resetResultView();
 
   // Hide empty state and show execution stage
   DOM.emptyStateContainer.classList.add("hidden");
@@ -275,33 +293,42 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
 }
 
 async function handleStopClick() {
+  // The terminal event is the backend's to send: the runner emits `workflow_complete`
+  // (status `stopped`) when the run actually unwinds, and `stop_execution` emits one if no
+  // run is live. Fabricating it here flipped the UI to "Halted" while the backend kept
+  // writing files, so the two disagreed about whether the run was over.
   if (window.pywebview && window.pywebview.api) {
     try {
       await window.pywebview.api.stop_execution();
+      showToast("Stopping the active run\u2026", "info");
     } catch (err) {
       console.error("[Execution] Stop failed:", err);
     }
+  } else {
+    handleAgentEvent({
+      type: "workflow_complete",
+      status: "stopped",
+      message: "Workflow stopped by user"
+    });
   }
-  handleAgentEvent({
-    type: "workflow_complete",
-    status: "stopped",
-    message: "Workflow stopped by user"
-  });
 }
 
+// The six dock buttons are gone, so querying .action-btn would silently no-op and a
+// second action could be launched mid-run. The palette items and its trigger are the same
+// controls now, so the run lock has to reach them instead.
 function setActionButtonsDisabled(disabled) {
-  const btns = document.querySelectorAll(".action-btn");
-  btns.forEach(btn => {
-    btn.disabled = disabled;
-    btn.style.opacity = disabled ? "0.4" : "1";
-    btn.style.pointerEvents = disabled ? "none" : "auto";
+  const controls = document.querySelectorAll(".palette-item, #btnCommandPalette");
+  controls.forEach(el => {
+    el.disabled = disabled;
+    el.style.opacity = disabled ? "0.4" : "1";
+    el.style.pointerEvents = disabled ? "none" : "auto";
   });
 }
 
 function finalizeWorkflow(status) {
   state.isExecuting = false;
 
-  if (DOM.btnDockStop) DOM.btnDockStop.style.display = "none";
+  if (DOM.btnStopRun) DOM.btnStopRun.style.display = "none";
 
   const hasTasks = state.planTree && state.planTree.length > 0;
   updateStrictPlanLock(!hasTasks);
@@ -324,4 +351,6 @@ function finalizeWorkflow(status) {
   }
 
   showToast(status === "stopped" ? "Task halted by user" : "Task concluded successfully!", status === "stopped" ? "info" : "success");
+  // The run is over, which is a fact the bento header's live tile states.
+  if (typeof updateBentoStats === "function") updateBentoStats();
 }

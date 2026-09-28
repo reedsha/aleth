@@ -62,7 +62,9 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Plan workbench", initWorkbench);
   runStartupStep("Code surfaces", initCodeSurfaces);
   runStartupStep("Terminal console", initTerminalConsole);
-  runStartupStep("Live preview", initPreview);
+  runStartupStep("Preview", initPreview);
+  runStartupStep("Command palette", initCommandPalette);
+  runStartupStep("Result view", initResultView);
   runStartupStep("Sidebar panels", initSidebars);
   runStartupStep("Environment panel", initEnvironmentPanel);
   runStartupStep("Settings panel", initSettingsPanel);
@@ -90,15 +92,11 @@ document.addEventListener("DOMContentLoaded", () => {
 // ============================================================================
 function initEventListeners() {
   // Action Control Panel Intent Buttons
-  if (DOM.btnActionFixBug) DOM.btnActionFixBug.addEventListener("click", () => openActionDrawer("fix_bug"));
-  if (DOM.btnActionNextStep) DOM.btnActionNextStep.addEventListener("click", () => openActionDrawer("next_step"));
-  if (DOM.btnActionUpdatePlan) DOM.btnActionUpdatePlan.addEventListener("click", () => openActionDrawer("update_plan"));
-  if (DOM.btnActionAnalyze) DOM.btnActionAnalyze.addEventListener("click", () => openActionDrawer("analyze"));
-  if (DOM.btnActionRecommend) DOM.btnActionRecommend.addEventListener("click", () => openActionDrawer("recommend"));
-  if (DOM.btnActionCustom) DOM.btnActionCustom.addEventListener("click", () => openActionDrawer("custom"));
+  // Command palette: the launcher that replaced the dock's six intent buttons.
+  on(DOM.btnCommandPalette, "click", openCommandPalette);
 
-  // Dock Stop Button
-  if (DOM.btnDockStop) DOM.btnDockStop.addEventListener("click", handleStopClick);
+  // Run Stop, now in the top bar (it used to sit in the dock's status row).
+  if (DOM.btnStopRun) DOM.btnStopRun.addEventListener("click", handleStopClick);
 
   // Action Drawer Controls
   if (DOM.btnCloseParamModal) DOM.btnCloseParamModal.addEventListener("click", closeActionDrawer);
@@ -149,12 +147,25 @@ function initEventListeners() {
     }
   });
 
-  // Plan Modals: Switch (arrows) and Create (+) are now separate
-  on(DOM.btnSwitchPlan, "click", openSwitchPlanModal);
+  // Plan Modals: Switch and Create are now separate. Plan selection lives in the left sidebar's
+  // Plans tab (wired with the other tabs below); the switcher modal is reached from the tab's own
+  // expand button, so its fresh-fetch path is kept without being the primary entry point.
+  on(DOM.btnExpandSwitchPlan, "click", openSwitchPlanModal);
+  if (DOM.sidebarPlansList) {
+    DOM.sidebarPlansList.addEventListener("click", (e) => {
+      const chip = e.target.closest(".plan-chip");
+      if (chip && chip.dataset.plan) switchActivePlan(chip.dataset.plan);
+    });
+  }
   on(DOM.btnCreatePlanModal, "click", openCreatePlanModal);
   on(DOM.btnCloseSwitchPlanModal, "click", closeSwitchPlanModal);
   on(DOM.btnCloseCreatePlanModal, "click", closeCreatePlanModal);
   on(DOM.btnSubmitCreatePlan, "click", handleCreatePlanSubmit);
+
+  // Normalization Gate (an imported .md the plan parser cannot read)
+  on(DOM.btnCloseNormalizeGate, "click", closeNormalizeGateModal);
+  on(DOM.btnSkipNormalize, "click", closeNormalizeGateModal);
+  on(DOM.btnConfirmNormalize, "click", handleNormalizeGateConfirm);
 
   // Plan UI re-tagging. The backend call returns immediately (it starts a background
   // thread), so the panel is shown here and then fed by the laya_tagging_* events.
@@ -204,8 +215,19 @@ function initEventListeners() {
     }
   });
 
-  // Files Modal
-  if (DOM.btnNavFiles) DOM.btnNavFiles.addEventListener("click", openWorkspaceFilesModal);
+  // Left-sidebar tabs. Each button is its own listener rather than one delegated handler, so
+  // a missing tab costs only that tab (see `on`).
+  on(DOM.tabSidebarAgents, "click", () => setSidebarTab("agents"));
+  // Plans goes through openPlansTab() rather than setSidebarTab() so the one entry point that can
+  // also be reached from a collapsed rail still expands the pane before revealing the tab.
+  on(DOM.tabSidebarPlans, "click", openPlansTab);
+  on(DOM.tabSidebarFiles, "click", () => setSidebarTab("files"));
+  on(DOM.tabSidebarEnv, "click", () => setSidebarTab("env"));
+
+  // Files: the top bar opens the sidebar's Files tab; the modal is reached from the tab's own
+  // expand button (it stays in the DOM, it is just no longer the primary entry point).
+  on(DOM.btnNavFiles, "click", openFilesTab);
+  on(DOM.btnExpandFilesModal, "click", openWorkspaceFilesModal);
   if (DOM.btnCloseFilesModal) DOM.btnCloseFilesModal.addEventListener("click", closeWorkspaceFilesModal);
   if (DOM.btnCloseFilesModalFooter) DOM.btnCloseFilesModalFooter.addEventListener("click", closeWorkspaceFilesModal);
   if (DOM.inputSearchWorkspaceFiles) {
@@ -285,9 +307,22 @@ function initEventListeners() {
   on(DOM.planEditorInput, "scroll", syncWorkbenchGutterScroll);
   on(DOM.btnWorkbenchTreeView, "click", handleWorkbenchShowTree);
   on(DOM.btnWorkbenchRawMd, "click", handleWorkbenchShowRaw);
+  // The bento summary tile's "Expand Detail" opens the right rail in summary mode rather
+  // than expanding in place, so the dashboard's fixed grid is never distorted.
+  on(DOM.btnBentoExpandSummary, "click", openPlanSummaryPanel);
+
+  // ── Polymorphic result view (the centre stage's per-action output) ──
+  on(DOM.btnCloseResultView, "click", closeResultView);
+  on(DOM.btnWorkbenchResult, "click", openResultView);
+  // Every renderer rewrites the body wholesale, so the buttons inside it (file chips,
+  // "Add to Plan") are handled by delegation instead of being re-attached per render.
+  on(DOM.resultBody, "click", handleResultViewClick);
 
   // ── Dock console ──
+  on(DOM.btnConsoleToggle, "click", toggleConsole);
   on(DOM.btnConsoleClear, "click", clearConsole);
+  on(DOM.btnConsoleOverlay, "click", toggleConsoleOverlay);
+  on(DOM.btnConsoleDetach, "click", detachConsole);
 
   // ── Live preview ──
   on(DOM.btnTogglePreview, "click", togglePreview);

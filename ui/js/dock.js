@@ -6,15 +6,15 @@ function initDockResize() {
   const handle = DOM.dockResizeHandle;
   if (!dock || !handle) return;
 
-  // The action toolbar at the dock's head is ~146px tall, so 160 is the floor that
-  // keeps it fully visible. The ceiling is a share of the pane the dock shares with
-  // the centre stage rather than of the window, which also counts the 48px top bar,
-  // so the workbench always keeps a visible share of the box being divided.
-  const MIN_HEIGHT = 160;
+  // The dock head holds the command drawer now (the status row moved to the top bar), and it
+  // is out of the flow whenever the drawer is closed, so there is no head height to clear:
+  // 120 leaves a usable handful of transcript lines above the floor. The ceiling is a share of
+  // the *viewport*: the transcript is a glanceable companion to the centre stage, not a
+  // replacement for it, so it may take about a third of the window before the plan it is
+  // describing stops fitting.
+  const MIN_HEIGHT = 120;
   const maxHeight = () => {
-    const pane = dock.parentElement;
-    const available = pane ? pane.clientHeight : window.innerHeight;
-    return Math.max(MIN_HEIGHT, Math.round(available * 0.6));
+    return Math.max(MIN_HEIGHT, Math.round(window.innerHeight * 0.3));
   };
 
   let startY = 0;
@@ -60,21 +60,12 @@ function setDockDrawerOpen(open, actionType) {
   const dock = DOM.bottomDock;
   if (!dock) return;
 
-  // Only ever one form is open, so the mark moves rather than accumulates.
-  const marked = document.querySelectorAll(".action-btn.active");
-  for (let i = 0; i < marked.length; i++) {
-    marked[i].classList.remove("active");
-  }
-
   if (!open) {
     dock.classList.remove("drawer-open");
     return;
   }
-
-  const btn = actionType
-    ? document.querySelector('.action-btn[data-action="' + actionType + '"]')
-    : null;
-  if (btn) btn.classList.add("active");
+  // There is no toolbar button to mark any more: the palette closes on selection, so the
+  // drawer opening is itself the acknowledgement that a command was chosen.
   dock.classList.add("drawer-open");
 }
 

@@ -56,6 +56,8 @@ JS_MODULES = [
     "sidebar.js",
     "env.js",
     "settings.js",
+    "command-palette.js",
+    "result-view.js",
     "wire.js",
 ]
 
@@ -79,6 +81,8 @@ CSS_MODULES = [
     "preview.css",
     "sidebar-panels.css",
     "settings.css",
+    "command-palette.css",
+    "result-view.css",
 ]
 
 JS_BEGIN = "  <!-- BEGIN UI BUNDLE - generated from ui/js/*.js by tools/build_ui_bundle.py -->"

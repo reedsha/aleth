@@ -93,6 +93,108 @@ function toggleRightSidebar() {
 }
 
 // ---------------------------------------------------------------------------
+// Left-pane tabs
+// ---------------------------------------------------------------------------
+
+// One tab at a time. The panels keep their ids and their renderers, so this is presentation
+// only: switching never re-renders and never loses a panel's scroll position. The block's
+// off-state is a class rather than the `hidden` attribute -- an author rule already sets
+// `display` on these blocks, and author rules beat the UA's [hidden] rule.
+function setSidebarTab(tab) {
+  const names = ["agents", "plans", "files", "env"];
+  const active = names.indexOf(tab) >= 0 ? tab : "agents";
+  state.sidebarTab = active;
+
+  const blocks = document.querySelectorAll(".agent-section-block[data-tab]");
+  for (let i = 0; i < blocks.length; i++) {
+    blocks[i].classList.toggle("tab-hidden", blocks[i].getAttribute("data-tab") !== active);
+  }
+
+  const buttons = [DOM.tabSidebarAgents, DOM.tabSidebarPlans, DOM.tabSidebarFiles, DOM.tabSidebarEnv];
+  names.forEach((name, i) => {
+    const button = buttons[i];
+    if (!button) return;
+    const on = name === active;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-selected", String(on));
+  });
+
+  // The plan list is a backend fact, so it is refreshed when its tab is revealed rather than
+  // trusted across runs.
+  if (active === "plans") refreshSidebarPlans();
+}
+
+// The rail's ⇆ reveals the Plans tab rather than opening the switcher modal. The modal stays
+// reachable from the tab's own expand button.
+function openPlansTab() {
+  if (state.sidebarCollapsed) setLeftSidebarCollapsed(false);
+  setSidebarTab("plans");
+}
+
+// ---------------------------------------------------------------------------
+// Plan list (left pane)
+// ---------------------------------------------------------------------------
+
+function renderSidebarPlans() {
+  if (!DOM.sidebarPlansList) return;
+  const plans = Array.isArray(state.availablePlans) ? state.availablePlans : [];
+  if (DOM.countSidebarPlans) DOM.countSidebarPlans.textContent = String(plans.length);
+
+  if (plans.length === 0) {
+    DOM.sidebarPlansList.innerHTML = '<div class="tree-empty">No .md plans found in the workspace yet.</div>';
+    return;
+  }
+
+  // The same chip the switcher draws, so the two surfaces cannot drift apart.
+  DOM.sidebarPlansList.innerHTML = plans.map((name) => {
+    const active = name === state.activePlan ? " active" : "";
+    return `<button type="button" class="plan-chip${active}" data-plan="${escapeHtml(name)}">${escapeHtml(name)}</button>`;
+  }).join("");
+}
+
+// The set of plan files is a backend fact, not something to remember across events: a
+// `plan_updated` carries the plan's content but no file list. Ask fresh when the tab opens.
+async function refreshSidebarPlans() {
+  const api = window.pywebview && window.pywebview.api;
+  if (api && typeof api.get_plan_files === "function") {
+    try {
+      const plans = await api.get_plan_files();
+      if (Array.isArray(plans)) state.availablePlans = plans;
+    } catch (_err) {
+      /* offline / no bridge: fall back to the list already in state */
+    }
+  }
+  renderSidebarPlans();
+}
+
+// Switching from the tab runs the same path the switcher's chips do, including the advisory
+// structural gate -- one behaviour, two entry points.
+async function switchActivePlan(planName) {
+  if (!planName || planName === state.activePlan) return;
+  const api = window.pywebview && window.pywebview.api;
+  if (!api) {
+    showToast("Switching plans needs the desktop app; this view is read-only.", "info");
+    return;
+  }
+  try {
+    const res = await api.set_active_plan(planName);
+    applyPlanData(res);
+    showToast(`Switched active plan to: ${planName}`, "success");
+    checkPlanStructureGate(planName);
+  } catch (err) {
+    showToast(`Could not switch plan: ${(err && err.message) || err}`, "error");
+  }
+}
+
+// The top bar's Files button reveals the sidebar's Files tab instead of a centred modal: the
+// tree already lives there, and mirroring it in a modal was the redundancy this pass removed.
+// The full explorer (search, counts) stays reachable from the tab's own expand button.
+function openFilesTab() {
+  if (state.sidebarCollapsed) setLeftSidebarCollapsed(false);
+  setSidebarTab("files");
+}
+
+// ---------------------------------------------------------------------------
 // Workspace tree
 // ---------------------------------------------------------------------------
 
@@ -122,17 +224,26 @@ function buildWorkspaceTree(files) {
       node = child;
     });
 
-    node.files.push({ name: fileName, path: rel, size: (entry && entry.size) || 0 });
+    node.files.push({
+      name: fileName,
+      path: rel,
+      vcs: (entry && entry.vcs) || "",
+    });
   });
 
   return root;
 }
 
-function formatTreeFileSize(bytes) {
-  const size = Number(bytes) || 0;
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+// One letter, colour-coded, in the space the file size used to take: M = changed, U = new.
+// Nothing renders for an unchanged file, so the pane reads as a change list rather than a
+// stat dump. The letters come from the backend (tools/git_status.py), which answers from git
+// when the workspace is a work tree and from the task snapshots when it is not -- the
+// validation below is defensive, because the badge is the only thing shown here.
+function treeVcsBadge(status) {
+  const letter = String(status || "").toUpperCase();
+  if (letter !== "M" && letter !== "U") return "";
+  const label = letter === "M" ? "Modified" : "Untracked";
+  return `<span class="tree-vcs vcs-${letter}" title="${label}">${letter}</span>`;
 }
 
 // One row budget shared by the whole walk, so the cap counts what is actually rendered
@@ -174,7 +285,7 @@ function renderTreeContents(node, budget) {
         `<div class="tree-file-row" title="${escapeHtml(file.path)}">` +
         TREE_FILE_ICON +
         `<span class="tree-name">${escapeHtml(file.name)}</span>` +
-        `<span class="tree-size">${formatTreeFileSize(file.size)}</span>` +
+        treeVcsBadge(file.vcs) +
         "</div>";
     });
 
@@ -222,6 +333,9 @@ function initSidebars() {
   state.planSidebarCollapsed = true;
   applyLeftSidebarState();
   applyRightSidebarState();
+  // Settle the initial tab. The markup already marks the off tabs, so this only confirms the
+  // state; it is here rather than inline so the tab and the flag can never disagree.
+  setSidebarTab(state.sidebarTab || "agents");
 
   if (DOM.btnToggleLeftSidebar) {
     DOM.btnToggleLeftSidebar.addEventListener("click", toggleLeftSidebar);

@@ -120,10 +120,56 @@
   gap: 22px;
 }
 
+/* The blocks below are one tab each, so the pane shows one subject at a time instead of a
+   four-section wall. The bar sits at the top of the scroll region so a long file tree can
+   never push it out of reach. */
+.sidebar-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.sidebar-tab {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.sidebar-tab:hover {
+  color: var(--text-main);
+}
+
+.sidebar-tab.active {
+  background: rgba(14, 165, 233, 0.16);
+  color: var(--accent-blue-hover);
+}
+
 .agent-section-block {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* A tab-hidden block is off, and it is a class rather than the `hidden` attribute on purpose:
+   an author rule already sets `display` on these blocks, and author rules beat the UA's
+   [hidden] rule, so `hidden` would silently do nothing. */
+.agent-section-block.tab-hidden {
+  display: none;
 }
 
 .section-title-row {
@@ -134,10 +180,10 @@
 }
 
 .section-title {
-  font-size: 10px;
+  font-size: 11.5px;
   font-weight: 700;
   letter-spacing: 1px;
-  color: var(--text-dim);
+  color: var(--text-muted);
 }
 
 .section-count {
@@ -146,13 +192,21 @@
   color: var(--text-dim);
   background: rgba(255, 255, 255, 0.05);
   padding: 1px 6px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
 }
 
 .agent-items-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* The plan list is short and its entries are names, so they wrap as chips rather than
+   stacking as rows. */
+.sidebar-plans-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
 }
 
 .agent-list-item {
@@ -227,6 +281,23 @@
   height: 6px;
   border-radius: 50%;
   background: #10b981;
+}
+
+/* An agent actively generating work pulses with the same rhythm as the delegation highlight,
+   on the indicator itself so the two never animate the same element at once. The card takes
+   a static cyan edge as the motion's still frame. */
+.agent-list-item.thinking {
+  border-color: var(--accent-cyan);
+}
+
+.agent-list-item.thinking .agent-status-indicator {
+  background: var(--accent-cyan);
+  animation: thinkingDot 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes thinkingDot {
+  from { transform: scale(1); box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.55); }
+  to   { transform: scale(1.3); box-shadow: 0 0 7px 2px rgba(6, 182, 212, 0.5); }
 }
 
 /* Pulses while an agent is actively working, so it uses the cyan reserved for

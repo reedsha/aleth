@@ -40,13 +40,32 @@
   border-color: var(--border-glass);
 }
 
+/* The bar's controls sit as one group so the title stays left-aligned no matter how
+   many controls the bar carries. */
+.console-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The toggle is a glyph rather than a label, so it cancels the bar's uppercase
+   transform and keeps a square-ish hit area. */
+/* The toggle is a glyph rather than a label, so it cancels the bar's uppercase
+   transform and keeps a square-ish hit area. */
+#btnConsoleOverlay {
+  min-width: 22px;
+  justify-content: center;
+  text-transform: none;
+  font-size: 11px;
+}
+
 .console-stream {
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 8px 12px 10px 12px;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12.5px;
   line-height: 1.6;
   color: var(--text-muted);
 }
@@ -100,4 +119,16 @@
 
 .console-state .console-text {
   color: var(--text-dim);
+}
+
+/* A console that revealed itself -- an agent error, a refused instruction -- gets a brief
+   tint so the user notices it arrived without their asking. The class is removed on a timer
+   from ui/js/console.js, so the highlight cannot outlive the moment. */
+@keyframes consoleAttention {
+  from { background: rgba(56, 189, 248, 0.24); }
+  to { background: var(--bg-secondary); }
+}
+
+.bottom-dock.console-attention .console-bar {
+  animation: consoleAttention 1.8s ease-out;
 }

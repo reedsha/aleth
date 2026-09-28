@@ -11,6 +11,11 @@ function handleAgentEvent(event) {
 
   switch (event.type) {
     case "workflow_started":
+      // A fresh run clears the previous run's pin -- the transcript that was kept up because
+      // that run failed has been superseded -- and opens the console for the duration of this
+      // run. A run that ends cleanly folds it away again (see workflow_complete).
+      state.consolePinned = false;
+      showConsole();
       break;
 
     case "architect_spawn":
@@ -22,6 +27,7 @@ function handleAgentEvent(event) {
       DOM.architectStatusBadge.textContent = "Planning";
       DOM.architectStatusBadge.className = "status-badge";
       DOM.btnCloseArchitect.disabled = true;
+      setAgentThinking(event.agent || "software-architect", true);
       break;
 
     case "log":
@@ -42,18 +48,43 @@ function handleAgentEvent(event) {
 
     case "coder_spawn":
       spawnCoderCard(event.agent, event.name, event.model);
+      setAgentThinking(event.agent, true);
       break;
 
     case "coder_summary":
       renderCardSummary(DOM.coderSummary, event.summary, false);
       DOM.coderStatusBadge.textContent = "Completed";
       DOM.coderStatusBadge.className = "status-badge coder-status completed";
+      setAgentThinking(event.agent, false);
       break;
 
     case "architect_summary":
       renderCardSummary(DOM.architectSummary, event.summary, true);
-      DOM.architectStatusBadge.textContent = "Verified";
-      DOM.architectStatusBadge.className = "status-badge completed";
+      // A failed verification is not an approval, so the badge must not claim "Verified".
+      if (isFailureSummary(event.summary)) {
+        DOM.architectStatusBadge.textContent = "Failed";
+        DOM.architectStatusBadge.className = "status-badge failed";
+      } else {
+        DOM.architectStatusBadge.textContent = "Verified";
+        DOM.architectStatusBadge.className = "status-badge completed";
+      }
+      setAgentThinking(event.agent || "software-architect", false);
+      // The terminal workflow_complete event carries no summary, so the result view's
+      // renderers read it from here (analyze's findings and file list, recommend's
+      // proposals, fix_bug's root cause).
+      state.lastSummary = event.summary || null;
+      // Two summaries are refusals rather than completions: the fix_bug sufficiency gate (an
+      // empty report) and the plan Normalization Gate (a document it could not read). Both end
+      // the run a moment later, and the reason lives only in the transcript, so the console is
+      // revealed and pinned rather than folding away when the run finishes.
+      if (isRefusalSummary(event.summary)) {
+        state.lastRunRefused = true;
+        revealConsoleForAttention();
+      } else if (isFailureSummary(event.summary)) {
+        // A failed verification is not a refusal -- the run finished -- but the reason it failed
+        // lives only in the transcript, so it is pinned for the same reason an error is.
+        revealConsoleForAttention();
+      }
       break;
 
     case "plan_updated":
@@ -63,6 +94,10 @@ function handleAgentEvent(event) {
         console.warn(`[plan_updated] Ignoring stale event for "${event.filename}" (active: "${state.activePlan}")`);
         break;
       }
+      // The result view's roadmap diff needs the tree as it was *before* this event;
+      // applyPlanData() overwrites state.planTree on the next line, so it has to be
+      // captured here rather than reconstructed afterwards.
+      state.planTreeBeforeUpdate = (state.planTree || []).slice();
       applyPlanData(event);
       break;
 
@@ -95,11 +130,33 @@ function handleAgentEvent(event) {
 
     case "agent_error":
       renderErrorBadge(event.agent, event.error, event.can_retry);
+      setAgentThinking(event.agent, false);
+      // An error is not the end of the run, but it is the moment the transcript becomes worth
+      // reading; pinning keeps it on screen for the completion that follows.
+      revealConsoleForAttention();
       break;
 
     case "workflow_stopped":
-    case "workflow_complete":
+      // A halt is a human decision, so the transcript stays up to show how far the run got.
+      revealConsoleForAttention();
+      clearAllAgentThinking();
       finalizeWorkflow(event.status);
+      break;
+
+    case "workflow_complete":
+      clearAllAgentThinking();
+      finalizeWorkflow(event.status);
+      // The backend reports a user halt as workflow_complete(status="stopped") as well, and
+      // that is the same keep-it-up case; a run that was not pinned by an error folds the
+      // console back to the idle dock.
+      if (event.status === "stopped") revealConsoleForAttention();
+      else if (!state.consolePinned) hideConsole();
+      // The result view is the point of the run, so what the action produced is mounted
+      // here -- except after a halt, where the output is partial and "Halted" is the
+      // answer the user asked for, so the transcript stays the surface instead.
+      if (event.status !== "stopped" && typeof mountResultView === "function") {
+        mountResultView();
+      }
       break;
 
     case "workspace_changed":
@@ -114,6 +171,26 @@ function handleAgentEvent(event) {
   }
 }
 
+// Two architect summaries are refusals, not approvals: the fix_bug sufficiency gate and the
+// plan Normalization Gate. They are identified by their status string because that is the only
+// structured field distinguishing them -- the event type is the same architect_summary a
+// successful pass sends. Kept in one place so the strings appear once. See the emitters in
+// orchestration/workflow/actions_impl.py and orchestration/workflow/actions_admin.py.
+const REFUSAL_STATUSES = ["Input Required", "Needs Manual Structure"];
+
+function isRefusalSummary(summary) {
+  return !!summary && REFUSAL_STATUSES.indexOf(summary.status) !== -1;
+}
+
+// A summary whose status says the work was judged and did not pass: ``next_step`` and
+// ``fix_bug`` both end with this status when their verification gate rejects the result. It
+// is a *finished* run, unlike a refusal, so the badge reports failure rather than approval.
+const FAILURE_STATUSES = ["Verification Failed"];
+
+function isFailureSummary(summary) {
+  return !!summary && FAILURE_STATUSES.indexOf(summary.status) !== -1;
+}
+
 function appendLog(agentId, text, logType = "thinking") {
   const isArchitect = agentId === "software-architect" || agentId.includes("architect");
   const targetContent = isArchitect ? DOM.architectStreamContent : DOM.coderStreamContent;
@@ -123,6 +200,10 @@ function appendLog(agentId, text, logType = "thinking") {
   const span = document.createElement("span");
   if (logType === "decision") {
     span.className = "log-line-decision";
+  } else if (logType === "reasoning") {
+    // The model's own deliberation, not the orchestrator's narration: rendered in its own
+    // muted style so it is never mistaken for a workflow step.
+    span.className = "log-line-reasoning";
   }
   span.textContent = text;
   targetContent.appendChild(span);
@@ -179,6 +260,30 @@ function triggerDelegationAnimation(targetCoderId, targetName) {
     }, 2200);
   }
   showToast(`Delegating task to ${targetName}...`, "info");
+}
+
+// The sidebar's status dot never had a state set on it, so a working agent and an idle one
+// looked identical. The active set lives on `state` rather than only on the DOM because the
+// lists are rebuilt wholesale (agents_updated) and a class set directly on a node would be
+// dropped mid-run; renderSidebarAgents() re-applies the set on every rebuild.
+function setAgentThinking(agentId, thinking) {
+  if (!agentId || !state.activeAgentIds) return;
+  if (thinking) state.activeAgentIds.add(agentId);
+  else state.activeAgentIds.delete(agentId);
+  const navItem = document.getElementById(`navAgent_${agentId}`);
+  if (navItem) navItem.classList.toggle("thinking", !!thinking);
+  // The bento header reports the live system, and the set of working agents is part of it.
+  if (typeof updateBentoStats === "function") updateBentoStats();
+}
+
+function clearAllAgentThinking() {
+  if (!state.activeAgentIds) return;
+  state.activeAgentIds.forEach((agentId) => {
+    const navItem = document.getElementById(`navAgent_${agentId}`);
+    if (navItem) navItem.classList.remove("thinking");
+  });
+  state.activeAgentIds.clear();
+  if (typeof updateBentoStats === "function") updateBentoStats();
 }
 
 function spawnCoderCard(coderId, coderName, coderModel) {

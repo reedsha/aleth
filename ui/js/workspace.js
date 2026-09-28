@@ -74,6 +74,7 @@ function closeWorkspaceFilesModal() {
 // ============================================================================
 async function openAuditModal() {
   // Show modal immediately with scanning state
+  setAuditRailMode("audit");
   DOM.auditModalOverlay.style.display = "flex";
   if (DOM.auditStatusPill) {
     DOM.auditStatusPill.textContent = "Scanning...";
@@ -121,6 +122,33 @@ async function openAuditModal() {
     showToast(`Audit failed: ${err.message}`, "error");
     closeAuditModal();
   }
+}
+
+// One rail, two lenses. `audit` runs the codebase/plan sync scan; `summary` is the bento
+// header's "Expand Detail" -- the plan's `## Global State Summary` shown in full, the same
+// text the tile clamps behind three lines. Swapping the mode is a class on the overlay, so
+// the CSS folds away whichever half is not in play and the rail never doubles up.
+function setAuditRailMode(mode) {
+  if (!DOM.auditModalOverlay) return;
+  const summary = mode === "summary";
+  DOM.auditModalOverlay.classList.toggle("summary-mode", summary);
+  if (DOM.auditHeaderTitle) DOM.auditHeaderTitle.textContent = summary
+    ? "Global Architecture & State"
+    : "Codebase & Plan Sync Audit";
+  if (DOM.auditHeaderSubtitle) DOM.auditHeaderSubtitle.textContent = summary
+    ? "Standing context for the active plan"
+    : "Two-Phase Discrepancy Reconciliation";
+}
+
+// The bento summary tile's expand affordance: the full standing context, in the rail.
+function openPlanSummaryPanel() {
+  if (!DOM.auditModalOverlay) return;
+  setAuditRailMode("summary");
+  if (DOM.txtAuditSummaryFull) {
+    DOM.txtAuditSummaryFull.innerHTML = planStateSummaryHtml(state.planJson)
+      || '<div class="plan-summary-bullet">No global state summary in this plan.</div>';
+  }
+  DOM.auditModalOverlay.style.display = "flex";
 }
 
 function renderAuditResults(audit) {

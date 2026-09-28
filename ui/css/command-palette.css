@@ -1,0 +1,145 @@
+/* ==========================================================================
+   COMMAND PALETTE (Ctrl/Cmd + K)
+   The six intent buttons were a permanent strip in the dock spending ~90px of vertical
+   space on a control a keyboard user never needs. They are an overlay now: one search
+   field, a filtered list, Enter to run. It launches the same drawer the task cards do,
+   so nothing about the parameter form or its validation lives here.
+   ========================================================================== */
+.palette-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14vh;
+  z-index: 200;
+}
+
+.palette-card {
+  width: min(560px, 92vw);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-md);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.75);
+  overflow: hidden;
+  animation: palettePop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes palettePop {
+  from { transform: translateY(-8px) scale(0.99); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+.palette-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.palette-search-icon {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.palette-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-main);
+  font-family: var(--font-ui);
+  font-size: 14px;
+}
+
+.palette-input::placeholder {
+  color: var(--text-dim);
+}
+
+.palette-esc {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-dim);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.palette-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.palette-item.active {
+  background: rgba(14, 165, 233, 0.14);
+  border-color: rgba(14, 165, 233, 0.34);
+  color: var(--text-main);
+}
+
+/* Disabled mid-run by setActionButtonsDisabled, which sets opacity and pointer-events
+   inline; this only supplies the cursor it cannot state. */
+.palette-item:disabled {
+  cursor: not-allowed;
+}
+
+.palette-icon {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.palette-label {
+  flex: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.palette-hint {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.palette-empty {
+  padding: 14px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}

@@ -3,8 +3,10 @@
    Uses the design tokens from base.css, and the app's inline success green (#34d399) for
    the saved state, since the palette has no green token of its own. */
 
-/* The small gear in the ENVIRONMENT section header. Deliberately not an action button:
-   the dock's six `.action-btn` elements are a pinned contract of the UI harness. */
+/* The small icon button that sits in a sidebar section header: the ENVIRONMENT gear, and the
+   Files / Plans "expand to the full view" buttons. Its own class rather than an action button:
+   it is a section affordance, not a launch control, so it must not pick up the run lock that
+   setActionButtonsDisabled and updateStrictPlanLock apply to the palette. */
 .section-icon-btn {
   display: inline-flex;
   align-items: center;

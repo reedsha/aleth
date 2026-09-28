@@ -28,6 +28,7 @@ function renderSidebarAgents() {
       </div>
       <span class="agent-status-indicator"></span>
     `;
+    if (state.activeAgentIds && state.activeAgentIds.has(agent.id)) item.classList.add("thinking");
     item.addEventListener("click", () => openPromptEditor(agent.id));
     DOM.sidebarMainAgentsList.appendChild(item);
   });
@@ -50,6 +51,7 @@ function renderSidebarAgents() {
       </div>
       <span class="agent-status-indicator"></span>
     `;
+    if (state.activeAgentIds && state.activeAgentIds.has(agent.id)) item.classList.add("thinking");
     item.addEventListener("click", () => openPromptEditor(agent.id));
     DOM.sidebarCoderAgentsList.appendChild(item);
   });

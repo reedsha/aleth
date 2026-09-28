@@ -8,10 +8,11 @@
    -------------------------------------------------------------------------- */
 .bottom-dock {
   flex: none;
-  /* A default height so the console below the toolbar has a home at launch: the logs
-     pane is the dock's flexible remainder, so with no default it computes to zero and
-     would hold nothing until the seam was dragged. The toolbar is ~146px, so this
-     leaves ~84px of console. Dragging the seam still overrides it. */
+  /* The height the console takes when it is *shown*: the logs pane is the dock's flexible
+     remainder, so with no height it computes to zero and would hold nothing until the seam
+     was dragged. The dock head is the status row (~45px), so this leaves ~195px of
+     transcript. At idle the dock is collapsed to its head instead (see .console-hidden
+     below), and an inline height written by the seam overrides both. */
   height: 240px;
   display: flex;
   flex-direction: column;
@@ -64,7 +65,7 @@
 }
 
 /* The action panel is the dock's head, not a floating island: it sits directly under
-   the seam so resizing the dock carries the buttons with it, exactly like the panel
+   the seam so resizing the dock carries the drawer with it, exactly like the panel
    toolbar of an IDE. It keeps position:relative because the strict-plan lock overlay
    inside it is absolutely positioned against this box. */
 .bottom-dock > .action-control-panel-container {
@@ -75,16 +76,75 @@
   z-index: 5;
 }
 
+/* The head hosts the command drawer and the plan-lock notice -- and nothing else, now that
+   the read-only status row lives in the top bar. With neither present there is nothing to
+   draw, so the container leaves the flow and the dock shows just the console (or, collapsed,
+   just its top border). `:not(.plan-locked)` keeps the notice's own head alive: the class is
+   set by updateStrictPlanLock() in ui/js/plan-tree.js. */
+.bottom-dock:not(.drawer-open) > .action-control-panel-container:not(.plan-locked) {
+  display: none;
+}
+
+/* With the console collapsed the head is the only thing giving the dock height, so the lock
+   notice carries its own: the overlay is height:100% of a box that would otherwise measure
+   just its padding. */
+.bottom-dock.console-hidden .action-control-panel-container.plan-locked {
+  min-height: 76px;
+}
+
 .bottom-dock .action-dock-card {
   max-width: none;
 }
 
-/* The command drawer is a pane of this dock, so the dock keeps a floor of its own while
-   one is open. It is 240 (this file's default) plus the drawer's own 184, and the drawer
-   cancels the card's 8px column gap with a negative margin, so opening one grows the dock
-   by exactly the drawer's height and the console below keeps the size it had. min-height
-   wins over the height the seam drag sets inline, so a dock dragged down still opens the
-   drawer whole and returns to exactly that dragged height once the drawer closes. */
-.bottom-dock.drawer-open {
-  min-height: 424px;
+/* The command drawer is a pane of this dock, so the dock keeps a floor of its own while one
+   is open: the drawer's own 184px, the dock head it sits under (~45px), and a little
+   transcript below. min-height wins over the height the seam drag sets inline, so a dock
+   dragged down still opens the drawer whole and returns to exactly that dragged height once
+   the drawer closes. The floor is scoped to a *shown* console: collapsed, the dock is sized
+   by its content, so forcing 320px would leave a drawer-height hole where the transcript is
+   not. */
+.bottom-dock.drawer-open:not(.console-hidden) {
+  min-height: 320px;
+}
+
+/* Idle: the console is collapsed away and the head leaves the flow (see below), so the dock
+   measures nothing but its top border. `height: auto` (with !important, to beat an inline
+   height the seam wrote) means showing the console again returns to the height the user had
+   dragged it to. */
+.bottom-dock.console-hidden {
+  height: auto !important;
+}
+
+/* The pane and its seam both go: with no transcript in the flow there is nothing for the
+   seam to resize, and a grip on a pane that cannot grow reads as a broken control. */
+.bottom-dock.console-hidden .dock-logs,
+.bottom-dock.console-hidden .dock-resize-handle {
+  display: none;
+}
+
+/* The console's slide-up overlay. Expanded, the log pane leaves the dock's flow and is
+   anchored directly above it, spanning the centre stage, so a long run is read over the
+   workbench instead of competing with it for height. `position` is what makes the dock a
+   containing block the pane can be anchored to, and `overflow` has to open or the dock
+   would clip its own overlay; both apply only while expanded, and `height: auto`
+   !important overrides the inline height the resize seam writes (the seam has nothing to
+   size while the pane is out of flow, and restoring returns to that dragged height). */
+.bottom-dock.console-overlay {
+  position: relative;
+  overflow: visible;
+  height: auto !important;
+}
+
+.bottom-dock.console-overlay .dock-logs {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 45vh;
+  max-height: 62vh;
+  z-index: 30;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-subtle);
+  border-bottom: none;
+  box-shadow: 0 -14px 34px rgba(0, 0, 0, 0.58);
 }

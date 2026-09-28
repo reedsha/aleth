@@ -33,7 +33,7 @@
   width: 100%;
   height: 100%;
   border-radius: 4px;
-  background: rgba(30, 30, 30, 0.85);
+  background: rgba(18, 18, 18, 0.85);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border: 1px solid rgba(245, 158, 11, 0.3);
@@ -102,214 +102,17 @@
   transform: translateY(-1px);
 }
 
-/* Action Buttons Grid
-The dock is a toolbar, so the six actions read as one strip of controls: equal
-cells, no lift, no gradient, no glow. */
-.action-buttons-grid {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 6px;
-  width: 100%;
-}
-
-.action-btn {
-  background: transparent;
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  padding: 6px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-  min-width: 0;
-  min-height: 54px;
-  cursor: pointer;
-  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
-  color: var(--text-muted);
-  font-family: var(--font-ui);
-  outline: none;
-}
-
-.action-btn:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: var(--border-glass);
-  color: var(--text-main);
-}
-
-.action-btn:active {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.action-btn:focus-visible {
-  border-color: var(--accent-blue);
-}
-
-.action-btn:disabled {
-  cursor: not-allowed;
-}
-
-/* The primary action is the only control that stays highlighted at rest. */
-.action-btn.primary-action {
-  background: rgba(14, 165, 233, 0.07);
-  border-color: rgba(14, 165, 233, 0.3);
-  color: var(--accent-blue-hover);
-}
-
-.action-btn.primary-action:hover {
-  background: rgba(14, 165, 233, 0.14);
-  border-color: var(--accent-blue);
-}
-
-/* Monochrome icons: the glyph inherits the button colour, so the only colour on the
-   strip is the highlight under the pointer (or on the primary action). */
-.action-btn-icon {
-  width: 18px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: inherit;
-}
-
-.action-btn-text {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  line-height: 1.2;
-  width: 100%;
-  min-width: 0;
-}
-
-.action-btn-title {
-  max-width: 100%;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.1px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Technical data, so monospace: the target task name of the next step. */
-.action-btn-sub {
-  max-width: 100%;
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Every action was tinted (red bug, green edit, sky lightning) with a matching hover
-   glow. The tints carried no meaning the label did not already carry, so the icons
-   are monochrome now and the toolbar's only colour is the active-state highlight
-   declared above. The per-action classes stay in the markup as hooks. */
-
-/* Six equal cells cannot hold a label like "Execute Next Step" once a cell drops under
-   ~107px, which is where the default 1340px window lands the strip when the window is
-   narrowed to its floor. Rather than ellipsise five of the six labels, the strip drops
-   to its icon row there: an IDE toolbar narrows to icons, and every button already
-   carries a `title` tooltip with its full label. The labels stay in the DOM -- actions.js
-   still writes the next-step target into #lblNextStepTarget -- so this is purely visual.
-   The query reads the dock's width via the container on .bottom-dock in dock.css. */
-@container (max-width: 700px) {
-  .action-btn {
-    min-height: 0;
-    padding: 8px 6px;
-    gap: 0;
-  }
-
-  .action-btn-text {
-    display: none;
-  }
-
-  .action-buttons-grid {
-    gap: 4px;
-  }
-}
-
-/* Action Dock Bottom Row */
-.action-dock-bottom-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.dock-status-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.readonly-plan-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: var(--radius-full);
-  font-size: 11px;
-  color: var(--text-dim);
-  user-select: none;
-}
-
-.readonly-plan-pill .pill-prefix {
-  color: var(--text-dim);
-}
-
-.readonly-plan-pill .pill-name {
-  color: #38bdf8;
-  font-family: var(--font-mono);
-  font-weight: 500;
-}
-
-.dock-progress-pill {
-  font-size: 11px;
-  color: #64748b;
-  font-family: var(--font-mono);
-}
-
-.btn-stop-dock {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border-radius: var(--radius-full);
-  background: rgba(239, 68, 68, 0.18);
-  border: 1px solid rgba(239, 68, 68, 0.45);
-  color: #fca5a5;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.btn-stop-dock:hover {
-  background: #ef4444;
-  color: #ffffff;
-  box-shadow: 0 0 14px rgba(239, 68, 68, 0.5);
-}
-
 /* The plan tree's inline task actions (execute, rollback, stop) and its domain pills are
    styled with the task card itself, in plan-tree.css. */
 
 /* --------------------------------------------------------------------------
    DOCKED COMMAND DRAWER
-   The parameter form of whichever action is active in the strip above it. It used
-   to be a centred overlay over the centre stage; it is a dock pane now, opening
-   flush under that strip, and the dock takes a taller floor while it is open (see
-   .bottom-dock.drawer-open in ui/css/dock.css).
+   The parameter form of whichever action the command palette launched. It used to be a
+   centred overlay over the centre stage, then a pane hanging under the dock's button
+   strip; with the strip gone it is simply the dock card's content, and the dock takes a
+   taller floor while it is open (see .bottom-dock.drawer-open in ui/css/dock.css).
    -------------------------------------------------------------------------- */
 .action-drawer-panel {
-  /* The card's 8px column gap would otherwise hold the drawer off the strip above it.
-     The spacing below it is kept, so the drawer and that strip read as one control. */
-  margin-top: -8px;
   height: 184px;
   flex: none;
   display: none;
@@ -317,22 +120,12 @@ cells, no lift, no gradient, no glow. */
   min-width: 0;
   background: var(--bg-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: 0 0 4px 4px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
 .bottom-dock.drawer-open .action-drawer-panel {
   display: flex;
-}
-
-/* The button whose form is open is the one the drawer hangs from, so the open state is
-   marked on the button itself: an accent frame, no glow. The :hover variant is needed
-   because .action-btn.primary-action:hover is more specific than a bare .active. */
-.action-btn.active,
-.action-btn.active:hover {
-  background: rgba(14, 165, 233, 0.14);
-  border-color: var(--accent-blue);
-  color: var(--text-main);
 }
 
 .drawer-head {
@@ -687,7 +480,7 @@ cells, no lift, no gradient, no glow. */
   padding: 4px 10px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
   font-size: 11px;
   color: #38bdf8;
   font-family: var(--font-mono);

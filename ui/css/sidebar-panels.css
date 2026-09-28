@@ -25,6 +25,17 @@
   padding: 12px 8px;
 }
 
+/* Collapsed, the rail is icons only, so the tab bar is out and every block is shown exactly
+   as it always was. This must come before the hide group below: same specificity, so the
+   later rules win and keep the tree and env sections hidden. */
+.sidebar.collapsed .sidebar-tabs {
+  display: none;
+}
+
+.sidebar.collapsed .agent-section-block {
+  display: flex;
+}
+
 /* --- Left pane, collapsed: brand and text out, icons in. ------------------- */
 .sidebar.collapsed .brand-logo-text,
 .sidebar.collapsed .brand-badge,
@@ -72,7 +83,6 @@
 
 /* --- Right pane, collapsed: plan-tree actions stacked as a small rail. ----- */
 .right-plan-sidebar.collapsed .plan-title-left,
-.right-plan-sidebar.collapsed .plan-progress-card,
 .right-plan-sidebar.collapsed .plan-tree-container {
   display: none;
 }
@@ -223,10 +233,23 @@ details[open] > .tree-folder-row > .tree-caret {
   white-space: nowrap;
 }
 
-.tree-size {
+/* The right-aligned slot the file size used to occupy, now a colour-coded change letter:
+   amber for a modification, green for a new file, and nothing at all for an unchanged one. */
+.tree-vcs {
   flex: none;
+  width: 14px;
+  text-align: center;
+  font-family: var(--font-mono);
   font-size: 9.5px;
-  color: var(--text-dim);
+  font-weight: 700;
+}
+
+.tree-vcs.vcs-M {
+  color: var(--accent-amber);
+}
+
+.tree-vcs.vcs-U {
+  color: #34d399;
 }
 
 /* --------------------------------------------------------------------------
@@ -345,4 +368,47 @@ details[open] > .tree-folder-row > .tree-caret {
    chevron is retired. */
 .right-plan-sidebar .btn-toggle-right-sidebar {
   display: none;
+}
+
+/* --------------------------------------------------------------------------
+   RIGHT PANE FOOTER
+   The rail's own footing. The console is a pane of the bottom dock, so its toggle lives
+   here rather than in the dock head: the rail that owns the workspace keeps the workspace's
+   transcript one click away, and `margin-top: auto` pins it to the foot whether the rail is
+   collapsed or not. It must not be a child the collapsed rules hide -- see the display:none
+   group above, which covers only the title, the progress card and the tree.
+   -------------------------------------------------------------------------- */
+.plan-sidebar-footer {
+  margin-top: auto;
+  display: flex;
+  justify-content: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.rail-console-toggle {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.rail-console-toggle:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+  border-color: var(--border-glass);
+}
+
+/* Open is a state, and colour marks state: the same cyan the plan filename uses for "this is
+   live" rather than decoration. */
+.rail-console-toggle[aria-expanded="true"] {
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
 }

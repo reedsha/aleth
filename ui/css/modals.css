@@ -182,7 +182,7 @@
   width: 90%;
   max-width: 640px;
   max-height: 82vh;
-  background: rgba(37, 37, 38, 0.96);
+  background: rgba(26, 28, 35, 0.96);
   backdrop-filter: blur(28px);
   -webkit-backdrop-filter: blur(28px);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -355,7 +355,7 @@
 
 .plan-chip {
   padding: 6px 12px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border-subtle);
   font-family: var(--font-mono);
@@ -375,6 +375,57 @@
   background: rgba(14, 165, 233, 0.3);
   border-color: var(--accent-blue);
   color: #38bdf8;
+}
+
+/* Normalization Gate: an imported .md that the plan parser cannot read yet. The list
+   states exactly which marks are missing, and the pills show the counts behind the
+   verdict, so the gate explains its own decision instead of just blocking. */
+.normalize-gate-issues {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.normalize-gate-issues li {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.normalize-gate-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.normalize-gate-pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-dim);
+}
+
+.normalize-gate-note {
+  display: block;
+  margin-top: 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+.normalize-gate-note code {
+  font-family: var(--font-mono);
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
 }
 
 .modal-divider {
@@ -559,7 +610,7 @@
   font-family: var(--font-mono);
   font-size: 10px;
   padding: 2px 8px;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-pill);
   background: rgba(14, 165, 233, 0.15);
   color: var(--accent-blue-hover);
   border: 1px solid rgba(14, 165, 233, 0.25);
@@ -648,7 +699,7 @@
 .toast {
   padding: 12px 20px;
   border-radius: var(--radius-md);
-  background: rgba(37, 37, 38, 0.95);
+  background: rgba(26, 28, 35, 0.95);
   border: 1px solid var(--border-glass);
   color: #fff;
   font-size: 13px;

@@ -3,20 +3,25 @@
    Three-Column Layout: Left Agents Dock, Center Stage, Right Plan Tree Tracker
    ========================================================================== */
 
-/* Neutral, high-contrast dark greys in the spirit of the VS Code default theme.
-   The surfaces here are flat greys rather than navy: most components tint
-   themselves with white overlays, so retuning these few tokens cascades widely.
-   Colour is reserved for state (running, success, danger), never decoration. */
+/* Deep, low-saturation dark greys in the spirit of the VS Code default theme,
+   matched to the scrollbar palette declared below. Most components tint
+   themselves with white overlays, so retuning these few tokens cascades widely --
+   which is also why the glass surfaces that hardcode the old secondary grey
+   (dialogs, toasts, the card summary, the core-rules block) are retuned in the
+   same pass. Colour is reserved for state (running, success, danger), never
+   decoration. */
 :root {
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252526;
-  --bg-elevated: #2d2d30;
-  --bg-sidebar: rgba(37, 37, 38, 0.94);
-  --bg-glass-card: rgba(45, 45, 48, 0.78);
+  --bg-primary: #121212;
+  --bg-secondary: #1a1c23;
+  --bg-elevated: #2a2d35;
+  --bg-sidebar: rgba(26, 28, 35, 0.94);
+  --bg-glass-card: rgba(42, 45, 53, 0.78);
   --bg-glass-hover: rgba(255, 255, 255, 0.07);
 
-  --border-subtle: #333333;
-  --border-glass: #3c3c3c;
+  /* A step above --bg-elevated, not equal to it: this border draws the outline of
+     the elevated plan cards, so matching the two would erase those outlines. */
+  --border-subtle: #303338;
+  --border-glass: #3a3d45;
 
   --accent-blue: #0ea5e9;
   --accent-blue-hover: #38bdf8;
@@ -31,11 +36,16 @@
   --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: 'Fira Code', 'JetBrains Mono', ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
 
+  /* One radius scale, one owner. Cards step up with their tier: micro-chips take `sm`,
+     a level-2 accordion card takes `md`, a level-1 phase card or a bento tile takes `lg`,
+     and anything fully round -- badges, tags, progress bars, icon buttons -- takes `pill`.
+     Every rounded parent that clips a child (a progress fill, a left-edge state accent)
+     must also carry `overflow: hidden`, or the child's square corner leaks past the curve. */
   --radius-sm: 8px;
   --radius-md: 14px;
   --radius-lg: 20px;
   --radius-xl: 26px;
-  --radius-full: 9999px;
+  --radius-pill: 9999px;
 
   --sidebar-left-width: 250px;
   --sidebar-right-width: 320px;
@@ -60,6 +70,8 @@
 
 body {
   font-family: var(--font-ui);
+  font-size: 14px;   /* the floor every inherited reading surface sits on; code that
+                        measures a line's pixel stride must derive it from this size */
   background-color: var(--bg-primary);
   color: var(--text-main);
   height: 100vh;
