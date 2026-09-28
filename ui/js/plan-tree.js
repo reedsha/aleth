@@ -169,12 +169,21 @@ function planSubStepsHtml(subSteps) {
   const percent = Math.round((done / subs.length) * 100);
   const rows = subs.map(sub => {
     const subState = planStepState(sub);
+    // A sub-step carries the same tag / files / details the parser gives a task, so they are
+    // shown with the same pills and chips rather than being persisted and left invisible
+    // (audit L3).
+    const pills = planDomainPills(sub);
+    const fileChips = planFileChips(sub);
+    const meta = (pills || fileChips) ? `<div class="task-card-meta">${pills}${fileChips}</div>` : "";
+    const details = (sub.details || []).filter(d => d !== null && d !== undefined && String(d).trim() !== "");
     return `
       <div class="sub-step-row plan-substep-item">
         ${planStatusIcon(subState)}
         <div class="sub-step-title${subState === "completed" ? " completed" : (subState === "failed" ? " failed" : "")}">${planInlineMarkup(escapeHtml(String(sub.title)))}</div>
       </div>
+      ${meta}
       ${planBehavioralLogHtml(sub.behavioral_log, "behavioral-log-sub")}
+      ${details.map(d => `<div class="step-detail-bullet">${planInlineMarkup(escapeHtml(String(d)))}</div>`).join("")}
     `;
   }).join("");
 

@@ -58,6 +58,13 @@ function notifyInitFailure(err) {
 function reportPlanDiagnostics(planData) {
   if (!planData || typeof showToast !== "function") return;
 
+  // A plan.json that could not be read is rebuilt from the markdown when it can be, and
+  // degrades to a blank plan when it cannot. Either way, say so: a blank tree with no
+  // explanation is the signature of a corrupt file, not an empty roadmap (audit F3).
+  if (planData.load_error) {
+    showToast(`${planData.load_error}. The plan was rebuilt from ${planData.filename || "the markdown plan"}.`, "error");
+  }
+
   const tasks = planData.plan_json && planData.plan_json.steps
     ? planData.plan_json.steps.length
     : (planData.tree || []).length;
