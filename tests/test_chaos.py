@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tools import env_sanitizer, process_control, stream_drain
+from tools import docker_sandbox, env_sanitizer, process_control, stream_drain
 from tools.mcp_client import MCPClient
 
 IS_POSIX = os.name == "posix"
@@ -170,9 +170,11 @@ class ZombieEradicationTests(unittest.TestCase):
 
         Asserted against *this run's* container name rather than "no double anywhere": the suite
         shares a process table, and a global assertion would report another test's leak as this
-        test's failure. (It did, and that leak is real -- see the Phase 10 note in HANDOFF §12:
-        killing an MCP session mid-command orphans that command's runtime client, because the
-        client is deliberately in its own session.)
+        test's failure. That leak was real when this test first ran -- killing an MCP session
+        mid-command orphaned that command's runtime client, because the client is deliberately in
+        its own session -- and it is closed by the exec server's signal handler
+        (:func:`tools.mcp_exec_server.install_container_reaper`), which
+        :class:`ContainerLifecycleTests` now proves.
         """
         from tools import docker_sandbox
 
@@ -300,6 +302,114 @@ class FileDescriptorTests(unittest.TestCase):
             after = self._open_fds()
 
         self.assertEqual(after, before, f"descriptor table grew: {before} -> {after}")
+
+
+def _real_runtime_available() -> bool:
+    """A live daemon reached through the real client (no test double).
+
+    These tests assert on the container *table*, so a double cannot stand in: they are about the
+    lifecycle the daemon owns.
+    """
+    if os.environ.get("ALETH_DOCKER_BIN"):
+        return False
+    try:
+        from tools import docker_sandbox
+
+        return docker_sandbox.available()
+    except Exception:
+        return False
+
+
+@unittest.skipUnless(_real_runtime_available(), "no live Docker daemon")
+class ContainerLifecycleTests(unittest.TestCase):
+    """A container is accountable: it is labelled, and its server takes it with it."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="aleth_chaos_lifecycle_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+        # A leftover from a failed assertion must not become the next test's pollution.
+        self.addCleanup(lambda: docker_sandbox.purge_orphaned_containers())
+
+    def test_the_container_carries_the_management_labels(self):
+        argv = docker_sandbox.build_command(
+            "echo hi", root=self.root, name="probe", execution_id="abc123"
+        )
+        labels = [argv[index + 1] for index, token in enumerate(argv) if token == "--label"]
+        self.assertIn("aleth.managed=true", labels)
+        self.assertIn("aleth.execution_id=abc123", labels)
+        self.assertTrue(
+            any(label.startswith("aleth.owner_pid=") for label in labels),
+            f"no owner label: {labels}",
+        )
+
+    def test_mcp_server_sigterm_cleans_running_container(self):
+        """A SIGTERM to the exec server removes the container it has in flight.
+
+        Without the handler the container outlives its server: the server was the only thing that
+        knew its name, so nothing else will ever remove it.
+        """
+        import threading
+
+        from tools.mcp_client import MCPClient, default_exec_command
+
+        client = MCPClient(default_exec_command(self.root), timeout=30)
+        client.start()
+        client.initialize()
+        try:
+            def _call():
+                try:
+                    client.call_tool("execute_command", {"command": "sleep 100"})
+                except Exception:
+                    pass  # the server is killed underneath it; that is the point
+
+            threading.Thread(target=_call, daemon=True).start()
+
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not docker_sandbox.managed_containers():
+                time.sleep(0.2)
+            self.assertTrue(
+                docker_sandbox.managed_containers(), "no managed container appeared"
+            )
+
+            # SIGTERM first (then SIGKILL after the grace period): the handler's one chance.
+            client.close()
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and docker_sandbox.managed_containers():
+                time.sleep(0.1)
+            self.assertEqual(
+                docker_sandbox.managed_containers(), [],
+                "the container outlived the server that started it",
+            )
+        finally:
+            client.close()
+
+    @unittest.skipUnless(IS_POSIX, "/proc is a Linux interface")
+    def test_the_sweeper_removes_a_container_whose_owner_is_gone(self):
+        """The boot/teardown sweep: a dead owner is the definition of an orphan."""
+        name = "aleth-chaos-orphan"
+        created = subprocess.run(
+            [*docker_sandbox.docker_bin(), "run", "-d", "--rm", "--name", name,
+             "--label", "aleth.managed=true",
+             "--label", "aleth.owner_pid=999999999",  # a pid that cannot exist
+             docker_sandbox.image(), "/bin/sh", "-c", "sleep 300"],
+            capture_output=True, text=True, timeout=180,
+        )
+        self.assertEqual(created.returncode, 0, created.stderr)
+        self.addCleanup(lambda: docker_sandbox.remove_container(name))
+
+        removed = docker_sandbox.purge_orphaned_containers()
+        self.assertTrue(removed, "the orphan was not swept")
+        self.assertEqual(self._by_name(name), [], "the orphan is still in the container table")
+
+    @staticmethod
+    def _by_name(name: str):
+        listing = subprocess.run(
+            [*docker_sandbox.docker_bin(), "ps", "-a", "--filter", f"name={name}",
+             "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=60,
+        )
+        return [line for line in listing.stdout.splitlines() if line.strip()]
 
 
 if __name__ == "__main__":

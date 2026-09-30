@@ -1370,6 +1370,17 @@ namespace, one filesystem and one signal space, so:
   Proxying `docker run` through another OS's interpreter would also break the process-tree
   guarantee: killing the *proxy* leaves the container running in the daemon's namespace,
   orphaned and unreachable by the timeout path.
+* **A container is accountable, and a killed server takes it with it.** Every container carries
+  `aleth.managed=true`, `aleth.execution_id=<uuid>` and `aleth.owner_pid=<pid>`. The exec server
+  tracks its in-flight containers and removes them on `SIGTERM`/`SIGINT`
+  (`tools.mcp_exec_server.install_container_reaper`) — the MCP client signals SIGTERM before its
+  SIGKILL grace period, so the handler is the one chance to clean up, and without it a container
+  whose server was killed outlives everything that knew its name.
+  `tools.docker_sandbox.purge_orphaned_containers()` sweeps what is left: with a session id it
+  removes that owner's containers, and with none it removes any whose `owner_pid` no longer
+  exists in `/proc`. A dead owner *is* the definition of an orphan — that process is the only one
+  that would ever have removed it — and where `/proc` cannot answer, nothing is removed rather
+  than something that may still be running.
 * **A Windows-drive workspace is not usable.** A container writing through a `/mnt/c` (9p DrvFs)
   bind mount creates files with **no usable Windows ACL** — mode `0000`, which Windows can
   neither read nor enumerate. So when the daemon lives on Linux, the orchestrator and its

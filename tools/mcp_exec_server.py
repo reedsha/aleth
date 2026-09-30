@@ -36,11 +36,12 @@ from __future__ import annotations
 
 import os
 import re
+import signal
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tools import mcp_stdio
+from tools import docker_sandbox, mcp_stdio
 
 SERVER_NAME = "aleth-exec"
 SERVER_VERSION = "1.0.0"
@@ -293,12 +294,54 @@ def _truncate(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     return f"{text[:keep]}\n... [{len(text) - max_chars} characters omitted] ...\n{text[-keep:]}"
 
 
+def install_container_reaper() -> None:
+    """Remove this server's in-flight containers when the server is asked to stop.
+
+    The orphan this closes: this server launches a container per command, and the MCP client
+    spawns *this* server. When the client goes away -- a run is stopped, a session is torn down --
+    it signals this process first (SIGTERM, then SIGKILL after a grace period). A container whose
+    server was killed keeps running, because the server was the only thing that knew its name.
+
+    SIGTERM is therefore the one chance to clean up, and this is where it is taken. It is not a
+    substitute for the timeout path inside ``run_isolated`` -- that covers a command that runs too
+    long; this covers the *server* being killed underneath a command.
+
+    A no-op where the platform cannot deliver these signals, and on a thread that is not the main
+    one (``signal.signal`` refuses both): the guarantee is then the client's group kill, which is
+    what the handler exists to complement.
+    """
+
+    def _reap(signum, _frame):
+        try:
+            removed = docker_sandbox.purge_active_containers()
+            print(
+                f"[exec-server] signal {signum}: removed {len(removed)} in-flight container(s)",
+                file=sys.stderr,
+            )
+        except Exception as error:  # never let cleanup replace the reason we are stopping
+            print(f"[exec-server] container cleanup failed: {error}", file=sys.stderr)
+        # Leave now: the client is tearing this process down, and a half-served request would
+        # write a reply nobody is listening for.
+        raise SystemExit(0)
+
+    for name in ("SIGTERM", "SIGINT"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            signal.signal(number, _reap)
+        except (ValueError, OSError):
+            # Not the main thread, or the platform refuses: the group kill still covers us.
+            pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     root = os.getcwd()
     if "--root" in args:
         root = args[args.index("--root") + 1]
     server = ExecServer(root)
+    install_container_reaper()
     return mcp_stdio.serve(
         server_name=SERVER_NAME,
         server_version=SERVER_VERSION,

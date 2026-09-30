@@ -61,9 +61,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from tools import env_sanitizer, process_control, stream_drain
 
@@ -86,6 +87,19 @@ DEFAULT_UID = "1000"
 DEFAULT_GID = "1000"
 
 WORKSPACE_MOUNT = "/workspace"
+
+# Every container this app creates carries these, so a leftover can be *found* rather than
+# guessed at. ``owner_pid`` is what makes an orphan identifiable: the container is orphaned when
+# the process that created it no longer exists, and nothing else records that fact.
+LABEL_MANAGED = "aleth.managed"
+LABEL_EXECUTION = "aleth.execution_id"
+LABEL_OWNER = "aleth.owner_pid"
+MANAGED_FILTER = f"label={LABEL_MANAGED}=true"
+
+# Containers this process has started and not yet finished. The signal handler in the exec
+# server removes these; ``run_isolated`` adds and removes them around each command.
+_ACTIVE: Dict[str, str] = {}
+_ACTIVE_LOCK = threading.Lock()
 # How long to wait for a wedged container to be force-removed. Bounded, so "the command timed
 # out" can never become "the orchestrator hung".
 KILL_TIMEOUT_SECONDS = 15
@@ -371,6 +385,7 @@ def build_command(
     memory_mb: int = DEFAULT_MEMORY_MB,
     max_processes: int = DEFAULT_MAX_PROCESSES,
     image_name: Optional[str] = None,
+    execution_id: Optional[str] = None,
 ) -> List[str]:
     """The ``docker run`` argv for one command.
 
@@ -378,12 +393,19 @@ def build_command(
     workspace: it is the only host path mounted, and the container's working directory. It is
     used as written -- the path is a path *in the daemon's filesystem*, because the orchestrator
     runs there too.
+
+    The three labels make the container accountable: that it is ours, which execution it belongs
+    to, and which process created it. That last one is the whole point -- see
+    :func:`purge_orphaned_containers`.
     """
     uid, gid = host_identity()
     resolved = str(Path(root).resolve())
     return [
         *docker_bin(), "run", "--rm",
         "--name", name,
+        "--label", f"{LABEL_MANAGED}=true",
+        "--label", f"{LABEL_EXECUTION}={execution_id or name}",
+        "--label", f"{LABEL_OWNER}={os.getpid()}",
         "--network=none",
         "--user", f"{uid}:{gid}",
         "--workdir", WORKSPACE_MOUNT,
@@ -427,6 +449,125 @@ def _diagnostic(stderr: str) -> str:
     return lines[0] if lines else "no diagnostic"
 
 
+def _register_active(name: str, execution_id: str) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE[name] = execution_id
+
+
+def _unregister_active(name: str) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE.pop(name, None)
+
+
+def active_containers() -> List[str]:
+    """The names of the containers this process still has in flight."""
+    with _ACTIVE_LOCK:
+        return list(_ACTIVE)
+
+
+def remove_container(container: str) -> bool:
+    """Force-remove one container. Idempotent, and never raises.
+
+    ``rm -f`` on an already-gone container succeeds, which is what makes every caller here safe
+    to retry: the signal handler, the timeout path and the sweeper can all race each other.
+    """
+    try:
+        argv = [*docker_bin(), "rm", "-f", container]
+    except EnvironmentError:
+        return False
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, timeout=KILL_TIMEOUT_SECONDS,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def purge_active_containers() -> List[str]:
+    """Force-remove every container this process still has in flight.
+
+    What the exec server's signal handler calls. Deliberately not a docker *query*: this runs on
+    a signal, and the names are already known here -- a query would add a round trip to a path
+    that has a grace period measured in seconds.
+    """
+    names = active_containers()
+    removed = [name for name in names if remove_container(name)]
+    for name in names:
+        _unregister_active(name)
+    return removed
+
+
+def _docker_lines(args: List[str], *, timeout: int = PROBE_TIMEOUT_SECONDS) -> List[str]:
+    """Run a docker query and return its non-empty stdout lines. Never raises."""
+    try:
+        argv = [*docker_bin(), *args]
+    except EnvironmentError:
+        return []
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if completed.returncode != 0:
+        return []
+    return [line for line in (completed.stdout or "").splitlines() if line.strip()]
+
+
+def managed_containers() -> List[Tuple[str, str, str]]:
+    """``(id, execution_id, owner_pid)`` for every container this app manages. Never raises."""
+    rows: List[Tuple[str, str, str]] = []
+    lines = _docker_lines([
+        "ps", "-a", "--filter", MANAGED_FILTER,
+        "--format",
+        '{{.ID}}\t{{.Label "' + LABEL_EXECUTION + '"}}\t{{.Label "' + LABEL_OWNER + '"}}',
+    ])
+    for line in lines:
+        parts = [part.strip() for part in line.split("\t")]
+        if len(parts) == 3:
+            rows.append((parts[0], parts[1], parts[2]))
+    return rows
+
+
+def _owner_is_gone(owner_pid: str) -> bool:
+    """Whether the process that created a container no longer exists.
+
+    ``/proc/<pid>`` is the authority, and only on POSIX. Elsewhere this answers ``False``: a
+    sweep that cannot tell must not remove a container that may still be in use.
+    """
+    if os.name != "posix" or not owner_pid.isdigit():
+        return False
+    return not os.path.exists(f"/proc/{owner_pid}")
+
+
+def purge_orphaned_containers(session_id: Optional[str] = None) -> List[str]:
+    """Force-remove managed containers left behind by a process that is gone.
+
+    Two modes, and the difference is who is asking:
+
+    * ``session_id`` given -- an owning process tidying up after itself. It matches the
+      ``owner_pid`` label, which *is* the session: the exec server's containers are the ones its
+      own pid created.
+    * ``session_id=None`` -- the boot/teardown sweep. A container is orphaned exactly when the
+      process that created it no longer exists, because that process is the only one that would
+      ever have removed it. ``/proc`` answers that on POSIX; where it cannot, nothing is removed
+      rather than something that might still be running.
+    """
+    removed: List[str] = []
+    for container_id, _execution, owner_pid in managed_containers():
+        if session_id is not None:
+            if owner_pid != str(session_id):
+                continue
+        elif not _owner_is_gone(owner_pid):
+            continue
+        if remove_container(container_id):
+            removed.append(container_id)
+    return removed
+
+
 def _force_remove(name: str) -> None:
     """Destroy a container by name. Best effort: cleanup must never mask the timeout."""
     try:
@@ -462,10 +603,11 @@ def run_isolated(
 
     try:
         target = ensure_image()
-        name = f"aleth-exec-{uuid.uuid4().hex[:12]}"
+        execution_id = uuid.uuid4().hex
+        name = f"aleth-exec-{execution_id[:12]}"
         argv = build_command(
-            command, root=str(root), name=name,
-            memory_mb=memory_mb, max_processes=max_processes, image_name=target,
+            command, root=str(root), name=name, memory_mb=memory_mb,
+            max_processes=max_processes, image_name=target, execution_id=execution_id,
         )
     except EnvironmentError as error:
         # The client is missing: a fatal configuration error, reported at the tool boundary as
@@ -483,6 +625,11 @@ def run_isolated(
         raise SandboxError(
             f"the container runtime {docker_bin()[0]!r} could not be started: {error}"
         ) from error
+
+    # Registered from the moment the container exists: the signal handler can only remove what it
+    # knows about, and the window between ``run`` starting and returning is exactly the window in
+    # which a killed server orphans a container.
+    _register_active(name, execution_id)
 
     # Drain both streams **while the client runs**, into a bounded window. Reading after the
     # process exits would deadlock on a full pipe, and ``communicate()`` would retain every byte
@@ -517,6 +664,7 @@ def run_isolated(
         result.returncode = -1
         result.timed_out = True
         result.notes = "the container was force-removed after the timeout"
+        _unregister_active(name)
         return result
 
     out_thread.join(timeout=5)
@@ -524,6 +672,7 @@ def run_isolated(
     process_control.close_pipes(process)
 
     result = _receipts()
+    _unregister_active(name)
     if result.returncode in DOCKER_CLIENT_ERROR_CODES and _is_unreachable_runtime(
         result.stderr, result.stdout
     ):
