@@ -36,3 +36,4 @@ crates/*/target/
 
 # Local knowledge-graph vector index
 knowledge_vectors/
+.aleth_id

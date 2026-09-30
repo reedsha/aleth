@@ -1,0 +1,105 @@
+name: CI
+
+# A verification script that requires manual execution does not exist; it bit-rots. Every gate the
+# project claims is a gate here, and the pipeline is the thing that runs them.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes the previous run on the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # ``.env`` is gitignored, so the suite must be given a seam. No test makes a real call -- the
+  # completers are scripted and the transports stubbed -- but several build a real agent, and
+  # ``create_deep_agent`` constructs ``ChatOpenAI``, which requires a key to exist at all.
+  OPENAI_API_KEY: sk-ci-placeholder
+  OPENAI_BASE_URL: https://example.invalid/v1
+  ALETH_EMBEDDER: hashing
+  ALETH_SYSTEM2: "0"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install the UI toolchain
+        run: npm ci
+      - name: ESLint and the dependency-cruiser gate
+        run: npm run lint
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python syntax gate
+        # The project's lint gate is the frontend one (ESLint + depcruise); this is the cheap
+        # Python half -- every module must at least parse.
+        run: python -m compileall -q agents core orchestration storage tools app.py bridge_bus.py env_boot.py main.py registry.py
+
+  test-native:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # The directive asked for 3.10 and 3.11 as well. They are absent on purpose: pyproject
+        # declares ``requires-python = ">=3.12"``, so those interpreters cannot install the project
+        # at all -- a leg that fails in the installer tests nothing about the code. 3.13 is included
+        # so the upper end of the range is exercised rather than assumed.
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the compiled core
+        shell: bash
+        env:
+          # ``crates/deepagents_core/rust-toolchain.toml`` pins the *Windows* GNU channel, because
+          # the MSVC toolchain needs a Windows SDK this project does not assume. On Linux that
+          # channel is not installable, so this override is what lets the same crate build there.
+          RUSTUP_TOOLCHAIN: ${{ runner.os == 'Linux' && 'stable' || '' }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e crates/deepagents_core
+      - name: Install the kernel and its test extra
+        run: python -m pip install -e ".[test]"
+      - name: Build the sandbox image
+        # Linux runners have a daemon, so the container-backed isolation tests actually run here
+        # instead of skipping -- and the image is built once, up front, rather than cold inside a
+        # test's own timeout.
+        if: runner.os == 'Linux'
+        run: docker build -f docker/sandbox.Dockerfile -t aleth-sandbox:latest docker/
+      - name: Full suite
+        run: python -m pytest --no-header -q
+
+  test-immutable:
+    name: test-immutable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the build frontend
+        run: python -m pip install --upgrade pip build
+      - name: Build the wheel, lock it, and boot from it
+        # The only acceptable proof of immutability: the wheel is installed into an isolated venv,
+        # every write bit is stripped from the installed application, and the kernel is booted. If it
+        # writes a log, a .pyc or a SQLite journal into its own tree, the OS denies it and this job
+        # fails. A soft "nothing was written" assertion would not.
+        env:
+          ALETH_IMMUTABLE_PYTHON: python
+        run: sh tools/verify_immutable_install.sh
