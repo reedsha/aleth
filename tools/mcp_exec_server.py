@@ -39,7 +39,7 @@ import re
 import signal
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools import docker_sandbox, mcp_stdio
 
@@ -199,13 +199,17 @@ class CommandEscaped(Exception):
     """An argument resolved outside the workspace root. Never a soft failure."""
 
 
-def run_workspace_command(command: str, *, root: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> str:
-    """Run one command in a container, rooted at ``root``. Returns the ``[Exit Code: N]`` block.
+def run_workspace_command_result(
+    command: str, *, root: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+) -> Tuple[str, Optional[Any]]:
+    """The formatted block **and** the isolated result, so a caller can record the receipt.
 
-    The single entry point both tools use, and the one the isolation tests drive directly.
-    A container refusal is *reported* in the result rather than raised: the caller is a
-    verification gate, and "this could not be run safely" is an answer it must be able to
-    read, not an exception that aborts a run. It is never a licence to run on the host.
+    :func:`run_workspace_command` is this function's first half; the pair exists so the exec
+    server can keep the forensics (identity, duration, full-stream hashes) without changing the
+    contract every existing caller and test depends on.
+
+    A refusal returns ``None`` for the result: no container ran, so there is nothing to record.
+    A timeout *does* carry a result -- an execution that had to be killed is telemetry too.
     """
     from tools import docker_sandbox
 
@@ -217,11 +221,12 @@ def run_workspace_command(command: str, *, root: str, timeout: int = DEFAULT_TIM
         return (
             f"Error: Command refused: container isolation is required but unavailable ({error}). "
             "Start the Docker daemon, or point ALETH_DOCKER_BIN at a reachable runtime. "
-            "Commands are never run on the host."
+            "Commands are never run on the host.",
+            None,
         )
 
     if result.timed_out:
-        return f"Error: Command timed out after {timeout} seconds."
+        return f"Error: Command timed out after {timeout} seconds.", result
 
     parts = []
     stdout = (result.stdout or "").strip()
@@ -231,15 +236,62 @@ def run_workspace_command(command: str, *, root: str, timeout: int = DEFAULT_TIM
     if stderr:
         parts.append(f"[STDERR]\n{stderr}")
     body = "\n".join(parts) or "(Command executed successfully with no output)"
-    return f"[Exit Code: {result.returncode}]\n{_truncate(body)}"
+    return f"[Exit Code: {result.returncode}]\n{_truncate(body)}", result
+
+
+def run_workspace_command(command: str, *, root: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> str:
+    """Run one command in a container, rooted at ``root``. Returns the ``[Exit Code: N]`` block.
+
+    The single entry point both tools use, and the one the isolation tests drive directly.
+    A container refusal is *reported* in the result rather than raised: the caller is a
+    verification gate, and "this could not be run safely" is an answer it must be able to
+    read, not an exception that aborts a run. It is never a licence to run on the host.
+    """
+    return run_workspace_command_result(command, root=root, timeout=timeout)[0]
 
 
 class ExecServer:
     """The command runner, bound to one root directory."""
 
-    def __init__(self, root: str, timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS):
+    def __init__(
+        self,
+        root: str,
+        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        db_path: Optional[str] = None,
+        session_id: str = "",
+    ):
         self.root = Path(root).resolve()
         self.timeout_seconds = int(timeout_seconds)
+        # Where the forensic receipt goes, and which run it belongs to. Empty means "no ledger":
+        # a caller that did not ask for telemetry gets none, rather than a crash on a missing path.
+        self.db_path = str(db_path) if db_path else ""
+        self.session_id = str(session_id or "")
+
+    def _record_receipt(self, tool: str, result: Any) -> str:
+        """Append the forensic receipt. Returns ``""`` on success, or the fault to report.
+
+        The rule this implements: a receipt that cannot be written is a **critical fault**, not a
+        warning. An execution whose evidence was lost must not read as a clean success, so the
+        fault is surfaced both in the tool result the model sees and on stderr.
+        """
+        if not self.db_path:
+            return ""
+        try:
+            from storage import telemetry
+
+            telemetry.record(
+                self.db_path,
+                execution_id=result.execution_id,
+                session_id=self.session_id,
+                target_tool=tool,
+                exit_code=int(result.returncode),
+                duration_ms=int(result.duration_ms),
+                stdout_hash=result.stdout_sha256,
+                stderr_hash=result.stderr_sha256,
+            )
+        except Exception as error:
+            return f"{type(error).__name__}: {error}"
+        return ""
 
     def _assert_contained(self, command: str) -> None:
         """Refuse the command if any argument resolves outside the root.
@@ -257,14 +309,24 @@ class ExecServer:
                     f"Path traversal denied: argument {run!r} resolves outside the workspace root."
                 )
 
-    def execute_command(self, command: str, timeout_seconds: Optional[int] = None) -> str:
+    def execute_command(
+        self, command: str, timeout_seconds: Optional[int] = None, *, tool: str = "execute_command"
+    ) -> str:
         text = str(command or "").strip()
         if not text:
             raise ValueError("an empty command was given")
         self._assert_contained(text)
-        return run_workspace_command(
+        output, result = run_workspace_command_result(
             text, root=str(self.root), timeout=int(timeout_seconds or self.timeout_seconds)
         )
+        if result is not None:
+            fault = self._record_receipt(tool, result)
+            if fault:
+                print(f"[exec-server] TELEMETRY FAULT ({tool}): {fault}", file=sys.stderr)
+                output += (
+                    f"\n[TELEMETRY FAULT] the execution receipt could not be recorded: {fault}"
+                )
+        return output
 
     def execute_restricted_command(self, command: str, timeout_seconds: Optional[int] = None) -> str:
         """The Architect's verification shell: policy first, then the same sandboxed run."""
@@ -274,13 +336,13 @@ class ExecServer:
         denial = restricted_denial(text)
         if denial:
             return denial
-        return self.execute_command(text, timeout_seconds)
+        return self.execute_command(text, timeout_seconds, tool="execute_restricted_command")
 
     def call(self, name: str, arguments: Dict[str, Any]) -> str:
         command = str(arguments.get("command") or "")
         timeout = arguments.get("timeout_seconds")
         if name == "execute_command":
-            return self.execute_command(command, timeout)
+            return self.execute_command(command, timeout, tool=name)
         if name == "execute_restricted_command":
             return self.execute_restricted_command(command, timeout)
         raise ValueError(f"unknown tool {name!r}")
@@ -340,7 +402,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     root = os.getcwd()
     if "--root" in args:
         root = args[args.index("--root") + 1]
-    server = ExecServer(root)
+    db_path = args[args.index("--db-path") + 1] if "--db-path" in args else None
+    session_id = args[args.index("--session-id") + 1] if "--session-id" in args else ""
+    server = ExecServer(root, db_path=db_path, session_id=session_id)
     install_container_reaper()
     return mcp_stdio.serve(
         server_name=SERVER_NAME,

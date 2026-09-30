@@ -62,6 +62,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -170,7 +171,13 @@ class Capabilities:
 
 @dataclasses.dataclass
 class IsolatedResult:
-    """The outcome of an isolated run, in the shape the exec server formats."""
+    """The outcome of an isolated run, in the shape the exec server formats.
+
+    Carries the forensics as well as the output: the execution's identity, how long it took, and a
+    SHA-256 of each **full** stream. The hashes are what make a ledger row verifiable -- the text
+    below them is truncated to 1 MB by design (``tools.stream_drain``), so the hash is the only
+    thing that speaks for the whole output.
+    """
 
     returncode: int
     stdout: str
@@ -178,6 +185,12 @@ class IsolatedResult:
     sandboxed: bool
     timed_out: bool = False
     notes: str = ""
+    execution_id: str = ""
+    duration_ms: int = 0
+    stdout_sha256: str = ""
+    stderr_sha256: str = ""
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
 
 
 def image() -> str:
@@ -711,6 +724,8 @@ def run_isolated(
     # which a killed server orphans a container.
     _register_active(name, execution_id)
 
+    started = time.monotonic()
+
     # Drain both streams **while the client runs**, into a bounded window. Reading after the
     # process exits would deadlock on a full pipe, and ``communicate()`` would retain every byte
     # a chatty command wrote (see ``tools.stream_drain``).
@@ -724,6 +739,12 @@ def run_isolated(
             stream_drain.decode(out_buffer.render()),
             stream_drain.decode(err_buffer.render()),
             sandboxed=True,
+            execution_id=execution_id,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            stdout_sha256=out_buffer.sha256,
+            stderr_sha256=err_buffer.sha256,
+            stdout_bytes=out_buffer.total_bytes,
+            stderr_bytes=err_buffer.total_bytes,
         )
 
     try:

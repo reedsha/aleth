@@ -37,6 +37,8 @@ from pydantic import BaseModel, ConfigDict
 
 _STRICT = ConfigDict(extra="forbid", strict=False)
 
+from storage.telemetry import TELEMETRY_DDL
+
 # The database file name, beside the markdown projection in the plan directory.
 DB_FILENAME = "aleth_state.db"
 
@@ -559,6 +561,7 @@ class PlanStore:
                 """
                 + KNOWLEDGE_GRAPH_DDL
                 + SKILLS_DDL
+                + TELEMETRY_DDL
             )
             self._migrate(connection)
             self._seed_skills(connection)

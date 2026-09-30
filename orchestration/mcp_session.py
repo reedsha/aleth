@@ -23,6 +23,7 @@ timeout note in ``tools/mcp_client.py``.)
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
 from tools.mcp_client import (
@@ -136,9 +137,15 @@ class MCPSessionContext:
     ):
         self.root = str(root)
         self.timeout = timeout
+        # The run's identity, for the forensic ledger: every receipt the exec server writes is
+        # stamped with it, so an investigation can ask "what did this run execute?" instead of
+        # reconstructing it from timestamps.
+        self.session_id = uuid.uuid4().hex
         self._commands = {
             FS_SERVER: fs_command or default_command(self.root),
-            EXEC_SERVER: exec_command or default_exec_command(self.root),
+            EXEC_SERVER: exec_command or default_exec_command(
+                self.root, db_path=self._telemetry_db(), session_id=self.session_id
+            ),
         }
         self._clients: Dict[str, MCPClient] = {}
         self._bound: Dict[str, List[Any]] = {}
@@ -156,6 +163,20 @@ class MCPSessionContext:
         )
 
     # -- lifecycle ---------------------------------------------------------------
+    def _telemetry_db(self) -> Optional[str]:
+        """Where the exec server writes its receipts, or ``None`` when it cannot be resolved.
+
+        The store owns the path; this is the seam that hands it to a child process. A failure to
+        resolve it leaves the ledger unwritten rather than stopping a run -- the *sandbox* is the
+        boundary, and the ledger is an observer of it.
+        """
+        try:
+            from storage.db import get_store
+
+            return str(get_store().path)
+        except Exception:
+            return None
+
     def _wanted_servers(self) -> tuple:
         """The servers this session may spawn. The engine's session spawns them all."""
         if self._resolved is None:

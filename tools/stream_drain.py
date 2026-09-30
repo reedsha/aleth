@@ -25,6 +25,7 @@ A truncated read says so, in the receipt, with the byte count that was dropped
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from typing import BinaryIO, Tuple
 
@@ -38,7 +39,7 @@ CHUNK_BYTES = 64 * 1024
 class DualBuffer:
     """The first ``HEAD_BYTES`` verbatim, plus a sliding tail, capped at ``LIMIT_BYTES``."""
 
-    __slots__ = ("_head", "_tail", "_dropped", "_head_bytes", "_tail_bytes")
+    __slots__ = ("_head", "_tail", "_dropped", "_head_bytes", "_tail_bytes", "_digest")
 
     def __init__(self, head_bytes: int = HEAD_BYTES, tail_bytes: int = TAIL_BYTES):
         self._head = bytearray()
@@ -46,11 +47,16 @@ class DualBuffer:
         self._head_bytes = int(head_bytes)
         self._tail_bytes = int(tail_bytes)
         self._dropped = 0
+        # Updated on **every** byte, including the ones the window discards. That is the only way
+        # to hash the full stream while retaining 1 MB of it: the receipt has to be verifiable
+        # against what the child actually wrote, not against what survived truncation.
+        self._digest = hashlib.sha256()
 
     def feed(self, chunk: bytes) -> None:
         """Add a chunk, discarding whatever falls out of the window."""
         if not chunk:
             return
+        self._digest.update(chunk)
         room = self._head_bytes - len(self._head)
         if room > 0:
             taken = chunk[:room]
@@ -77,6 +83,16 @@ class DualBuffer:
     @property
     def truncated(self) -> bool:
         return self._dropped > 0
+
+    @property
+    def sha256(self) -> str:
+        """SHA-256 of everything the child wrote, truncated or not."""
+        return self._digest.hexdigest()
+
+    @property
+    def total_bytes(self) -> int:
+        """Every byte read, including the ones the window dropped."""
+        return len(self._head) + len(self._tail) + self._dropped
 
     def render(self) -> bytes:
         """The receipt: head, a marker naming the dropped count, then the tail."""

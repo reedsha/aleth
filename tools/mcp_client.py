@@ -249,9 +249,25 @@ def default_command(root: str) -> List[str]:
     return [sys.executable, str(SERVER_SCRIPT), "--root", str(root)]
 
 
-def default_exec_command(root: str) -> List[str]:
-    """The command that starts the in-repo exec server bound to ``root``."""
-    return [sys.executable, str(EXEC_SERVER_SCRIPT), "--root", str(root)]
+def default_exec_command(
+    root: str,
+    *,
+    db_path: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> List[str]:
+    """The command that starts the in-repo exec server bound to ``root``.
+
+    ``db_path``/``session_id`` are how the server records its forensic receipt
+    (``storage.telemetry``). They travel as arguments rather than through the environment on
+    purpose: the child's environment is an allow-list (``tools.env_sanitizer``), so a path the
+    child needs is a decision the parent states, not something it happens to export.
+    """
+    command = [sys.executable, str(EXEC_SERVER_SCRIPT), "--root", str(root)]
+    if db_path:
+        command += ["--db-path", str(db_path)]
+    if session_id:
+        command += ["--session-id", str(session_id)]
+    return command
 
 
 @contextmanager

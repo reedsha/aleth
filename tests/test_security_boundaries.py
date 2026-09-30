@@ -42,9 +42,12 @@ class RestrictedShellBoundaryTests(unittest.TestCase):
     """
 
     def setUp(self):
-        # The command must never actually reach a shell in these tests.
+        # The command must never actually reach a shell in these tests. The seam is the runner
+        # that returns both the formatted block and the isolated result, since the exec server
+        # needs the result to write its telemetry receipt.
         patcher = mock.patch(
-            "tools.mcp_exec_server.run_workspace_command", return_value=_MOCK_OK
+            "tools.mcp_exec_server.run_workspace_command_result",
+            return_value=(_MOCK_OK, None),
         )
         self.run_mock = patcher.start()
         self.addCleanup(patcher.stop)
