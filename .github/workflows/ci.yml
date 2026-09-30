@@ -32,7 +32,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # 22, not 20: ``dependency-cruiser@18`` and ``watskeburt@6`` declare
+          # ``node: ^22||^24||>=26``, so 20 emits EBADENGINE on a clean install.
+          node-version: "22"
           cache: npm
       - name: Install the UI toolchain
         run: npm ci
@@ -53,11 +55,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # The directive asked for 3.10 and 3.11 as well. They are absent on purpose: pyproject
-        # declares ``requires-python = ">=3.12"``, so those interpreters cannot install the project
-        # at all -- a leg that fails in the installer tests nothing about the code. 3.13 is included
-        # so the upper end of the range is exercised rather than assumed.
-        python-version: ["3.12", "3.13"]
+        # The floor is 3.11 because that is what the deployment environments actually run --
+        # Debian 12 ships 3.11, Ubuntu 22.04 ships 3.10, and a local CLI cannot demand a custom
+        # interpreter. 3.13 is deliberately absent: heavyweight C extensions (torch, pyo3) lag on
+        # wheel publication, and a leg that cannot install tests nothing but the calendar.
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

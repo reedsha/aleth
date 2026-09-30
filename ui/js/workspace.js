@@ -12,7 +12,9 @@ export async function openWorkspaceFilesModal() {
   if (DOM.filesModalOverlay) DOM.filesModalOverlay.style.display = "flex";
   if (DOM.inputSearchWorkspaceFiles) DOM.inputSearchWorkspaceFiles.value = "";
 
-  let files = [];
+  // Assigned on all three paths below (the read, the failure, and no bridge), so there is no
+  // initialiser to carry a value nothing reads.
+  let files;
   if (window.pywebview && window.pywebview.api) {
     try {
       const info = await window.pywebview.api.get_workspace_info();

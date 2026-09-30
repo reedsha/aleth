@@ -69,6 +69,53 @@ class ExplicitIdentityTests(IdentityTestCase):
         self.assertRegex(workspace.project_id(project), r"^[A-Za-z0-9._-]{1,64}$")
 
 
+class RemoteNormalisationTests(unittest.TestCase):
+    """One project, one identity -- whatever protocol it was cloned with."""
+
+    def test_every_spelling_of_one_remote_is_one_string(self):
+        expected = "github.com/org/repo"
+        for spelling in (
+            "https://github.com/org/repo.git",
+            "https://github.com/org/repo",
+            "https://github.com/org/repo/",
+            "http://github.com/org/repo.git",
+            "git@github.com:org/repo.git",
+            "git@github.com:org/repo",
+            "ssh://git@github.com/org/repo.git",
+            "git://github.com/org/repo.git",
+            "https://GitHub.com/org/repo.git",
+        ):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(workspace.canonical_git_remote(spelling), expected)
+
+    def test_different_projects_stay_different(self):
+        first = workspace.canonical_git_remote("git@github.com:org/one.git")
+        second = workspace.canonical_git_remote("https://github.com/org/two.git")
+        third = workspace.canonical_git_remote("https://gitlab.com/org/one.git")
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(first, third)
+
+    def test_an_unrecognised_spelling_is_still_normalised_and_stable(self):
+        odd = "weird-spelling-without-a-path"
+        self.assertEqual(workspace.canonical_git_remote(odd), odd.lower())
+        self.assertEqual(workspace.canonical_git_remote(odd.upper()), odd.lower())
+
+
+@unittest.skipUnless(git_available(), "git is not installed")
+class ProtocolEquivalenceTests(IdentityTestCase):
+    """The scenario: two developers clone the same repository over different protocols."""
+
+    def test_ssh_and_https_clones_share_one_identity(self):
+        ssh, https = self._dir("via-ssh"), self._dir("via-https")
+        make_repo(ssh, "git@github.com:acme/thing.git")
+        make_repo(https, "https://github.com/acme/thing.git")
+
+        self.assertEqual(
+            workspace.project_id(ssh), workspace.project_id(https),
+            "one project cloned two ways got two identities; one developer's state is orphaned",
+        )
+
+
 @unittest.skipUnless(git_available(), "git is not installed")
 class GitBoundIdentityTests(IdentityTestCase):
     """Tier 2: the repository's identity, which is not a location."""

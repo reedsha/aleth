@@ -19,14 +19,16 @@ build-backend = "setuptools.build_meta"
 name = "aleth"
 version = "0.1.0"
 description = "A local AI IDE: a DAG micro-kernel that plans, gates and executes code changes."
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     # --- the state kernel and the wire contracts ---
     "pydantic>=2.13",
     # --- the model provider seam (orchestration/system2.py) ---
     "openai>=3.19",
     # --- the knowledge graph: vectors and the semantic embedder ---
-    "numpy>=2.5",
+    # Floors are the oldest release that still supports the 3.11 floor above; numpy 2.5 requires
+    # 3.12, which would have made the declared floor a lie.
+    "numpy>=1.26",
     "lancedb>=0.39",
     "pyarrow>=25.0",
     "torch>=2.14",

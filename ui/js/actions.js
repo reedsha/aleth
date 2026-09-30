@@ -229,7 +229,9 @@ export async function handleActionParamConfirm() {
     customInstructions: customInstructions
   };
 
-  let prompt = "";
+  // Assigned on every branch below, including the final `else`, so there is no initialiser to
+  // carry a value nothing reads.
+  let prompt;
 
   if (actionType === "fix_bug") {
     const bugDesc = DOM.inputBugDescription ? DOM.inputBugDescription.value.trim() : "";

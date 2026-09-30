@@ -11,6 +11,7 @@
     "test:ui": "playwright test"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.63.0",
     "dependency-cruiser": "^18.4.0",
     "dompurify": "^3.4.16",

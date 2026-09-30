@@ -132,11 +132,50 @@ def _remote_repo_name(remote: str) -> str:
     return tail[:-4] if tail.endswith(".git") else tail
 
 
+# A git remote, in any of its spellings. Split into scheme, optional user, host and path, because
+# the *only* parts that identify a project are the host and the path.
+_GIT_URL_RE = re.compile(
+    r"^(?:(?P<scheme>[a-zA-Z][a-zA-Z0-9+.-]*)://)?"   # https://, ssh://, git:// -- optional
+    r"(?:(?P<user>[^@/]+)@)?"                          # git@ -- optional
+    r"(?P<host>[^:/]+)"                                # github.com
+    r"[:/]"                                            # scp form (:), or a plain url (/)
+    r"(?P<path>.+?)"                                   # org/repo
+    r"(?:\.git)?/?$",                                  # the .git suffix and a trailing slash
+    re.VERBOSE,
+)
+
+
+def canonical_git_remote(remote: str) -> str:
+    """One project, one string -- whatever spelling the remote was cloned with.
+
+    ``git@github.com:org/repo.git`` and ``https://github.com/org/repo.git`` are the *same project*,
+    and hashing the raw remote would give them two different ids: Developer A's state would be
+    orphaned the moment Developer B cloned the repository. So the spelling is reduced to what
+    actually identifies the project -- host, organisation, repository:
+
+    * the scheme is dropped (``https://``, ``ssh://``, ``git://``);
+    * the user is dropped (``git@``);
+    * the scp separator ``:`` becomes ``/``;
+    * the ``.git`` suffix and any trailing slash are dropped;
+    * the host is lowercased, since hostnames are case-insensitive.
+
+    An unrecognised spelling is lowercased and returned rather than refused: an exotic remote should
+    still get a stable identity, just a less canonical one.
+    """
+    text = str(remote or "").strip()
+    match = _GIT_URL_RE.match(text)
+    if match is None:
+        return text.lower()
+    return f"{match.group('host').lower()}/{match.group('path').strip('/')}"
+
+
 def _identity_from_git(plan_dir: str) -> str:
     """Tier 2: the repository's identity -- stable across moves, clones and mounts.
 
-    ``sha256(remote url + repository name)`` describes *which project this is* rather than where it
-    happens to sit, which is exactly what state must be keyed on.
+    ``sha256(canonical remote + repository name)`` describes *which project this is* rather than
+    where it happens to sit, which is exactly what state must be keyed on. The remote is
+    canonicalised first (see :func:`canonical_git_remote`), so two developers who cloned the same
+    repository over different protocols share one identity.
     """
     toplevel = _git(plan_dir, "rev-parse", "--show-toplevel")
     if not toplevel:
@@ -144,7 +183,8 @@ def _identity_from_git(plan_dir: str) -> str:
     remote = _git(plan_dir, "config", "--get", "remote.origin.url")
     if not remote:
         return ""
-    material = f"{remote}\n{_remote_repo_name(remote)}"
+    canonical = canonical_git_remote(remote)
+    material = f"{canonical}\n{_remote_repo_name(canonical)}"
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:PROJECT_ID_LENGTH]
 
 
