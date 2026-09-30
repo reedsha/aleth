@@ -8,8 +8,10 @@ Everything that needs POSIX primitives (``killpg``, ``/proc``) skips elsewhere r
 asserting something weaker: a Windows run cannot prove a process-group guarantee.
 """
 
-import os
+import contextlib
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -410,6 +412,66 @@ class ContainerLifecycleTests(unittest.TestCase):
             capture_output=True, text=True, timeout=60,
         )
         return [line for line in listing.stdout.splitlines() if line.strip()]
+
+
+class BootSweepTests(unittest.TestCase):
+    """The sweeper is *wired*, not merely available: uncalled code is dead code."""
+
+    def _sweep(self, stage="boot", **patch):
+        captured = io.StringIO()
+        with mock.patch.object(docker_sandbox, "purge_orphaned_containers", **patch):
+            with contextlib.redirect_stdout(captured):
+                count = docker_sandbox.sweep_orphaned_containers(stage)
+        return count, captured.getvalue()
+
+    def test_the_sweep_reports_what_it_destroyed(self):
+        """Silent garbage collection hides the systemic crash that produced the garbage."""
+        count, logged = self._sweep(return_value=["abc123", "def456"])
+        self.assertEqual(count, 2)
+        self.assertIn("boot sweep removed 2 orphaned container(s)", logged)
+        self.assertIn("abc123", logged)
+
+    def test_a_sweep_that_finds_nothing_still_says_it_ran(self):
+        count, logged = self._sweep(return_value=[])
+        self.assertEqual(count, 0)
+        self.assertIn("no orphaned containers", logged)
+
+    def test_a_sweep_that_cannot_run_does_not_stop_the_boot(self):
+        count, logged = self._sweep(side_effect=RuntimeError("no daemon"))
+        self.assertEqual(count, 0)
+        self.assertIn("sweep skipped", logged)
+        self.assertIn("no daemon", logged)
+
+    @unittest.skipUnless(IS_POSIX, "/proc is a Linux interface")
+    def test_a_recycled_pid_is_not_a_live_owner(self):
+        """PID rollover: the number exists, but a different process owns it now.
+
+        Asking only "is this pid alive?" would see the stranger and call the dead owner well,
+        leaving the orphan running for as long as the host is up.
+        """
+        mine = str(os.getpid())
+        my_start = docker_sandbox._process_start_time(os.getpid())
+        self.assertTrue(my_start, "could not read our own start time")
+
+        self.assertTrue(docker_sandbox._owner_is_gone("999999999"), "a missing pid is gone")
+        self.assertFalse(
+            docker_sandbox._owner_is_gone(mine, my_start), "our own live process is not gone"
+        )
+        self.assertTrue(
+            docker_sandbox._owner_is_gone(mine, "1"),
+            "a pid whose start time does not match was recycled",
+        )
+
+    def test_main_wires_both_sweeps_before_the_bootloader(self):
+        """The boot sweep must precede the tier probe and the store; teardown must be registered."""
+        with open(os.path.join(REPO_ROOT, "main.py"), "r", encoding="utf-8") as handle:
+            source = handle.read()
+        boot = source.index('sweep_orphaned_containers("boot")')
+        self.assertIn("atexit.register(sweep_orphaned_containers", source)
+        self.assertLess(
+            boot, source.index("boot_or_exit()"),
+            "the sweep must run before the bootloader probes the fleet",
+        )
 
 
 if __name__ == "__main__":

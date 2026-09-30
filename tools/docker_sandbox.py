@@ -94,6 +94,11 @@ WORKSPACE_MOUNT = "/workspace"
 LABEL_MANAGED = "aleth.managed"
 LABEL_EXECUTION = "aleth.execution_id"
 LABEL_OWNER = "aleth.owner_pid"
+# The owner's *start time* (``/proc/<pid>/stat`` field 22). A pid alone is not an identity: the
+# kernel reuses pids, so a long-lived host can hand a dead worker's number to an unrelated
+# process -- and a sweep that only asked "does this pid exist?" would then see a live stranger,
+# call the owner alive, and leave the orphan running forever.
+LABEL_OWNER_START = "aleth.owner_start"
 MANAGED_FILTER = f"label={LABEL_MANAGED}=true"
 
 # Containers this process has started and not yet finished. The signal handler in the exec
@@ -406,6 +411,7 @@ def build_command(
         "--label", f"{LABEL_MANAGED}=true",
         "--label", f"{LABEL_EXECUTION}={execution_id or name}",
         "--label", f"{LABEL_OWNER}={os.getpid()}",
+        "--label", f"{LABEL_OWNER_START}={_process_start_time(os.getpid()) or ''}",
         "--network=none",
         "--user", f"{uid}:{gid}",
         "--workdir", WORKSPACE_MOUNT,
@@ -447,6 +453,16 @@ def _diagnostic(stderr: str) -> str:
         if any(marker in lowered for marker in _DAEMON_DOWN_MARKERS):
             return line
     return lines[0] if lines else "no diagnostic"
+
+
+@dataclasses.dataclass(frozen=True)
+class ManagedContainer:
+    """A container this app made, and the identity of the process that made it."""
+
+    id: str
+    execution_id: str
+    owner_pid: str
+    owner_start: str
 
 
 def _register_active(name: str, execution_id: str) -> None:
@@ -517,30 +533,64 @@ def _docker_lines(args: List[str], *, timeout: int = PROBE_TIMEOUT_SECONDS) -> L
     return [line for line in (completed.stdout or "").splitlines() if line.strip()]
 
 
-def managed_containers() -> List[Tuple[str, str, str]]:
-    """``(id, execution_id, owner_pid)`` for every container this app manages. Never raises."""
-    rows: List[Tuple[str, str, str]] = []
+def managed_containers() -> List["ManagedContainer"]:
+    """Every container this app manages, with the identity of the process that made it."""
+    rows: List[ManagedContainer] = []
     lines = _docker_lines([
         "ps", "-a", "--filter", MANAGED_FILTER,
         "--format",
-        '{{.ID}}\t{{.Label "' + LABEL_EXECUTION + '"}}\t{{.Label "' + LABEL_OWNER + '"}}',
+        '{{.ID}}\t{{.Label "' + LABEL_EXECUTION + '"}}\t{{.Label "' + LABEL_OWNER
+        + '"}}\t{{.Label "' + LABEL_OWNER_START + '"}}',
     ])
     for line in lines:
         parts = [part.strip() for part in line.split("\t")]
-        if len(parts) == 3:
-            rows.append((parts[0], parts[1], parts[2]))
+        if len(parts) == 4:
+            rows.append(ManagedContainer(*parts))
     return rows
 
 
-def _owner_is_gone(owner_pid: str) -> bool:
-    """Whether the process that created a container no longer exists.
+def _process_start_time(pid: int) -> Optional[str]:
+    """The kernel's start time for ``pid``, or ``None`` when it does not exist.
 
-    ``/proc/<pid>`` is the authority, and only on POSIX. Elsewhere this answers ``False``: a
-    sweep that cannot tell must not remove a container that may still be in use.
+    ``/proc/<pid>/stat`` field 22, counted *after* the parenthesised comm -- which may itself
+    contain spaces and parentheses, so the split is on the last ``)``. The field is stable for
+    the life of a process, which is exactly what makes it an identity rather than a number.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="replace") as handle:
+            raw = handle.read()
+    except OSError:
+        return None
+    _head, separator, rest = raw.rpartition(")")
+    if not separator:
+        return None
+    fields = rest.split()
+    # After the comm, ``state`` is field 3, so ``starttime`` (field 22) is index 19.
+    return fields[19] if len(fields) >= 20 else None
+
+
+def _owner_is_gone(owner_pid: str, owner_start: str = "") -> bool:
+    """Whether the process that created a container is no longer the process it was.
+
+    Two ways to be gone, and the second is the one a naive check misses:
+
+    * the pid does not exist at all -- the ordinary case;
+    * the pid exists but belongs to a **different** process, because the kernel recycled the
+      number after the owner died. Comparing the recorded start time against ``/proc`` catches
+      that; asking only whether the pid is alive would see the stranger and call the owner well.
+
+    POSIX only. Elsewhere this answers ``False``: a sweep that cannot tell must not remove a
+    container that may still be in use. A container with no recorded start time is likewise left
+    alone unless its pid is missing outright -- the check fails *towards* keeping the container.
     """
     if os.name != "posix" or not owner_pid.isdigit():
         return False
-    return not os.path.exists(f"/proc/{owner_pid}")
+    current = _process_start_time(int(owner_pid))
+    if current is None:
+        return True
+    if owner_start and current != owner_start:
+        return True
+    return False
 
 
 def purge_orphaned_containers(session_id: Optional[str] = None) -> List[str]:
@@ -553,19 +603,49 @@ def purge_orphaned_containers(session_id: Optional[str] = None) -> List[str]:
       own pid created.
     * ``session_id=None`` -- the boot/teardown sweep. A container is orphaned exactly when the
       process that created it no longer exists, because that process is the only one that would
-      ever have removed it. ``/proc`` answers that on POSIX; where it cannot, nothing is removed
-      rather than something that might still be running.
+      ever have removed it.
     """
     removed: List[str] = []
-    for container_id, _execution, owner_pid in managed_containers():
+    for container in managed_containers():
         if session_id is not None:
-            if owner_pid != str(session_id):
+            if container.owner_pid != str(session_id):
                 continue
-        elif not _owner_is_gone(owner_pid):
+        elif not _owner_is_gone(container.owner_pid, container.owner_start):
             continue
-        if remove_container(container_id):
-            removed.append(container_id)
+        if remove_container(container.id):
+            removed.append(container.id)
     return removed
+
+
+def sweep_orphaned_containers(stage: str) -> int:
+    """Sweep, and **say what it found**. Returns how many containers were destroyed.
+
+    The logging is the point as much as the removal: a silent collector hides a systemic crash.
+    A host whose engine is OOM-killed on every run leaks a container per run, and the only
+    signal is this line at the next boot. Zero is reported too -- that it ran is information.
+
+    Never raises. A boot that cannot reach the daemon is still a boot, and the perimeter refuses
+    commands on its own terms.
+    """
+    try:
+        removed = purge_orphaned_containers()
+    except Exception as error:
+        print(
+            f"[Sandbox] {stage} sweep skipped: {type(error).__name__}: {error}",
+            flush=True,
+        )
+        return 0
+    if removed:
+        print(
+            f"[Sandbox] {stage} sweep removed {len(removed)} orphaned container(s): "
+            + ", ".join(removed),
+            # Flushed on purpose: stdout is block-buffered when it is a pipe, and a boot report
+            # that is lost because the process died before the buffer filled is not a report.
+            flush=True,
+        )
+    else:
+        print(f"[Sandbox] {stage} sweep: no orphaned containers", flush=True)
+    return len(removed)
 
 
 def _force_remove(name: str) -> None:
