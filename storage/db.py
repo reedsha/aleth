@@ -39,7 +39,8 @@ _STRICT = ConfigDict(extra="forbid", strict=False)
 
 from storage.telemetry import TELEMETRY_DDL
 
-# The database file name, beside the markdown projection in the plan directory.
+# The database file name. It lives in the project's *state* directory, not beside the plan:
+# see ``tools.workspace.state_dir`` for why the two are separated.
 DB_FILENAME = "aleth_state.db"
 
 # The five marks a milestone can carry. A ``Literal`` on purpose: the store must not
@@ -1222,10 +1223,15 @@ _STORES_LOCK = threading.Lock()
 
 
 def default_db_path() -> str:
-    """The database path beside the active plan (imported lazily to avoid a cycle)."""
-    from tools.workspace import get_plan_dir
+    """The database path in the project's state directory (imported lazily to avoid a cycle).
 
-    return os.path.join(get_plan_dir(), DB_FILENAME)
+    **Not** beside the plan. The plan is the user's git-tracked document; this is machine state,
+    and the two living together is what put a binary file in their repository and made a read-only
+    install impossible. ``tools.workspace.state_dir`` owns the policy.
+    """
+    from tools.workspace import state_dir
+
+    return os.path.join(state_dir(), DB_FILENAME)
 
 
 def get_store(path: Optional[str] = None) -> PlanStore:

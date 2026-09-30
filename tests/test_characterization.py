@@ -516,9 +516,17 @@ class PlanStateTests(WorkspaceTestCase):
     def test_save_writes_the_store_and_the_markdown_projection(self):
         saved = self._save_demo()
 
-        # The store is the source of truth; the markdown is a projection written beside it.
-        self.assertTrue(os.path.isfile(os.path.join(self.tmp, DB_FILENAME)))
+        # The plan pair is not a pair: the store is machine state and lives in the project's
+        # *state* directory, while the markdown projection is written beside the plan. Keeping
+        # them together is what put a binary file in the user's repository.
+        self.assertTrue(
+            os.path.isfile(os.path.join(workspace_module.state_dir(get_plan_dir()), DB_FILENAME))
+        )
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "PLAN.md")))
+        self.assertFalse(
+            os.path.isfile(os.path.join(self.tmp, DB_FILENAME)),
+            "the store must not be written into the plan directory",
+        )
         # plan.json is gone for good.
         self.assertFalse(os.path.isfile(os.path.join(self.tmp, "plan.json")))
         self.assertEqual(saved["metrics"]["total_tasks"], 5)

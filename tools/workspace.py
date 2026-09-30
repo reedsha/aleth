@@ -11,6 +11,7 @@ listing and the codebase audit, so both agree on exactly which folders are
 invisible to the agents.
 """
 
+import hashlib
 import os
 
 # Default workspace directory. Resolved from the environment, because the workspace is a path
@@ -56,6 +57,44 @@ os.makedirs(PROJECT_DIR, exist_ok=True)
 # Mutable so the test suite can point it at a throwaway directory: the suite must never
 # read or write the real roadmap.
 PLAN_DIR = PROJECT_ROOT
+
+# Where the *machine* state lives, keyed by the project it describes. Deliberately outside the
+# user's repository.
+#
+# The plan pair is not a pair. ``PLAN.md`` is human-authored and git-tracked -- it belongs in the
+# repository, where it can be reviewed, diffed and reverted. The SQLite store is volatile machine
+# state that happens to describe the same project. Keeping them in one directory put a binary file
+# in the user's working tree, guaranteed a merge conflict on every branch, and made a read-only
+# install impossible. So the store lives here instead, and the directory is derived from the
+# plan's *location* rather than its name: two checkouts keep separate state, and moving a project
+# moves its state with it.
+STATE_ENV = "ALETH_STATE_DIR"
+DEFAULT_STATE_ROOT = "~/.aleth/state"
+PROJECT_ID_LENGTH = 16
+
+
+def state_root() -> str:
+    """The directory the per-project state directories live under."""
+    configured = (os.environ.get(STATE_ENV) or "").strip()
+    return os.path.abspath(os.path.expanduser(configured or DEFAULT_STATE_ROOT))
+
+
+def project_id(plan_dir: str = None) -> str:
+    """A stable id for the project a plan directory describes.
+
+    ``sha256`` of the absolute plan directory, truncated: deterministic, filesystem-safe, and a
+    function of *where the plan is*, so state follows the project rather than a name two projects
+    could share.
+    """
+    resolved = os.path.abspath(plan_dir or get_plan_dir())
+    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:PROJECT_ID_LENGTH]
+
+
+def state_dir(plan_dir: str = None) -> str:
+    """The machine-state directory for a plan: ``<state_root>/<project_id>``."""
+    path = os.path.join(state_root(), project_id(plan_dir))
+    os.makedirs(path, exist_ok=True)
+    return path
 
 # Dynamic Active Plan File
 ACTIVE_PLAN_FILE = "PLAN.md"
