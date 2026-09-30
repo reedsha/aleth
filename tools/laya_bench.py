@@ -78,14 +78,10 @@ def plan_corpus() -> List[str]:
     backlog, the number is uninteresting.
     """
     from tools.plan_parser import parse_markdown_to_plan_dict
+    from tools.workspace import get_plan_markdown_path
 
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "my_project_workspace",
-        "PLAN.md",
-    )
-    with open(path, "r", encoding="utf-8") as f:
-        parsed = parse_markdown_to_plan_dict(f.read())
+    with open(get_plan_markdown_path(), "r", encoding="utf-8") as handle:
+        parsed = parse_markdown_to_plan_dict(handle.read())
     titles: List[str] = []
     for step in parsed.get("steps", []):
         title = (step.get("title") or "").strip()

@@ -2499,28 +2499,60 @@ class WorkspaceLocationTests(unittest.TestCase):
     def project_root(self):
         return os.path.dirname(os.path.dirname(os.path.abspath(ft.__file__)))
 
-    def _resolve_from(self, cwd):
+    def _resolve_from(self, cwd, env=None):
         result = subprocess.run(
             [sys.executable, "-c", self._RESOLVE_SCRIPT, self.project_root],
             cwd=cwd,
             capture_output=True,
             text=True,
             check=True,
+            env=env,
         )
         return result.stdout.strip()
 
-    def test_default_workspace_is_anchored_to_the_project_root(self):
-        expected = os.path.join(self.project_root, "my_project_workspace")
-        for cwd in (self.project_root, os.path.join(self.project_root, "ui"), os.path.dirname(self.project_root)):
+    def test_the_workspace_comes_from_the_environment(self):
+        """``DEEPAGENTS_WORKSPACE_DIR`` is the single source, so the host decides where it lives.
+
+        The workspace is a path *in the filesystem the Docker daemon sees* -- a container
+        bind-mounts it -- so it cannot be hardcoded to a directory beside the repository.
+        """
+        target = tempfile.mkdtemp(prefix="deepagents_ws_env_")
+        self.addCleanup(shutil.rmtree, target, ignore_errors=True)
+        env = {**os.environ, "DEEPAGENTS_WORKSPACE_DIR": target}
+
+        self.assertEqual(
+            self._resolve_from(self.project_root, env=env), os.path.abspath(target)
+        )
+
+    def test_the_default_workspace_is_absolute_and_cwd_independent(self):
+        """With no environment, the default is expanded and absolute -- cwd cannot move it.
+
+        Anchoring matters because the app can be launched from a shortcut or an IDE run
+        configuration; a cwd-relative default would silently point at an empty directory and
+        leave the UI with no plan to render.
+        """
+        env = {k: v for k, v in os.environ.items() if k != "DEEPAGENTS_WORKSPACE_DIR"}
+        resolved = set()
+        for cwd in (
+            self.project_root,
+            os.path.join(self.project_root, "ui"),
+            os.path.dirname(self.project_root),
+        ):
             if not os.path.isdir(cwd):
                 continue
-            self.assertEqual(self._resolve_from(cwd), expected, f"cwd={cwd}")
+            value = self._resolve_from(cwd, env=env)
+            self.assertTrue(os.path.isabs(value), value)
+            resolved.add(value)
+        self.assertEqual(len(resolved), 1, f"the default moved with the cwd: {resolved}")
 
-    def test_foreign_cwd_does_not_create_a_second_workspace(self):
+    def test_a_foreign_cwd_does_not_create_a_workspace_beside_it(self):
         foreign = tempfile.mkdtemp(prefix="deepagents_foreigncwd_")
         try:
-            self._resolve_from(foreign)
-            self.assertFalse(os.path.exists(os.path.join(foreign, "my_project_workspace")))
+            resolved = self._resolve_from(foreign)
+            self.assertFalse(
+                os.path.abspath(resolved).startswith(os.path.abspath(foreign)),
+                f"a workspace was created beside the cwd: {resolved}",
+            )
         finally:
             shutil.rmtree(foreign, ignore_errors=True)
 

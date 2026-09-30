@@ -29,7 +29,7 @@ same check. This is the boundary that must not leak ``~/.ssh/id_rsa``.
 
 Run standalone for a smoke test:
 
-    python tools/mcp_fs_server.py --root ./my_project_workspace
+    python tools/mcp_fs_server.py --root <workspace>
 """
 
 from __future__ import annotations

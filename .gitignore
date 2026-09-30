@@ -29,3 +29,10 @@ playwright-report/
 
 # Rust build output for the compiled core (hundreds of MB, rebuilt by maturin)
 crates/*/target/
+
+# Editable-install metadata. `uv pip install -e .` writes this beside the project; it is
+# regenerated, not authored.
+*.egg-info/
+
+# Local knowledge-graph vector index
+knowledge_vectors/

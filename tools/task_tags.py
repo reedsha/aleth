@@ -13,7 +13,7 @@ category, so ``category_of`` answers with the label itself.
 
 The legacy ``UI`` spelling is kept as an alias of the current ``FE`` tag, and it is not
 optional. The plan on disk carries ``[UI]`` tokens written by an earlier vocabulary
-(``my_project_workspace/PLAN.md`` has twenty-two of them), so ``[UI]`` must still parse.
+(``PLAN.md`` has twenty-two of them), so ``[UI]`` must still parse.
 If ``UI`` were dropped, ``split_tag("[UI] Some title")`` would stop recognising the
 token, leave it in the title as literal text, and the compiler would write it back
 alongside the inferred tag -- compounding the stray token on every save and quietly

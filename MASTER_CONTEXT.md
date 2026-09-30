@@ -21,7 +21,7 @@
 
 **Status: Phases 5, 6, 6.5, 7, 7.5, 8, 8.1 and 9 complete and verified.**
 
-**Test gate:** `python -m pytest` → **980 passed, 2 skipped, 218 subtests passed** (~93s).
+**Test gate:** `python -m pytest` → **975 passed, 7 skipped, 218 subtests** on Windows; **1200 items, 0 failures, 0 errors, 5 skipped** natively in WSL (`~/deepagents-venv`), where the five daemon-backed isolation tests actually run.
 Run from the `deepagents/` directory; `pytest.ini` has `addopts = -q -n auto` (16 xdist workers).
 UI gate: `npm run lint` → depcruise clean (29 modules, 150 dependencies). Playwright tests exist under `ui/` and run against a built `dist/` — not exercised this phase.
 
@@ -52,6 +52,10 @@ Verified: the Rust canonicaliser (`deepagents_core.prepare_plan_state`) preserve
 
 **The orchestrator runs where the daemon runs.** The perimeter reaches the daemon through the `docker` client and treats the workspace path as a path *in the daemon's filesystem*; both are only true in one namespace, one filesystem and one signal space. So `docker_bin()` raises `EnvironmentError` when the client is not on `PATH` (surfaced as a `SandboxError` refusal at the tool boundary), and **nothing** translates paths or proxies commands across an OS boundary — no WSL bridge, no `wslpath`, no `\\wsl$` rewriting. Proxying `docker run` through another OS's interpreter would break the process-tree guarantee as well: killing the proxy leaves the container orphaned and unreachable by the timeout path. A workspace on a Windows drive (9p DrvFs) is **not** usable — a container writing through one creates files with no Windows ACL (mode 0000) — so when the daemon lives on Linux the orchestrator and its workspace live there too.
 
+**Workspace location — the native cutover.** `tools/workspace.py` resolves `PROJECT_DIR` from `DEEPAGENTS_WORKSPACE_DIR`, defaulting to `~/workspaces/my_project` (expanded, made absolute, and resolved against the repo root when relative). The workspace is a path *in the daemon's filesystem* — a container bind-mounts it — so it cannot be a directory beside the repository. `PLAN_DIR` stays the repository root: the plan is the user's tracked document and the orchestrator writes it, not a container. The native environment is `~/deepagents-venv` (Python 3.12) plus `deepagents_core` built for Linux; the Windows venv still runs the suite where no daemon is needed.
+
+**Declared dependency.** `pyproject.toml` declares `langchain-openai`: `create_deep_agent` constructs `ChatOpenAI` in every agent factory, so a clean environment cannot build an agent without it. It was previously satisfied only transitively, which a fresh Linux install exposed.
+
 **Skill registry (`storage/db.py`, `orchestration/retriever.py`, `orchestration/system2.py`) — Phase 7.5.** A `skills` table (`id`, `name`, `target_capabilities` JSON, `markdown_content`), seeded idempotently with `TDD_Execution_Skill` for `["exec", "fs"]`. `retriever.skills_for_capabilities` matches a node's declaration with a **single** JSON1 set-intersection query (no N+1), and `system2.compose_system_prompt` prepends the block to the system prompt before the client payload is built. The planner resolves the block once per pass (`plan_task(capabilities=…)`) and passes it as text — the transport never looks a skill up.
 
 **Engine verification gate (`orchestration/swarm.py`, `orchestration/workflow/execution.py`) — Phase 7.5.** `verification_refusal(verdict, required_capabilities)` is the policy: a node that required `exec` must carry a `tools/test_runner.py` receipt whose exit code is 0. No receipt, a failing receipt, or an uncollectable suite is a **refusal**, and the engine **intercepts the transition**: the node is re-queued (status `pending`, `rejection_attempts` incremented, so the retry is bounded by `max_retries` like a human's) with the message `Task unverified: Tests must be executed via test_runner and return exit_code 0`. It is never marked `completed` on the absence of evidence. A valid completion writes `tasks.verified = 1` in the same statement as the status (`update_task_status(..., verified=…)`).
@@ -65,7 +69,8 @@ Verified: the Rust canonicaliser (`deepagents_core.prepare_plan_state`) preserve
 **Known accepted debt.**
 (a) `agents/model_routing.py` remains the env seam the fleet is derived from; the UI settings panel still writes those variables.
 (b) The sandbox image defaults to `deepagents-sandbox:latest` and must carry whatever toolchain the workspace's commands need — the repo's `docker/sandbox.Dockerfile` supplies Python 3.12, pytest and the fundamental test utilities (`DEEPAGENTS_SANDBOX_IMAGE` overrides it). A missing runner yields the `unavailable` verdict, never a host run.
-(c) The orchestrator must run in the same namespace as the Docker daemon: the client must be on `PATH` (a missing client is a fatal `EnvironmentError`, surfaced as a refusal), and the workspace must live on the daemon's filesystem. A workspace on a Windows drive is not usable (9p DrvFs writes land with no ACL), so a Linux-hosted daemon means a Linux-hosted orchestrator and workspace. Nothing bridges the two by design.
+(c) The orchestrator must run in the same namespace as the Docker daemon: the client must be on `PATH` (a missing client is a fatal `EnvironmentError`, surfaced as a refusal), and the workspace must live on the daemon's filesystem (`DEEPAGENTS_WORKSPACE_DIR`). A workspace on a Windows drive is not usable (9p DrvFs writes land with no ACL). Nothing bridges the two by design.
+(d) The Windows-side suite cannot exercise the daemon-backed tests (there is no docker client there), so they skip; the native WSL run is the one that proves containment.
 
 ---
 
@@ -140,7 +145,7 @@ Established and **done**:
 
 **Phase 7.5 — Skill Injection Engine — sealed.** The `skills` table is seeded with `TDD_Execution_Skill`; `retriever.skills_for_capabilities` selects a node's playbooks in one query; `system2.compose_system_prompt` prepends them before the payload is built; and the engine gate refuses to mark a task that required `exec` as `completed` without a zero-exit test receipt — it re-queues the node with `rejection_attempts` incremented and writes `verified = 1` only when it accepts.
 
-**Definition of done for the batch — met.** `python -m pytest` → **980 passed, 2 skipped, 218 subtests**; `npm run lint` clean (29 modules, 150 dependencies, 0 violations); the legacy-catalog grep at zero (pinned by `tests/test_security_boundaries.py::NoImportTimeToolCatalogTests`); no native-execution path (no `shell=True` in any production module; `tools/sandbox.py` deleted and `tools/test_runner.py` containerized); and the daemon-backed isolation tests **pass natively** against the live engine, including the `--user` ownership proof.
+**Definition of done for the batch — met.** `python -m pytest` → **975 passed, 7 skipped, 218 subtests** on Windows and **1200 items, 0 failures, 0 errors, 5 skipped** natively in WSL; `npm run lint` clean (29 modules, 150 dependencies, 0 violations); the legacy-catalog grep at zero (pinned by `tests/test_security_boundaries.py::NoImportTimeToolCatalogTests`); no native-execution path (no `shell=True` in any production module; `tools/sandbox.py` deleted and `tools/test_runner.py` containerized); and the daemon-backed isolation tests **pass natively** in the daemon's own environment, including the `--user` ownership proof.
 
 #### Phase 7.5: Skill Injection Engine & Deterministic Test Verification Gate
 *The Playbook and the Gatekeeper. Naked JSON schemas cause hallucinations; unverified text completions cause state corruption.*

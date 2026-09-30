@@ -97,7 +97,7 @@ deepagents/
 │   ├── code_metrics.py        # Static source metrics (complexity, security) for Analyze
 │   ├── test_runner.py         # Runs the test a task wrote; the result view's real verdict
 │   ├── git_status.py          # VCS status for the tree (snapshot fallback outside a repo)
-│   ├── workspace.py           # PROJECT_DIR (sandbox) + PLAN_DIR (repo root) pointers
+│   ├── workspace.py           # PROJECT_DIR (DEEPAGENTS_WORKSPACE_DIR) + PLAN_DIR pointers
 │   ├── shell_tools.py         # Full shell (Coders) + restricted shell (Architect)
 │   ├── settings.py            # Provider endpoint + model-route settings (on disk)
 │   ├── laya_bench.py          # Dev-only: Laya checkpoint I/O benchmark
@@ -196,7 +196,7 @@ deepagents/
 ├── 1ST/2ND/3RD_POLISHING.md   # The three polishing plans + their progress logs. Listed in
 │                              #   NON_PLAN_MD_FILES, so the switcher never offers them.
 │
-├── my_project_workspace/      # PROJECT_DIR: the gitignored sandbox for GENERATED code
+├── my_project_workspace/      # RETIRED location of PROJECT_DIR (now DEEPAGENTS_WORKSPACE_DIR)
 │   ├── main.py / weather_api.py / ui_view.html   # Legacy artifacts of the earlier weather plan
 │   ├── test_*.py / PROGRESS.md
 │   └── .deepagents_backups/   # Per-task deliverable snapshots (rollback source),
@@ -211,10 +211,14 @@ package that registry.py delegates to is called `orchestration/` — a package n
 `registry` would shadow the module.
 
 **Two directories, do not conflate them.** `tools/workspace.py` owns both pointers:
-`PROJECT_DIR` = `my_project_workspace/` (the gitignored **sandbox** that generated code,
-deliverables and backups land in), and `PLAN_DIR` = the **repo root** (where `PLAN.md` and
+`PROJECT_DIR` = `DEEPAGENTS_WORKSPACE_DIR` (default `~/workspaces/my_project`) — the **sandbox**
+that generated code, deliverables and backups land in, and a path *in the daemon's filesystem*,
+because a container bind-mounts it — and `PLAN_DIR` = the **repo root** (where `PLAN.md` and
 its `plan.json` twin live, so the roadmap is version-controlled). A plan edit therefore
-changes a tracked file in the repo root, while generated code lands in the sandbox.
+changes a tracked file in the repo root, while generated code lands in the sandbox. The
+gitignored `my_project_workspace/` beside the repository is the **retired** location: a
+container writing through a Windows drive destroys the host's permissions, so the workspace
+moved onto the daemon's filesystem and its contents were copied to `~/workspaces/my_project`.
 
 ---
 

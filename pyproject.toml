@@ -37,6 +37,10 @@ dependencies = [
     "deepagents>=0.7.18",
     "laya>=0.3.20",
     "langchain-core>=1.6",
+    # Constructed by ``create_deep_agent`` in every agent factory, so it is imported on any path
+    # that builds an agent. Declared on purpose: without it a clean environment cannot construct
+    # ``ChatOpenAI`` at all, which only shows up where the dependency was not already present.
+    "langchain-openai>=1.0",
     "astchunk>=0.1.0",
     # --- the app shell ---
     "python-dotenv>=1.2",

@@ -13,13 +13,36 @@ invisible to the agents.
 
 import os
 
-# Default workspace directory. Anchored to this file's location instead of the
-# process working directory: the app can be launched from a shortcut, an IDE run
-# configuration or a plain ``python app.py``, and a cwd-relative path would then
-# silently point at a *different*, freshly-created empty directory -- leaving the
-# UI with no plan to render and every action control locked.
+# Default workspace directory. Resolved from the environment, because the workspace is a path
+# *in the filesystem the Docker daemon sees*: a container bind-mounts it, and a container write
+# through a Windows drive (9p DrvFs) destroys the host's permissions, so where the daemon runs on
+# Linux this must be a Linux path.
+#
+# Anchored to an absolute location rather than the process working directory: the app can be
+# launched from a shortcut, an IDE run configuration or a plain ``python app.py``, and a
+# cwd-relative path would then silently point at a *different*, freshly-created empty directory --
+# leaving the UI with no plan to render and every action control locked.
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROJECT_DIR = os.path.join(PROJECT_ROOT, "my_project_workspace")
+
+WORKSPACE_ENV = "DEEPAGENTS_WORKSPACE_DIR"
+DEFAULT_WORKSPACE_DIR = "~/workspaces/my_project"
+
+
+def _resolve_project_dir() -> str:
+    """The workspace directory: ``DEEPAGENTS_WORKSPACE_DIR``, else the default.
+
+    ``~`` is expanded because the default is written the way a person writes a path. A relative
+    value (configured or default) is resolved against the repository root rather than the
+    process cwd, for the reason above.
+    """
+    configured = (os.environ.get(WORKSPACE_ENV) or "").strip()
+    candidate = os.path.expanduser(configured or DEFAULT_WORKSPACE_DIR)
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(PROJECT_ROOT, candidate)
+    return os.path.abspath(candidate)
+
+
+PROJECT_DIR = _resolve_project_dir()
 os.makedirs(PROJECT_DIR, exist_ok=True)
 
 # Where the *plan* lives: the active markdown plan and the SQLite state store beside it.
