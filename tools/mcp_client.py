@@ -192,7 +192,7 @@ class MCPClient:
         result = self._request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": {"name": "deepagents-orchestrator", "version": "1.0.0"},
+            "clientInfo": {"name": "aleth-orchestrator", "version": "1.0.0"},
         })
         self.server_info = result or {}
         self._notify("notifications/initialized")

@@ -24,12 +24,12 @@ import os
 # leaving the UI with no plan to render and every action control locked.
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-WORKSPACE_ENV = "DEEPAGENTS_WORKSPACE_DIR"
+WORKSPACE_ENV = "ALETH_WORKSPACE_DIR"
 DEFAULT_WORKSPACE_DIR = "~/workspaces/my_project"
 
 
 def _resolve_project_dir() -> str:
-    """The workspace directory: ``DEEPAGENTS_WORKSPACE_DIR``, else the default.
+    """The workspace directory: ``ALETH_WORKSPACE_DIR``, else the default.
 
     ``~`` is expanded because the default is written the way a person writes a path. A relative
     value (configured or default) is resolved against the repository root rather than the
@@ -61,7 +61,7 @@ PLAN_DIR = PROJECT_ROOT
 ACTIVE_PLAN_FILE = "PLAN.md"
 
 # Snapshot folder used to back deliverables up before a task modifies them.
-BACKUP_SUBDIR = ".deepagents_backups"
+BACKUP_SUBDIR = ".aleth_backups"
 
 # Directories that are never surfaced to agents, the file explorer, or the audit engine.
 IGNORE_DIRS = {

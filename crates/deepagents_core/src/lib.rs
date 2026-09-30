@@ -1,4 +1,4 @@
-//! Compiled core engine for DeepAgents Studio.
+//! Compiled core engine for Aleth Studio.
 //!
 //! Three concerns live here, all of them on the hot path between the UI and the
 //! plan on disk:

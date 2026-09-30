@@ -24,7 +24,7 @@ from unittest import mock
 from tools import test_runner
 
 FAKE_DOCKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_docker.py")
-FAKE_DOCKER_ENV = {"DEEPAGENTS_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
+FAKE_DOCKER_ENV = {"ALETH_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
 
 
 PASSING_TEST = "def test_ok():\n    assert 1 + 1 == 2\n"
@@ -74,7 +74,7 @@ class WorkspaceTests(unittest.TestCase):
     """Finding the test file, and running it, in a throwaway workspace."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="deepagents_testrunner_")
+        self.tmp = tempfile.mkdtemp(prefix="aleth_testrunner_")
         self._real = test_runner.get_project_dir
         test_runner.get_project_dir = lambda: self.tmp
         # pytest runs in a container now; point the runtime at the double so the path is real

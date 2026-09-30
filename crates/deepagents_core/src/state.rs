@@ -37,7 +37,7 @@ use crate::parser::check_plan_structure;
 /// in the codebase audit as an untracked file. The lock is an implementation detail
 /// of the core, so it lives in the system temporary directory instead, named after
 /// a hash of the plan directory it guards.
-const LOCK_SUBDIR: &str = "deepagents_plan_locks";
+const LOCK_SUBDIR: &str = "aleth_plan_locks";
 
 /// The path of the lock file that guards `plan_dir`.
 ///

@@ -56,11 +56,11 @@ def default_vector_store() -> EntityVectorStore:
 
 _EMBEDDER_CACHE: Dict[str, TextEmbedder] = {}
 
-# The semantic model is the default. ``DEEPAGENTS_EMBEDDER=hashing`` is an explicit override for
+# The semantic model is the default. ``ALETH_EMBEDDER=hashing`` is an explicit override for
 # CI and tests, which must not each pull ~90 MB of weights; it is not a gate on the production
 # architecture. A lexical hash is a glorified grep and cannot do the similarity matching a
 # cognitive engine exists for, so it is never chosen by omission.
-ENV_EMBEDDER = "DEEPAGENTS_EMBEDDER"
+ENV_EMBEDDER = "ALETH_EMBEDDER"
 EMBEDDER_HASHING = "hashing"
 
 _PREFETCH_LOCK = threading.Lock()
@@ -70,7 +70,7 @@ _PREFETCH_STARTED = {"value": False}
 def default_embedder() -> TextEmbedder:
     """The semantic embedder (``all-MiniLM-L6-v2``), unless explicitly overridden.
 
-    ``DEEPAGENTS_EMBEDDER=hashing`` selects the deterministic offline encoder -- for CI and
+    ``ALETH_EMBEDDER=hashing`` selects the deterministic offline encoder -- for CI and
     tests, which must not each fetch the weights. Anything else, including unset, selects the
     real model: a lexical hash cannot perform the semantic matching this graph exists to do, so
     degrading to it by default would disable Phase 5 while appearing to work.

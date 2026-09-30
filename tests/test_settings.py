@@ -35,7 +35,7 @@ def clean_config_env(keep_key=True):
 
 class SettingsTestCase(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory(prefix="deepagents_settings_")
+        self._tmp = tempfile.TemporaryDirectory(prefix="aleth_settings_")
         self.env_path = os.path.join(self._tmp.name, ".env")
         self.addCleanup(self._tmp.cleanup)
 
@@ -61,7 +61,7 @@ class ReadSettingsTests(SettingsTestCase):
     def test_a_non_secret_name_falls_back_to_its_default(self):
         with clean_config_env():
             result = settings.read_settings(self.env_path)
-        entry = self.field(result, "DEEPAGENTS_ARCHITECT_MODEL")
+        entry = self.field(result, "ALETH_ARCHITECT_MODEL")
         self.assertFalse(entry["set"])
         self.assertEqual(entry["value"], "")
         self.assertEqual(entry["effective"], entry["default"])
@@ -81,9 +81,9 @@ class ReadSettingsTests(SettingsTestCase):
 
     def test_a_set_route_reports_the_value_in_force(self):
         with clean_config_env():
-            os.environ["DEEPAGENTS_CODER_DEEP_MODEL"] = "openai:some/route"
+            os.environ["ALETH_CODER_DEEP_MODEL"] = "openai:some/route"
             result = settings.read_settings(self.env_path)
-        entry = self.field(result, "DEEPAGENTS_CODER_DEEP_MODEL")
+        entry = self.field(result, "ALETH_CODER_DEEP_MODEL")
         self.assertEqual(entry["value"], "openai:some/route")
         self.assertEqual(entry["effective"], "openai:some/route")
 
@@ -116,8 +116,8 @@ class SaveSettingsTests(SettingsTestCase):
     def test_an_absent_name_is_appended(self):
         self.write_env("OPENAI_API_KEY=old\n")
         with clean_config_env():
-            settings.save_settings({"DEEPAGENTS_CODER_DEEP_MODEL": "openai:x/y"}, self.env_path)
-        self.assertIn("DEEPAGENTS_CODER_DEEP_MODEL=openai:x/y", self.read_env())
+            settings.save_settings({"ALETH_CODER_DEEP_MODEL": "openai:x/y"}, self.env_path)
+        self.assertIn("ALETH_CODER_DEEP_MODEL=openai:x/y", self.read_env())
 
     def test_a_duplicate_assignment_is_collapsed(self):
         # dotenv takes the last assignment, so a stale later line would silently win.
@@ -136,22 +136,22 @@ class SaveSettingsTests(SettingsTestCase):
 
     def test_a_value_with_spaces_is_quoted_and_survives_a_read(self):
         with clean_config_env():
-            settings.save_settings({"DEEPAGENTS_ARCHITECT_MODEL": "openai:my route"}, self.env_path)
-        self.assertIn('DEEPAGENTS_ARCHITECT_MODEL="openai:my route"', self.read_env())
+            settings.save_settings({"ALETH_ARCHITECT_MODEL": "openai:my route"}, self.env_path)
+        self.assertIn('ALETH_ARCHITECT_MODEL="openai:my route"', self.read_env())
         with clean_config_env():
-            os.environ["DEEPAGENTS_ARCHITECT_MODEL"] = "openai:my route"
+            os.environ["ALETH_ARCHITECT_MODEL"] = "openai:my route"
             result = settings.read_settings(self.env_path)
-        self.assertEqual(self.field(result, "DEEPAGENTS_ARCHITECT_MODEL")["value"], "openai:my route")
+        self.assertEqual(self.field(result, "ALETH_ARCHITECT_MODEL")["value"], "openai:my route")
 
     def test_a_blank_value_clears_the_name(self):
-        self.write_env("DEEPAGENTS_CODER_DEEP_MODEL=openai:x/y\n")
+        self.write_env("ALETH_CODER_DEEP_MODEL=openai:x/y\n")
         with clean_config_env():
-            os.environ["DEEPAGENTS_CODER_DEEP_MODEL"] = "openai:x/y"
-            settings.save_settings({"DEEPAGENTS_CODER_DEEP_MODEL": ""}, self.env_path)
-            self.assertNotIn("DEEPAGENTS_CODER_DEEP_MODEL", os.environ)
+            os.environ["ALETH_CODER_DEEP_MODEL"] = "openai:x/y"
+            settings.save_settings({"ALETH_CODER_DEEP_MODEL": ""}, self.env_path)
+            self.assertNotIn("ALETH_CODER_DEEP_MODEL", os.environ)
             result = settings.read_settings(self.env_path)
-        self.assertFalse(self.field(result, "DEEPAGENTS_CODER_DEEP_MODEL")["set"])
-        self.assertIn("DEEPAGENTS_CODER_DEEP_MODEL=\n", self.read_env())
+        self.assertFalse(self.field(result, "ALETH_CODER_DEEP_MODEL")["set"])
+        self.assertIn("ALETH_CODER_DEEP_MODEL=\n", self.read_env())
 
     def test_a_name_outside_the_allowlist_is_ignored(self):
         with clean_config_env():
@@ -180,7 +180,7 @@ class SaveSettingsTests(SettingsTestCase):
 
         with clean_config_env():
             settings.save_settings(
-                {"DEEPAGENTS_CODER_DEEP_MODEL": "openai:policy/live-route"}, self.env_path
+                {"ALETH_CODER_DEEP_MODEL": "openai:policy/live-route"}, self.env_path
             )
             self.assertEqual(coder_model("coder-deep"), "openai:policy/live-route")
 

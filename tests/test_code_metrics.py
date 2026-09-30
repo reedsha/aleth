@@ -68,7 +68,7 @@ class SecurityFlagTests(unittest.TestCase):
 
 class WorkspaceTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="deepagents_metrics_")
+        self.tmp = tempfile.mkdtemp(prefix="aleth_metrics_")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)

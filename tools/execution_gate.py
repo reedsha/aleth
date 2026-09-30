@@ -33,7 +33,7 @@ from tools.workspace import get_active_plan_filename
 # The task ids approved for the current execution context. A ContextVar, not a global: two
 # workers running concurrently must not be able to approve each other's work.
 _APPROVED: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
-    "deepagents_approved_tasks", default=frozenset()
+    "aleth_approved_tasks", default=frozenset()
 )
 
 

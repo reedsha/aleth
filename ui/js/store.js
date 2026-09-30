@@ -171,7 +171,7 @@ export function clearPlanTreeBeforeUpdate() {
  * one side only. Named rather than counted, because the name is the fix.
  *
  * Called by the wiring after it caches the elements (which reports them as a startup
- * failure) and exposed to the outside world through `window.DeepAgents.diagnostics` in
+ * failure) and exposed to the outside world through `window.Aleth.diagnostics` in
  * `main.js`, which is how the Playwright suite asserts it without reaching into module
  * scope.
  */

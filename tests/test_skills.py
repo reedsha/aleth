@@ -20,7 +20,7 @@ class SkillRegistryTestCase(unittest.TestCase):
     """A real store on a throwaway plan directory."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="deepagents_skills_")
+        self.tmp = tempfile.mkdtemp(prefix="aleth_skills_")
         self._orig = (workspace.PLAN_DIR, workspace.PROJECT_DIR, workspace.ACTIVE_PLAN_FILE)
         workspace.PLAN_DIR = self.tmp
         workspace.PROJECT_DIR = self.tmp

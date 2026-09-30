@@ -49,7 +49,7 @@ const RESULT_LABELS = {
 let resultRenderToken = 0;
 
 // The backup key each action's files were recorded under. `task_diff` reads
-// .deepagents_backups/<key>/_meta.json, so this has to match what the backend passed to
+// .aleth_backups/<key>/_meta.json, so this has to match what the backend passed to
 // backup_file_for_task: the task id for a roadmap step (a targeted fix uses the task it
 // answers for), and the two literal action names for untargeted fixes and custom directives.
 function resultBackupKey(kind) {

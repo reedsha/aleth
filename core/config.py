@@ -47,9 +47,9 @@ SLOTS_REQUIRING_KEY: Tuple[str, ...] = ("tier_1", "tier_2")
 
 # Where the bootloader looks when nothing says otherwise: beside the entrypoints.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV_CONFIG = "DEEPAGENTS_CONFIG"
-DEFAULT_CONFIG_PATH = os.path.join(REPO_ROOT, "deepagents.config.json")
-EXAMPLE_CONFIG_PATH = os.path.join(REPO_ROOT, "deepagents.config.example.json")
+ENV_CONFIG = "ALETH_CONFIG"
+DEFAULT_CONFIG_PATH = os.path.join(REPO_ROOT, "aleth.config.json")
+EXAMPLE_CONFIG_PATH = os.path.join(REPO_ROOT, "aleth.config.example.json")
 
 # The ping budget. Short: this runs on the boot path, and an endpoint that cannot answer a model
 # list in a few seconds is an endpoint that will not answer a completion either.
@@ -212,7 +212,7 @@ def _read_config_file(path: str) -> Dict[str, Any]:
 def load_config(path: Optional[str] = None) -> BootloaderConfig:
     """Load and validate a config file. Raises :class:`ConfigError` for anything unusable.
 
-    The path is ``path``, then ``DEEPAGENTS_CONFIG``, then ``deepagents.config.json`` beside the
+    The path is ``path``, then ``ALETH_CONFIG``, then ``aleth.config.json`` beside the
     entrypoints. A missing file is an error here rather than a silent default: the caller asked
     for a *file*, and answering with something else is how a typo becomes a production fleet.
     """

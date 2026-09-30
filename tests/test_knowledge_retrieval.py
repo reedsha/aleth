@@ -23,7 +23,7 @@ import os
 # CI and the suite run on the offline encoder: the semantic model fetches ~90 MB of weights,
 # and every xdist worker paying that would be minutes per run. This is an explicit override of a
 # *semantic-by-default* architecture, not a gate on it -- production runs unset.
-os.environ.setdefault("DEEPAGENTS_EMBEDDER", "hashing")
+os.environ.setdefault("ALETH_EMBEDDER", "hashing")
 
 from orchestration.retriever import (
     retrieve_context,
@@ -363,7 +363,7 @@ class TestEmbedderDefault:
         from orchestration import retriever
         from tools.semantic_index import HashingEmbedder
 
-        monkeypatch.setenv("DEEPAGENTS_EMBEDDER", "hashing")
+        monkeypatch.setenv("ALETH_EMBEDDER", "hashing")
         retriever.reset_embedder_cache()
         try:
             assert isinstance(retriever.default_embedder(), HashingEmbedder)
@@ -375,7 +375,7 @@ class TestEmbedderDefault:
         the semantic matching Phase 5 exists for, so it must never be chosen by omission."""
         from orchestration import retriever
 
-        monkeypatch.delenv("DEEPAGENTS_EMBEDDER", raising=False)
+        monkeypatch.delenv("ALETH_EMBEDDER", raising=False)
         retriever.reset_embedder_cache()
         try:
             # Construction is what downloads the weights, so the *decision* is asserted rather

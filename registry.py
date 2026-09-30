@@ -28,7 +28,7 @@ from tools.file_tools import (
 
 class AgentRegistry:
     """
-    Dynamic Agent Registry module for DeepAgents.
+    Dynamic Agent Registry module for Aleth.
     Categorizes agents into:
     1. Main Agents (Coordinators): Initialized via create_deep_agent(...) with graph state & subagents.
     2. Coder Agents (Sub-Agents): Worker dictionaries/specifications in subagents array (lacking create_deep_agent).

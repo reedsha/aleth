@@ -184,7 +184,7 @@ class UnknownFieldRejectionTests(unittest.TestCase):
         for model, valid in VALID_PAYLOADS.items():
             with self.subTest(model=model.__name__):
                 payload = dict(valid)
-                payload["deepagents_unexpected_field"] = "surprise"
+                payload["aleth_unexpected_field"] = "surprise"
                 with self.assertRaises(ValidationError):
                     model.model_validate(payload)
 

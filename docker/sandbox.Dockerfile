@@ -7,9 +7,9 @@
 #
 # Build it once (the context is this directory -- the image copies nothing from the repo):
 #
-#     docker build -f docker/sandbox.Dockerfile -t deepagents-sandbox:latest docker/
+#     docker build -f docker/sandbox.Dockerfile -t aleth-sandbox:latest docker/
 #
-# `tools/docker_sandbox.py` defaults to the `deepagents-sandbox:latest` tag and builds it from
+# `tools/docker_sandbox.py` defaults to the `aleth-sandbox:latest` tag and builds it from
 # this file when it is absent. If the build cannot run, the perimeter **refuses** the command --
 # it never executes on the host.
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DeepAgents • Plan Orchestrator Studio</title>
+  <title>Aleth • Plan Orchestrator Studio</title>
   <script>
     // Earliest possible failure reporting, installed before any application module
     // runs. The packaged app runs with debug=False, so console output is invisible and
@@ -15,11 +15,11 @@
 
       function report(message) {
         try {
-          console.error("[DeepAgents UI]", message);
+          console.error("[Aleth UI]", message);
           // Stacked rather than overlapping at one position, so the first and usually
           // most informative message is not covered by the messages after it.
           var banner = document.createElement("div");
-          banner.textContent = "[DeepAgents UI] " + message;
+          banner.textContent = "[Aleth UI] " + message;
           banner.style.cssText = "position:fixed;left:12px;right:12px;bottom:" +
             (12 + offset * 46) + "px;" +
             "z-index:99999;padding:10px 14px;background:#7f1d1d;color:#fff;" +
@@ -54,19 +54,19 @@
       });
 
       // The frontend is one ES-module bundle (ui/js/main.js). If it executed, it has
-      // published `window.DeepAgents`; if the asset never arrived -- a dropped fetch, a
+      // published `window.Aleth`; if the asset never arrived -- a dropped fetch, a
       // syntax error -- nothing runs and the window is inert, which is the failure this
       // check exists to name. Per-step failures after that are reported by name from the
       // wiring itself (see ui/js/wire.js), which is where those names are visible.
       function verifyFrontendBooted() {
-        if (window.DeepAgents && window.DeepAgents.bootedAt) return;
+        if (window.Aleth && window.Aleth.bootedAt) return;
         report("the frontend bundle did not execute: no module ran " +
           "(the built assets may be missing -- run `npm run build`)");
       }
 
       document.addEventListener("DOMContentLoaded", function () {
         // The bundle is a deferred module, so it has executed -- or failed to -- before
-        // DOMContentLoaded fires, and `window.DeepAgents` is published by then. Scheduling
+        // DOMContentLoaded fires, and `window.Aleth` is published by then. Scheduling
         // the check on the next paint also observes it after wire.js has finished wiring,
         // without a fixed timeout racing the module's evaluation: this is a signal (first
         // frame), not a guess. (This listener is registered before wire.js's, so a direct
@@ -91,7 +91,7 @@
     <aside class="sidebar" id="leftSidebar">
       <div class="sidebar-header">
         <div class="brand-row">
-          <span class="brand-logo-text">DEEPAGENTS</span>
+          <span class="brand-logo-text">ALETH</span>
           <div class="sidebar-head-tools">
             <span class="brand-badge">STUDIO</span>
             <button class="btn-sidebar-toggle" id="btnToggleLeftSidebar" type="button"
@@ -1160,7 +1160,7 @@
           <div class="rollback-files-box" id="rollbackFilesBox">
             <ul id="rollbackFilesList" class="rollback-files-ul"></ul>
           </div>
-          <span class="rollback-files-note">Prior backups in <code>.deepagents_backups</code> will be restored, or new files archived.</span>
+          <span class="rollback-files-note">Prior backups in <code>.aleth_backups</code> will be restored, or new files archived.</span>
         </div>
 
         <div class="rollback-confirm-checkbox-row">

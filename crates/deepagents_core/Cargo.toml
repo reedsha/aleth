@@ -2,7 +2,7 @@
 name = "deepagents_core"
 version = "0.1.0"
 edition = "2021"
-description = "Compiled core engine for DeepAgents Studio: plan parsing, dual-sync state and context slicing."
+description = "Compiled core engine for Aleth Studio: plan parsing, dual-sync state and context slicing."
 license = "MIT"
 
 [lib]

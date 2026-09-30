@@ -46,11 +46,11 @@ test("every element the wiring caches resolves", async ({ page }) => {
   // id inventory was hand-maintained to catch, so it is asserted here from the cache
   // itself -- no list to keep in step with the markup.
   //
-  // Read through `window.DeepAgents.diagnostics()`, which is the app's own health report
+  // Read through `window.Aleth.diagnostics()`, which is the app's own health report
   // (the wiring calls the same function and raises a startup banner for any it finds). The
   // cache is module-scoped since the ES-module migration, so this is the explicit seam
   // rather than a reach into a global that no longer exists.
-  const diagnostics = await page.evaluate(() => window.DeepAgents.diagnostics());
+  const diagnostics = await page.evaluate(() => window.Aleth.diagnostics());
   expect(diagnostics.unresolvedElements, "elements the app caches but cannot find").toEqual([]);
 });
 
@@ -58,7 +58,7 @@ test("startup raises no uncaught exception and no failure banner", async ({ page
   const errors = collectPageErrors(page);
   await openApp(page);
 
-  await expect(page.locator("#planTreeContainer")).not.toContainText("[DeepAgents UI]");
+  await expect(page.locator("#planTreeContainer")).not.toContainText("[Aleth UI]");
   expect(errors).toEqual([]);
 });
 

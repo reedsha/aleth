@@ -24,9 +24,9 @@ import os
 CODER_DEEP = "coder-deep"
 CODER_STANDARD = "coder-standard"
 
-ENV_ARCHITECT = "DEEPAGENTS_ARCHITECT_MODEL"
-ENV_CODER_DEEP = "DEEPAGENTS_CODER_DEEP_MODEL"
-ENV_CODER_STANDARD = "DEEPAGENTS_CODER_STANDARD_MODEL"
+ENV_ARCHITECT = "ALETH_ARCHITECT_MODEL"
+ENV_CODER_DEEP = "ALETH_CODER_DEEP_MODEL"
+ENV_CODER_STANDARD = "ALETH_CODER_STANDARD_MODEL"
 
 # The routes this project is developed against. ``coder-deep-test`` is a high-reasoning
 # free route, so the Gatekeeper runs on it too: planning is where reasoning pays, and the
@@ -43,7 +43,7 @@ def _route(env_name: str, default: str) -> str:
 
 
 def architect_model() -> str:
-    """The model the Gatekeeper runs on. Env: ``DEEPAGENTS_ARCHITECT_MODEL``."""
+    """The model the Gatekeeper runs on. Env: ``ALETH_ARCHITECT_MODEL``."""
     return _route(ENV_ARCHITECT, DEFAULT_ARCHITECT)
 
 

@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional
 
 from tools import mcp_stdio
 
-SERVER_NAME = "deepagents-filesystem"
+SERVER_NAME = "aleth-filesystem"
 SERVER_VERSION = "1.0.0"
 
 # The refusal every blind whole-file overwrite gets. One spelling, so the message the model

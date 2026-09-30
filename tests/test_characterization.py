@@ -29,7 +29,7 @@ from storage.db import DB_FILENAME
 # so the runtime is the in-repo double (``tests/fake_docker.py``): the argv, the child process
 # and the output plumbing are real, and only the container itself is emulated.
 FAKE_DOCKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_docker.py")
-FAKE_DOCKER_ENV = {"DEEPAGENTS_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
+FAKE_DOCKER_ENV = {"ALETH_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
 
 PLAN_MD = """# Project Plan: Demo
 
@@ -385,7 +385,7 @@ class WorkspaceTestCase(unittest.TestCase):
             path = os.path.join(self._orig_plan_dir, name)
             self._snapshot[name] = _read_if_present(path)
 
-        self.tmp = tempfile.mkdtemp(prefix="deepagents_chartest_")
+        self.tmp = tempfile.mkdtemp(prefix="aleth_chartest_")
         # Point the plan at the throwaway directory *first*: the setters load the plan, and
         # a load while the pointer still named the developer's directory would create a
         # state database beside their roadmap.
@@ -401,7 +401,7 @@ class WorkspaceTestCase(unittest.TestCase):
         # that verifies with ``execute_restricted_command`` runs that command in a container,
         # and this suite must not need a Docker daemon to be deterministic.
         env_patcher = mock.patch.dict(
-            os.environ, {"DEEPAGENTS_SYSTEM2": "0", **FAKE_DOCKER_ENV}
+            os.environ, {"ALETH_SYSTEM2": "0", **FAKE_DOCKER_ENV}
         )
         env_patcher.start()
         self.addCleanup(env_patcher.stop)
@@ -497,13 +497,13 @@ class FileOpTests(WorkspaceTestCase):
     def test_list_workspace_files_prunes_internal_dirs(self):
         ft.overwrite_source("sub/a.py", "")
         ft.overwrite_source("__pycache__/b.pyc", "")
-        ft.overwrite_source(".deepagents_backups/task-1/c.py", "")
+        ft.overwrite_source(".aleth_backups/task-1/c.py", "")
         ft.overwrite_source("node_modules/d.js", "")
 
         paths = [f["path"] for f in ft.list_workspace_files()]
         self.assertIn("sub/a.py", paths)
         self.assertNotIn("__pycache__/b.pyc", paths)
-        self.assertNotIn(".deepagents_backups/task-1/c.py", paths)
+        self.assertNotIn(".aleth_backups/task-1/c.py", paths)
         self.assertNotIn("node_modules/d.js", paths)
 
 
@@ -727,7 +727,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
         created = ft.backup_file_for_task("task-9", "brand_new.py")
         self.assertIsNone(created)
 
-        meta = self.read(os.path.join(".deepagents_backups", "task-9", "_meta.json"))
+        meta = self.read(os.path.join(".aleth_backups", "task-9", "_meta.json"))
         self.assertIn('"action": "modified"', meta)
         self.assertIn('"action": "created"', meta)
 
@@ -925,7 +925,7 @@ class TaskDiffTests(WorkspaceTestCase):
         self.assertEqual(self.read("existing.py"), "v2\n")
         self.assertEqual(self.read("brand_new.py"), "b\n")
         self.assertEqual(
-            self.read(os.path.join(".deepagents_backups", "task-9", "existing.py")),
+            self.read(os.path.join(".aleth_backups", "task-9", "existing.py")),
             "v1\n",
         )
 
@@ -996,7 +996,7 @@ class PreviewSourceTests(WorkspaceTestCase):
         self.assertEqual(res["error"], "")
 
     def test_a_path_cannot_reach_outside_the_workspace(self):
-        outside = tempfile.mkdtemp(prefix="deepagents_previewoutside_")
+        outside = tempfile.mkdtemp(prefix="aleth_previewoutside_")
         try:
             with open(os.path.join(outside, "secret.txt"), "w", encoding="utf-8") as fh:
                 fh.write("not for the preview")
@@ -1062,12 +1062,12 @@ class EnvironmentVariableTests(WorkspaceTestCase):
         self.assertNotIn("sk-secret-value", json.dumps(res))
 
     def test_a_name_the_environment_does_not_supply_is_reported_as_unset(self):
-        path = self._write_env("DEEPAGENTS_TEST_UNSET_NAME=v\n")
+        path = self._write_env("ALETH_TEST_UNSET_NAME=v\n")
 
         res = ft.read_environment_variables(path)
 
         self.assertEqual(res["variables"],
-                         [{"name": "DEEPAGENTS_TEST_UNSET_NAME", "set": False, "length": 0}])
+                         [{"name": "ALETH_TEST_UNSET_NAME", "set": False, "length": 0}])
 
     def test_a_missing_file_is_an_ordinary_answer(self):
         res = ft.read_environment_variables(os.path.join(self.tmp, "absent.env"))
@@ -1094,14 +1094,14 @@ class EnvironmentVariableTests(WorkspaceTestCase):
 
     def test_the_name_list_is_capped(self):
         lines = "\n".join(
-            f"DEEPAGENTS_TEST_KEY_{i}=v" for i in range(ft.MAX_ENVIRONMENT_VARIABLES + 10)
+            f"ALETH_TEST_KEY_{i}=v" for i in range(ft.MAX_ENVIRONMENT_VARIABLES + 10)
         )
         path = self._write_env(lines + "\n")
 
         res = ft.read_environment_variables(path)
 
         self.assertEqual(len(res["variables"]), ft.MAX_ENVIRONMENT_VARIABLES)
-        self.assertEqual(res["variables"][0]["name"], "DEEPAGENTS_TEST_KEY_0")
+        self.assertEqual(res["variables"][0]["name"], "ALETH_TEST_KEY_0")
 
 
 class RegistryContractTests(WorkspaceTestCase):
@@ -1527,7 +1527,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         )
 
         # A rollback snapshot is recorded before the deliverables are written.
-        meta = json.loads(self.read(os.path.join(".deepagents_backups", "task-2", "_meta.json")))
+        meta = json.loads(self.read(os.path.join(".aleth_backups", "task-2", "_meta.json")))
         self.assertEqual(meta["main.py"]["action"], "created")
         self.assertEqual(meta["test_main.py"]["action"], "created")
 
@@ -1844,7 +1844,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertIn("def run(self) -> Dict[str, Any]:", patched)
         self.assertEqual(self.read("test_main.py"), templates.SOLUTION_ENGINE_TEST)
         self.assertTrue(
-            os.path.isfile(os.path.join(self.tmp, ".deepagents_backups", "bugfix", "main.py"))
+            os.path.isfile(os.path.join(self.tmp, ".aleth_backups", "bugfix", "main.py"))
         )
 
         coder_summary = [e for e in events if e["type"] == "coder_summary"][0]["summary"]
@@ -2081,7 +2081,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "test_main.py")))
 
         # Only the primary deliverable is snapshotted on the custom path.
-        meta = json.loads(self.read(os.path.join(".deepagents_backups", "custom", "_meta.json")))
+        meta = json.loads(self.read(os.path.join(".aleth_backups", "custom", "_meta.json")))
         self.assertEqual(list(meta), ["main.py"])
         self.assertEqual(meta["main.py"]["action"], "created")
 
@@ -2395,7 +2395,7 @@ class PromptEditorTests(unittest.TestCase):
         self.coders_mod = coders_mod
         self.registry = registry_module.registry
 
-        self.tmp = tempfile.mkdtemp(prefix="deepagents_prompttest_")
+        self.tmp = tempfile.mkdtemp(prefix="aleth_prompttest_")
         self._orig = {
             "arch_file": arch_mod.__file__,
             "coders_file": coders_mod.__file__,
@@ -2511,14 +2511,14 @@ class WorkspaceLocationTests(unittest.TestCase):
         return result.stdout.strip()
 
     def test_the_workspace_comes_from_the_environment(self):
-        """``DEEPAGENTS_WORKSPACE_DIR`` is the single source, so the host decides where it lives.
+        """``ALETH_WORKSPACE_DIR`` is the single source, so the host decides where it lives.
 
         The workspace is a path *in the filesystem the Docker daemon sees* -- a container
         bind-mounts it -- so it cannot be hardcoded to a directory beside the repository.
         """
-        target = tempfile.mkdtemp(prefix="deepagents_ws_env_")
+        target = tempfile.mkdtemp(prefix="aleth_ws_env_")
         self.addCleanup(shutil.rmtree, target, ignore_errors=True)
-        env = {**os.environ, "DEEPAGENTS_WORKSPACE_DIR": target}
+        env = {**os.environ, "ALETH_WORKSPACE_DIR": target}
 
         self.assertEqual(
             self._resolve_from(self.project_root, env=env), os.path.abspath(target)
@@ -2531,7 +2531,7 @@ class WorkspaceLocationTests(unittest.TestCase):
         configuration; a cwd-relative default would silently point at an empty directory and
         leave the UI with no plan to render.
         """
-        env = {k: v for k, v in os.environ.items() if k != "DEEPAGENTS_WORKSPACE_DIR"}
+        env = {k: v for k, v in os.environ.items() if k != "ALETH_WORKSPACE_DIR"}
         resolved = set()
         for cwd in (
             self.project_root,
@@ -2546,7 +2546,7 @@ class WorkspaceLocationTests(unittest.TestCase):
         self.assertEqual(len(resolved), 1, f"the default moved with the cwd: {resolved}")
 
     def test_a_foreign_cwd_does_not_create_a_workspace_beside_it(self):
-        foreign = tempfile.mkdtemp(prefix="deepagents_foreigncwd_")
+        foreign = tempfile.mkdtemp(prefix="aleth_foreigncwd_")
         try:
             resolved = self._resolve_from(foreign)
             self.assertFalse(

@@ -1,4 +1,4 @@
-"""Orchestration layer for DeepAgents.
+"""Orchestration layer for Aleth.
 
 Split out of the former monolithic ``registry.py``. The package is named
 ``orchestration`` rather than ``registry`` on purpose: ``registry.py`` is imported

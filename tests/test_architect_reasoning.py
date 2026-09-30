@@ -24,7 +24,7 @@ from orchestration.workflow import reasoning
 FAKE_ENV = {
     "OPENAI_API_KEY": "test-key",
     "OPENAI_BASE_URL": "https://example.invalid/v1",
-    "DEEPAGENTS_SYSTEM2": "1",
+    "ALETH_SYSTEM2": "1",
 }
 
 
@@ -82,7 +82,7 @@ class ThoughtLinesTests(unittest.TestCase):
 
 class ArchitectAnswerSeamTests(unittest.TestCase):
     def test_disabled_system2_yields_no_answer(self):
-        with mock.patch.dict(os.environ, {"DEEPAGENTS_SYSTEM2": "0"}, clear=False):
+        with mock.patch.dict(os.environ, {"ALETH_SYSTEM2": "0"}, clear=False):
             answer = reasoning.architect_answer(prompt="anything")
         self.assertFalse(answer.used_llm)
         self.assertEqual(answer.text, "")
@@ -174,7 +174,7 @@ class RecommendUsesTheModelTests(unittest.TestCase):
         self.assertTrue(any("Ship the endpoint" in e.get("text", "") for e in events if e["type"] == "log"))
 
     def test_without_a_provider_the_scripted_proposals_stand(self):
-        with mock.patch.dict(os.environ, {"DEEPAGENTS_SYSTEM2": "0"}, clear=False):
+        with mock.patch.dict(os.environ, {"ALETH_SYSTEM2": "0"}, clear=False):
             from orchestration.workflow import actions_admin
             from orchestration.workflow.context import WorkflowContext
 

@@ -17,8 +17,8 @@ import { applyPlanData } from "./plan-tree.js";
 import { setHtml } from "./safe-dom.js";
 import { DOM, setAvailablePlans, state } from "./store.js";
 
-const SIDEBAR_LEFT_KEY = "deepagents.sidebarCollapsed";
-const SIDEBAR_RIGHT_KEY = "deepagents.planSidebarCollapsed";
+const SIDEBAR_LEFT_KEY = "aleth.sidebarCollapsed";
+const SIDEBAR_RIGHT_KEY = "aleth.planSidebarCollapsed";
 
 // A whole workspace listing is re-rendered on every change. A ceiling keeps a very large
 // workspace from turning the left pane into a multi-second render; the note says so.

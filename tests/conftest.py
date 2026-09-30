@@ -2,7 +2,7 @@
 
 The suite must never read or write the roadmap in the repository root. Loading plan state
 creates the SQLite store beside it, so a test that forgot to isolate itself would leave a
-``deepagents_state.db`` in the user's working tree (and could, in principle, rewrite their
+``aleth_state.db`` in the user's working tree (and could, in principle, rewrite their
 ``PLAN.md``). This points the plan directory at a throwaway directory for the whole
 session, before any test runs, and restores it afterwards.
 
@@ -25,7 +25,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_plan_directory():
     original = workspace.PLAN_DIR
-    sandbox = tempfile.mkdtemp(prefix="deepagents_plan_session_")
+    sandbox = tempfile.mkdtemp(prefix="aleth_plan_session_")
     # Seed it with the developer's own roadmap so the real-plan tests still run.
     source = os.path.join(_REPO_ROOT, "PLAN.md")
     if os.path.isfile(source):

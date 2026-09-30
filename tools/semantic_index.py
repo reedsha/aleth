@@ -70,7 +70,7 @@ _DEFAULT_TABLE = "code_units"
 # The cross-process lock directory. Under the system temp directory because it guards a shared,
 # machine-wide resource (the model cache), so every process -- in any checkout -- must find the
 # same lock file.
-_LOCK_DIR = os.path.join(tempfile.gettempdir(), "deepagents-embedder-locks")
+_LOCK_DIR = os.path.join(tempfile.gettempdir(), "aleth-embedder-locks")
 # One lock per model, shared by every thread here: a single ``FileLock`` instance is what makes
 # same-process callers and sibling processes contend for the same file.
 _LOCKS: Dict[str, Any] = {}

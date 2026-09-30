@@ -1,9 +1,9 @@
-# Project Plan: DeepAgents Studio Architecture Upgrade Roadmap
+# Project Plan: Aleth Studio Architecture Upgrade Roadmap
 
 ## 🌍 Global State Summary
 - **Architecture:** Off-Code Development IDE with System 1 (Laya) & System 2 (Architect/Coder) dual-brain orchestration.
 - **Current Core State:** pywebview shell over a compiled Rust core (`crates/deepagents_core`: markdown plan parser, dual-sync state engine, Line-Anchored Context Slicer), a Vite-built frontend served from `dist/` through a WebView2 virtual host, and the 6-action command palette operational.
-- **Delivery:** The frontend is built by `npm run build` into `dist/` and served through WebView2's own host mapping (`deepagents.local` in `app.py`), so the document and its assets are ordinary https requests -- not a `file://` document, and not a bundle inlined into `ui/index.html`. `ui/js` is ES modules with `ui/js/main.js` as the single entry point, the shared state is owned by `ui/js/store.js`, and `eslint` with `no-undef` runs over the sources as a gate.
+- **Delivery:** The frontend is built by `npm run build` into `dist/` and served through WebView2's own host mapping (`aleth.local` in `app.py`), so the document and its assets are ordinary https requests -- not a `file://` document, and not a bundle inlined into `ui/index.html`. `ui/js` is ES modules with `ui/js/main.js` as the single entry point, the shared state is owned by `ui/js/store.js`, and `eslint` with `no-undef` runs over the sources as a gate.
 - **Token Reality (live):** System 2 is wired on every code-writing path, and the administrative intents (Update Plan, Analyze, Recommend, analytical Custom directives) now answer through the Architect, reporting their own token usage. Each in-flight model call also streams its reasoning into the agent card. Laya remains the zero-token System 1 gate.
 - **Target Layout:** Dual-view center stage (Interactive Plan Tree ↔ Raw MD) that additionally mounts one purpose-built result view per action (code diff, roadmap diff, structured dashboard, proposal cards); a tabbed left sidebar (Agents / Files / Plans / Env); a collapsible Plan Tracker rail on the right; a command palette (Ctrl/Cmd+K) as the action entry point; a top status bar that carries the whole run cluster (Ready state, active plan, completion figure, and Stop while a run is live); and a run-scoped elastic console toggled from the foot of the right rail.
 - **Target Logic:** Sub-50ms Laya gating, Line-Anchored Context Slicing, inline Behavioral Ledger logging, and AST Normalization Gate. The result view's verdicts are measured rather than asserted: `tools/test_runner.py` executes the test file a task wrote and reports the real pass/fail, and `tools/code_metrics.py` derives the Analyze dashboard's complexity and security figures from the source with the stdlib parser. The plan schema carries **four** status marks — `[x]` completed, `[-]` in progress, `[ ]` pending, `[!]` failed — and the Architect's verification (compile plus the task's own tests) is the writer for `[!]`: a task only becomes `[x]` when its verification passes, while an inconclusive check (a missing runner, a collection error, no test file) leaves it completed rather than inventing a failure.
@@ -99,7 +99,7 @@
 - [x] [FE] Replace the inlined frontend bundle with a Vite build served through a WebView2 virtual host
   - [x] [FE] Delete `tools/build_ui_bundle.py` and the two generated regions in `ui/index.html` (12,660 lines -> 1,107)
   - [x] [FE] Add `vite.config.mjs` and `ui/build/vite-plugin-classic-bundle.mjs`, emitting one `assets/app.js` and one `assets/app.css` into `dist/` (superseded in §6: the sources are ES modules now and the concatenating plugin is gone)
-  - [x] [BE] Map `deepagents.local` onto `dist/` in `app.py` with `SetVirtualHostNameToFolderMapping`, installing it before the window's first navigation
+  - [x] [BE] Map `aleth.local` onto `dist/` in `app.py` with `SetVirtualHostNameToFolderMapping`, installing it before the window's first navigation
   - [x] [TEST] Prove the built bundle actually runs: origin, stylesheet, module globals, rendered plan tree and no failure banner, in a real window
 - [x] [TEST] Modernize the verification gates
   - [x] [TEST] Delete `tests/ui_startup_contract.js`; assert the running app's structure instead of counting markup
@@ -119,5 +119,5 @@
 - [x] [FE] Migrate `ui/js` to ES modules and delete the concatenating build
   - [x] [FE] Compute the import graph mechanically from the sources, convert all 21 modules, and verify every shared name resolves
   - [x] [FE] Add `ui/js/main.js` as the single entry point; delete `ui/build/vite-plugin-classic-bundle.mjs` and let Vite bundle the graph
-  - [x] [BE] Replace the head watchdog's hand-maintained list of 35 `window` globals with a boot check plus the app's own DOM-cache diagnostic (`window.DeepAgents.diagnostics()`)
+  - [x] [BE] Replace the head watchdog's hand-maintained list of 35 `window` globals with a boot check plus the app's own DOM-cache diagnostic (`window.Aleth.diagnostics()`)
   - [x] [TEST] Un-paralyze static analysis: ESLint with `no-undef` is meaningful now that imports are explicit, and it passes clean over `ui/js`

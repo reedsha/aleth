@@ -56,11 +56,11 @@ class LoadEnvironmentTests(unittest.TestCase):
         self.assertEqual(os.environ["OPENAI_API_KEY"], REAL)
 
     def test_an_unset_name_is_not_reported_but_is_loaded(self):
-        os.environ.pop("DEEPAGENTS_TEST_ONLY", None)
-        replaced = load_environment(self._env_file("DEEPAGENTS_TEST_ONLY=loaded\n"))
+        os.environ.pop("ALETH_TEST_ONLY", None)
+        replaced = load_environment(self._env_file("ALETH_TEST_ONLY=loaded\n"))
         self.assertEqual(replaced, [])
-        self.assertEqual(os.environ["DEEPAGENTS_TEST_ONLY"], "loaded")
-        os.environ.pop("DEEPAGENTS_TEST_ONLY", None)
+        self.assertEqual(os.environ["ALETH_TEST_ONLY"], "loaded")
+        os.environ.pop("ALETH_TEST_ONLY", None)
 
     def test_every_shadowed_name_is_reported_in_file_order(self):
         self._export("OPENAI_API_KEY", STALE)
@@ -83,10 +83,10 @@ class LoadEnvironmentTests(unittest.TestCase):
 
     def test_a_name_without_a_value_is_not_a_shadow(self):
         # dotenv reports a bare ``NAME`` line as None; there is no value to install.
-        self._export("DEEPAGENTS_BARE", "already-set")
-        replaced = load_environment(self._env_file("DEEPAGENTS_BARE\n"))
-        self.assertNotIn("DEEPAGENTS_BARE", replaced)
-        self.assertEqual(os.environ["DEEPAGENTS_BARE"], "already-set")
+        self._export("ALETH_BARE", "already-set")
+        replaced = load_environment(self._env_file("ALETH_BARE\n"))
+        self.assertNotIn("ALETH_BARE", replaced)
+        self.assertEqual(os.environ["ALETH_BARE"], "already-set")
 
 
 class RealConfigTests(unittest.TestCase):

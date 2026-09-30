@@ -376,7 +376,7 @@ def fix_bug_action(
             "files": [target_file, test_file],
             "deliverables": [
                 f"Applied surgical patch addressing: {clean_bug[:60]}.",
-                f"Created snapshot backup in `.deepagents_backups`.",
+                f"Created snapshot backup in `.aleth_backups`.",
                 f"Constructed regression test suite in `{test_file}`."
             ]
         }

@@ -47,19 +47,19 @@ FIELDS: List[Dict[str, Any]] = [
         "help": "An OpenAI-compatible endpoint, e.g. https://router.example/v1",
     },
     {
-        "name": "DEEPAGENTS_ARCHITECT_MODEL",
+        "name": "ALETH_ARCHITECT_MODEL",
         "label": "Architect model",
         "secret": False,
         "help": "The route the Gatekeeper runs on.",
     },
     {
-        "name": "DEEPAGENTS_CODER_DEEP_MODEL",
+        "name": "ALETH_CODER_DEEP_MODEL",
         "label": "Coder model (deep)",
         "secret": False,
         "help": "The route for core logic and UI implementation.",
     },
     {
-        "name": "DEEPAGENTS_CODER_STANDARD_MODEL",
+        "name": "ALETH_CODER_STANDARD_MODEL",
         "label": "Coder model (standard)",
         "secret": False,
         "help": "The route for tests, boilerplate and documentation.",
@@ -87,9 +87,9 @@ def _defaults() -> Dict[str, str]:
     rather than a wrong one.
     """
     routes = {
-        "DEEPAGENTS_ARCHITECT_MODEL": "",
-        "DEEPAGENTS_CODER_DEEP_MODEL": "",
-        "DEEPAGENTS_CODER_STANDARD_MODEL": "",
+        "ALETH_ARCHITECT_MODEL": "",
+        "ALETH_CODER_DEEP_MODEL": "",
+        "ALETH_CODER_STANDARD_MODEL": "",
     }
     try:
         from agents.model_routing import (
@@ -99,9 +99,9 @@ def _defaults() -> Dict[str, str]:
         )
 
         routes = {
-            "DEEPAGENTS_ARCHITECT_MODEL": DEFAULT_ARCHITECT,
-            "DEEPAGENTS_CODER_DEEP_MODEL": DEFAULT_CODER_DEEP,
-            "DEEPAGENTS_CODER_STANDARD_MODEL": DEFAULT_CODER_STANDARD,
+            "ALETH_ARCHITECT_MODEL": DEFAULT_ARCHITECT,
+            "ALETH_CODER_DEEP_MODEL": DEFAULT_CODER_DEEP,
+            "ALETH_CODER_STANDARD_MODEL": DEFAULT_CODER_STANDARD,
         }
     except Exception:
         pass

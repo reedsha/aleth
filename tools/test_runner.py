@@ -89,7 +89,7 @@ def _pytest_command(rel_path: str) -> str:
 def _recorded_files(task_key: str) -> List[str]:
     """The workspace-relative files a task's backup metadata records, or an empty list.
 
-    Reads ``.deepagents_backups/<task_key>/_meta.json`` -- the same record ``task_diff``
+    Reads ``.aleth_backups/<task_key>/_meta.json`` -- the same record ``task_diff``
     reads -- so this names the files the task actually touched rather than guessing.
     """
     meta_path = os.path.join(get_project_dir(), BACKUP_SUBDIR, task_key, "_meta.json")

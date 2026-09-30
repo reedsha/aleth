@@ -1,7 +1,7 @@
 """Deliverable safety net: backups, codebase/plan audit, sync resolution, rollback.
 
 Before any task modifies or creates a deliverable, a snapshot is recorded under
-``.deepagents_backups/<task_id>/`` together with ``_meta.json`` describing whether
+``.aleth_backups/<task_id>/`` together with ``_meta.json`` describing whether
 the file was modified (and where its prior copy lives) or newly created.
 
 The audit compares what the plan state claims against what actually exists on disk, and
@@ -406,7 +406,7 @@ def rollback_task_state(task_id: str) -> Dict[str, Any]:
     target_task["status"] = "pending"
     target_task.setdefault("details", []).append(f"Rolled back from '{old_status}' to pending.")
 
-    # Restore backups if present in .deepagents_backups/<task_id>
+    # Restore backups if present in .aleth_backups/<task_id>
     restored_files = []
     restore_errors = []
     task_backup_dir = os.path.join(get_backup_dir(), target_task.get("id", task_id))

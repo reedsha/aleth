@@ -43,11 +43,11 @@ If the daemon lives in WSL, the orchestrator runs in WSL. Nothing here bridges t
 
 Configuration (read at call time, so tests can point them at a double):
 
-* ``DEEPAGENTS_SANDBOX_IMAGE`` -- the image the payload runs in (default
-  ``deepagents-sandbox:latest``).
-* ``DEEPAGENTS_DOCKER_BIN`` -- the runtime command line, when the client is not ``docker``
+* ``ALETH_SANDBOX_IMAGE`` -- the image the payload runs in (default
+  ``aleth-sandbox:latest``).
+* ``ALETH_DOCKER_BIN`` -- the runtime command line, when the client is not ``docker``
   (e.g. ``podman``, or an absolute path). Quote a path that contains spaces.
-* ``DEEPAGENTS_SANDBOX_UID`` / ``DEEPAGENTS_SANDBOX_GID`` -- the identity to run as, used only
+* ``ALETH_SANDBOX_UID`` / ``ALETH_SANDBOX_GID`` -- the identity to run as, used only
   on a platform with no POSIX uid/gid of its own (Windows), where it defaults to ``1000``.
 """
 
@@ -65,12 +65,12 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-IMAGE_ENV = "DEEPAGENTS_SANDBOX_IMAGE"
-DOCKER_BIN_ENV = "DEEPAGENTS_DOCKER_BIN"
-UID_ENV = "DEEPAGENTS_SANDBOX_UID"
-GID_ENV = "DEEPAGENTS_SANDBOX_GID"
+IMAGE_ENV = "ALETH_SANDBOX_IMAGE"
+DOCKER_BIN_ENV = "ALETH_DOCKER_BIN"
+UID_ENV = "ALETH_SANDBOX_UID"
+GID_ENV = "ALETH_SANDBOX_GID"
 
-DEFAULT_IMAGE = "deepagents-sandbox:latest"
+DEFAULT_IMAGE = "aleth-sandbox:latest"
 # The image contract lives beside the repo it serves. It describes the sandbox image only.
 DOCKERFILE = Path(__file__).resolve().parent.parent / "docker" / "sandbox.Dockerfile"
 
@@ -109,7 +109,7 @@ _DAEMON_DOWN_MARKERS = (
 _MISSING_RUNTIME = (
     "the docker client is not on PATH. The orchestrator must run where the Docker daemon does "
     "-- one namespace, one filesystem, one signal space -- so install the client and start the "
-    "daemon in this environment, or set DEEPAGENTS_DOCKER_BIN to its path. The sandbox never "
+    "daemon in this environment, or set ALETH_DOCKER_BIN to its path. The sandbox never "
     "falls back to the host, and it never proxies commands across an OS boundary."
 )
 
@@ -184,7 +184,7 @@ def _split_command(value: str) -> List[str]:
 
 
 def docker_bin() -> List[str]:
-    """The runtime command as an argv list: ``docker``, or ``DEEPAGENTS_DOCKER_BIN``.
+    """The runtime command as an argv list: ``docker``, or ``ALETH_DOCKER_BIN``.
 
     Raises :class:`EnvironmentError` when the client cannot be found. That is deliberate and
     fatal: the perimeter reaches the daemon through this client, in this namespace, and a
@@ -287,7 +287,7 @@ def _build_once(image_name: str) -> bool:
     The lock is what keeps a pool of concurrent workers from starting the same cold build; the
     re-check is what makes every caller after the first a no-op rather than a second build.
     """
-    lock_path = os.path.join(tempfile.gettempdir(), "deepagents-sandbox-image.lock")
+    lock_path = os.path.join(tempfile.gettempdir(), "aleth-sandbox-image.lock")
     try:
         import filelock
 
@@ -460,7 +460,7 @@ def run_isolated(
 
     try:
         target = ensure_image()
-        name = f"deepagents-exec-{uuid.uuid4().hex[:12]}"
+        name = f"aleth-exec-{uuid.uuid4().hex[:12]}"
         argv = build_command(
             command, root=str(root), name=name,
             memory_mb=memory_mb, max_processes=max_processes, image_name=target,

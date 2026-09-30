@@ -74,7 +74,7 @@ import { unresolvedElements } from "./store.js";
 //
 // `diagnostics` is the app's own health report, used by the wiring as well (see wire.js),
 // so it is not a test-only hook.
-window.DeepAgents = {
+window.Aleth = {
   bootedAt: Date.now(),
   diagnostics: () => ({ unresolvedElements: unresolvedElements() }),
 };

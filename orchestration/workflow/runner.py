@@ -62,7 +62,7 @@ def run_agent_workflow(
       directly through the Architect with ZERO Coder spawns / tokens.
     - Delegated Implementation: Spawns a specialized Coder only when physical code must
       be written.
-    - Safe Rollbacks: Snapshots deliverables into .deepagents_backups prior to
+    - Safe Rollbacks: Snapshots deliverables into .aleth_backups prior to
       modification.
     - Multimodal UI Handling: Identifies [UI] tasks and incorporates vision directives.
 

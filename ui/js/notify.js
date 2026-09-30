@@ -31,7 +31,7 @@ export function showToast(message, type = "info") {
 // can report a startup failure without importing the composition layer, which the other way
 // round would close a cycle.
 export function reportStartupFailure(message) {
-  console.error("[DeepAgents UI]", message);
+  console.error("[Aleth UI]", message);
   // The document head installs a reporter before any module runs. Sharing it keeps
   // every failure in one stack of banners instead of several overlapping at the same
   // position, where all but the last message would be unreadable.
@@ -41,7 +41,7 @@ export function reportStartupFailure(message) {
   }
   try {
     const banner = document.createElement("div");
-    banner.textContent = "[DeepAgents UI] " + message;
+    banner.textContent = "[Aleth UI] " + message;
     banner.style.cssText = "position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;" +
       "padding:10px 14px;background:#7f1d1d;color:#fff;font:12px/1.5 monospace;" +
       "border-radius:8px;white-space:pre-wrap;pointer-events:none";

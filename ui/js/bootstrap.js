@@ -119,7 +119,7 @@ export function initFallbackMode() {
     const message = "Desktop bridge unavailable: the workspace could not be loaded. " +
       "Restart the app. (For a layout-only preview in a browser, open this page with ?demo=1.)";
     if (typeof reportStartupFailure === "function") reportStartupFailure(message);
-    else console.error("[DeepAgents UI]", message);
+    else console.error("[Aleth UI]", message);
     return;
   }
   renderFallbackDemoData();

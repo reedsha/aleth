@@ -24,7 +24,7 @@ def _write_meta(base_dir, task_id, meta):
 
 class BackupStatusTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="deepagents_gitstatus_")
+        self.tmp = tempfile.mkdtemp(prefix="aleth_gitstatus_")
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -60,7 +60,7 @@ class SourceSelectionTests(unittest.TestCase):
     """`None` from git means "ask something else"; `{}` means "a repo with nothing to show"."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="deepagents_gitstatus_")
+        self.tmp = tempfile.mkdtemp(prefix="aleth_gitstatus_")
         _write_meta(self.tmp, "task-1", {"from_backup.py": {"action": "modified"}})
         self._real = git_status._git_status
 
@@ -84,7 +84,7 @@ class SourceSelectionTests(unittest.TestCase):
 @unittest.skipIf(shutil.which("git") is None, "git is not installed")
 class RealRepositoryTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="deepagents_gitstatus_")
+        self.tmp = tempfile.mkdtemp(prefix="aleth_gitstatus_")
         self._run("init", "-q")
 
     def tearDown(self):

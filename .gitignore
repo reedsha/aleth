@@ -13,9 +13,9 @@ my_project_workspace/
 # The plan's state database. The roadmap itself (PLAN.md) is tracked on purpose -- it is
 # the project's own document, rendered from the store -- but the SQLite database is the
 # machine's, and it is never committed.
-/deepagents_state.db
-/deepagents_state.db-wal
-/deepagents_state.db-shm
+/aleth_state.db
+/aleth_state.db-wal
+/aleth_state.db-shm
 
 # Node tooling: Vite and its dependencies
 node_modules/

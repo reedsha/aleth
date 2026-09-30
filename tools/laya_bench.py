@@ -21,7 +21,7 @@ Run it with::
     ./venv/Scripts/python.exe -m tools.laya_bench
 
 The LLM column is opt-in (``--llm``) because it is the only column that leaves the
-machine. It defaults to whatever ``DEEPAGENTS_MODEL`` names, else ``policy/free``.
+machine. It defaults to whatever ``ALETH_MODEL`` names, else ``policy/free``.
 """
 
 import argparse
@@ -295,7 +295,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="also measure the network route (the only column that costs tokens)",
     )
-    parser.add_argument("--model", default=os.environ.get("DEEPAGENTS_MODEL", "policy/free"))
+    parser.add_argument("--model", default=os.environ.get("ALETH_MODEL", "policy/free"))
     parser.add_argument("--sample", type=int, default=12, help="titles to measure the llm on")
     args = parser.parse_args(argv)
 

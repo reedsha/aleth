@@ -138,7 +138,7 @@ def main(argv: List[str] = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--model", default=os.environ.get("DEEPAGENTS_MODEL", DEFAULT_MODEL))
+    parser.add_argument("--model", default=os.environ.get("ALETH_MODEL", DEFAULT_MODEL))
     parser.add_argument("--turns", type=int, default=4, help="Coder loop turns to total over")
     parser.add_argument("--reads", type=int, default=2, help="files read per Coder turn")
     args = parser.parse_args(argv)
@@ -205,7 +205,7 @@ def main(argv: List[str] = None) -> int:
     print("Not modelled, and both would raise these numbers: the framework's own")
     print("instructions and subagent wiring, and the code a Coder actually emits.")
 
-    if os.environ.get("DEEPAGENTS_COST_JSON"):
+    if os.environ.get("ALETH_COST_JSON"):
         print(json.dumps(validated(CostReportPayload, {
             "admin_input": admin_usage["prompt_tokens"],
             "spawn_turn1_input": first,

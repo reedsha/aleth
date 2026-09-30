@@ -109,7 +109,7 @@ _CONSOLE_WINDOW_APPEND_JS = (
 # has the bug: the document and every asset it names become ordinary https requests
 # WebView2 resolves straight out of the folder, with no HTTP server and no inlining.
 
-ASSET_HOST = "deepagents.local"
+ASSET_HOST = "aleth.local"
 
 
 def frontend_root() -> str:
@@ -188,9 +188,9 @@ def _console_window_html(backlog) -> str:
         rows.append(f'<div class="ln {kind}"><span class="t">{text}</span></div>')
     return (
         '<!doctype html><html><head><meta charset="utf-8">'
-        "<title>DeepAgents \u2022 Console</title>"
+        "<title>Aleth \u2022 Console</title>"
         f"<style>{_CONSOLE_WINDOW_STYLE}</style></head>"
-        '<body><header><span>DeepAgents \u2022 Console</span>'
+        '<body><header><span>Aleth \u2022 Console</span>'
         '<span>detached</span></header>'
         f'<div id="stream">{"".join(rows)}</div>'
         f"<script>{_CONSOLE_WINDOW_APPEND_JS}</script></body></html>"
@@ -211,7 +211,7 @@ def _push_console_line_to(window, kind, text) -> None:
 
 class BridgeAPI:
     """
-    Two-way asynchronous bridge connecting PyWebView UI to Python DeepAgents backend.
+    Two-way asynchronous bridge connecting PyWebView UI to Python Aleth backend.
     """
     def __init__(self):
         self._window = None
@@ -692,7 +692,7 @@ class BridgeAPI:
             return {"success": False, "error": str(e)}
 
     def get_task_diff(self, task_id: str):
-        """Read-only diff of the file edits a task recorded in .deepagents_backups."""
+        """Read-only diff of the file edits a task recorded in .aleth_backups."""
         try:
             return task_diff(task_id)
         except Exception as e:
@@ -1090,7 +1090,7 @@ class BridgeAPI:
         def _spawn():
             try:
                 window = webview.create_window(
-                    title="DeepAgents \u2022 Console",
+                    title="Aleth \u2022 Console",
                     html=_console_window_html(backlog),
                     width=760,
                     height=440,
@@ -1210,7 +1210,7 @@ def main(argv=None):
         ui_url = index_path
 
     window = webview.create_window(
-        title="DeepAgents • Plan Orchestrator Studio",
+        title="Aleth • Plan Orchestrator Studio",
         url=ui_url,
         js_api=api,
         width=1340,

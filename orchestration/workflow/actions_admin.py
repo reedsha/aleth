@@ -423,7 +423,7 @@ def _back_up_plan_markdown(filename: str, content: str) -> str:
 
     The plan lives in the plan directory (the repository), not the code workspace, so
     ``backup_file_for_task`` cannot be reused here: it resolves relative to the workspace.
-    The snapshot lands in the gitignored ``.deepagents_backups`` directory, which the plan
+    The snapshot lands in the gitignored ``.aleth_backups`` directory, which the plan
     switcher does not list, so a reformat is reversible without polluting ``list_plan_files``.
     """
     backup_dir = os.path.join(get_backup_dir(), "plan-normalize")

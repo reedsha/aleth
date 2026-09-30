@@ -38,7 +38,7 @@ from pydantic import BaseModel, ConfigDict
 _STRICT = ConfigDict(extra="forbid", strict=False)
 
 # The database file name, beside the markdown projection in the plan directory.
-DB_FILENAME = "deepagents_state.db"
+DB_FILENAME = "aleth_state.db"
 
 # The five marks a milestone can carry. A ``Literal`` on purpose: the store must not
 # accept a status the workflow cannot reason about. ``planned`` is the Artifact Gate's

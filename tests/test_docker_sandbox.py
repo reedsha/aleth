@@ -33,7 +33,7 @@ FAKE_DOCKER = os.path.join(REPO_ROOT, "tests", "fake_docker.py")
 
 def fake_docker_env(**extra):
     """The environment that points the perimeter at the in-repo double."""
-    env = {"DEEPAGENTS_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
+    env = {"ALETH_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
     env.update(extra)
     return env
 
@@ -330,8 +330,8 @@ class ExecServerRefusalTests(unittest.TestCase):
     def test_the_refusal_offers_no_native_escape_hatch(self):
         with mock.patch.dict(os.environ, fake_docker_env(FAKE_DOCKER_DAEMON_DOWN="1")):
             output = run_workspace_command("echo x", root=self.root)
-        self.assertNotIn("DEEPAGENTS_SANDBOX=auto", output)
-        self.assertNotIn("DEEPAGENTS_SANDBOX=off", output)
+        self.assertNotIn("ALETH_SANDBOX=auto", output)
+        self.assertNotIn("ALETH_SANDBOX=off", output)
         self.assertIn("never run on the host", output)
 
 
@@ -365,7 +365,7 @@ class LegacyPerimeterRemovedTests(unittest.TestCase):
             source = handle.read()
         self.assertNotIn("def _wsl", source)
         self.assertNotIn("wslpath", source)
-        self.assertNotIn("DEEPAGENTS_DOCKER_WSL_DISTRO", source)
+        self.assertNotIn("ALETH_DOCKER_WSL_DISTRO", source)
         self.assertIn("raise EnvironmentError", source)
 
 
@@ -381,22 +381,22 @@ class ImageContractTests(unittest.TestCase):
 
     def test_the_default_image_is_the_sandbox_tag(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(docker_sandbox.image(), "deepagents-sandbox:latest")
+            self.assertEqual(docker_sandbox.image(), "aleth-sandbox:latest")
 
     def test_a_present_image_is_used_as_it_is(self):
         with mock.patch.dict(os.environ, fake_docker_env()):
-            self.assertEqual(docker_sandbox.ensure_image(), "deepagents-sandbox:latest")
+            self.assertEqual(docker_sandbox.ensure_image(), "aleth-sandbox:latest")
 
     def test_an_absent_sandbox_image_is_built_once(self):
         with mock.patch.dict(
             os.environ,
             fake_docker_env(FAKE_DOCKER_IMAGE_MISSING="1", FAKE_DOCKER_LOG=self.log),
         ):
-            self.assertEqual(docker_sandbox.ensure_image(), "deepagents-sandbox:latest")
+            self.assertEqual(docker_sandbox.ensure_image(), "aleth-sandbox:latest")
 
         builds = [call for call in _invocations(self.log) if call and call[0] == "build"]
         self.assertEqual(len(builds), 1, "the sandbox image was not built exactly once")
-        self.assertIn("deepagents-sandbox:latest", builds[0])
+        self.assertIn("aleth-sandbox:latest", builds[0])
         # The build is driven from the repo's Dockerfile, not from a guessed context.
         self.assertIn("-f", builds[0])
         self.assertIn(str(docker_sandbox.DOCKERFILE), builds[0])

@@ -89,7 +89,7 @@ def _container_env() -> dict:
 
     Only ``PATH`` is adjusted: ``python`` is resolved to the interpreter running the suite, so
     the emulated image provides the project's toolchain -- which is exactly what the real image
-    must do (see ``DEEPAGENTS_SANDBOX_IMAGE``). No host secret is passed on.
+    must do (see ``ALETH_SANDBOX_IMAGE``). No host secret is passed on.
     """
     env = dict(os.environ)
     env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("PATH", "")
@@ -115,7 +115,7 @@ def _build() -> int:
     if os.environ.get("FAKE_DOCKER_BUILD_FAIL"):
         sys.stderr.write("The command '/bin/sh -c pip install ...' returned a non-zero code: 1\n")
         return 1
-    sys.stdout.write("Successfully tagged deepagents-sandbox:latest\n")
+    sys.stdout.write("Successfully tagged aleth-sandbox:latest\n")
     return 0
 
 

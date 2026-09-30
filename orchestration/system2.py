@@ -32,12 +32,12 @@ from typing import Any, Dict, List, Optional
 # The opt-out. Unset means "enabled once configured", so a checkout with a ``.env``
 # starts making real calls, while the test suite sets this to ``0`` to pin the offline
 # path deterministically instead of depending on the developer's shell.
-ENV_ENABLED = "DEEPAGENTS_SYSTEM2"
+ENV_ENABLED = "ALETH_SYSTEM2"
 
 ENV_API_KEY = "OPENAI_API_KEY"
 ENV_BASE_URL = "OPENAI_BASE_URL"
 
-# Values of ``DEEPAGENTS_SYSTEM2`` that turn System 2 off, beyond the bare "0".
+# Values of ``ALETH_SYSTEM2`` that turn System 2 off, beyond the bare "0".
 DISABLED_VALUES = frozenset({"0", "false", "off", "no"})
 
 # Route names carry their transport as a ``provider:`` prefix (``openai:policy/x``).
@@ -132,7 +132,7 @@ def is_configured(*, base_url: Optional[str] = None, api_key: Optional[str] = No
 def is_enabled(*, base_url: Optional[str] = None, api_key: Optional[str] = None) -> bool:
     """Whether a real call should be attempted right now.
 
-    Enabled by default *once configured*, and switched off by ``DEEPAGENTS_SYSTEM2``
+    Enabled by default *once configured*, and switched off by ``ALETH_SYSTEM2``
     (``0`` / ``false`` / ``off`` / ``no``). Tests set the flag so the suite pins the
     offline path regardless of the shell it runs in.
 

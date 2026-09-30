@@ -1,4 +1,4 @@
-"""Characterization test suite for DeepAgents Studio.
+"""Characterization test suite for Aleth Studio.
 
 These tests pin down the *existing* observable behavior of the plan engine,
 file operations, and workflow event contract. They are intentionally written

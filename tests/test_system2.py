@@ -51,7 +51,7 @@ class TierEndpointTests(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {}, clear=False)
         patcher.start()
         self.addCleanup(patcher.stop)
-        for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "DEEPAGENTS_SYSTEM2"):
+        for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "ALETH_SYSTEM2"):
             os.environ.pop(name, None)
 
     def test_a_declared_endpoint_wins_over_the_environment(self):
@@ -90,7 +90,7 @@ class TierEndpointTests(unittest.TestCase):
         )
 
     def test_the_opt_out_flag_still_wins(self):
-        os.environ["DEEPAGENTS_SYSTEM2"] = "0"
+        os.environ["ALETH_SYSTEM2"] = "0"
         self.assertFalse(
             system2.is_enabled(base_url="https://tier.invalid/v1", api_key="tier-key")
         )
@@ -162,7 +162,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_the_opt_out_flag_beats_a_configured_provider(self):
         for flag in ("0", "false", "OFF", " no "):
-            env = dict(self.CONFIGURED, DEEPAGENTS_SYSTEM2=flag)
+            env = dict(self.CONFIGURED, ALETH_SYSTEM2=flag)
             with mock.patch.dict(os.environ, env, clear=True):
                 self.assertFalse(system2.is_enabled())
 

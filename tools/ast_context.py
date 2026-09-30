@@ -28,7 +28,7 @@ from tools.workspace import walk_workspace
 
 # Where the per-workspace index caches live. The system temp directory, so a build never
 # appears in the workspace the codebase audit walks, and never in the user's repository.
-_INDEX_ROOT = os.path.join(tempfile.gettempdir(), "deepagents_ast_index")
+_INDEX_ROOT = os.path.join(tempfile.gettempdir(), "aleth_ast_index")
 
 # How many units a task's context carries by default. Enough to cover a task's own file
 # plus its neighbours, small enough that the prompt stays a slice rather than a dump.

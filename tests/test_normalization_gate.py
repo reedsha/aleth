@@ -168,7 +168,7 @@ class NormalizeActionTests(unittest.TestCase):
         self.assertEqual(_status_of(events), "Normalized")
 
         backup = os.path.join(
-            self._tmp, ".deepagents_backups", "plan-normalize", "PLAN.md"
+            self._tmp, ".aleth_backups", "plan-normalize", "PLAN.md"
         )
         self.assertTrue(os.path.isfile(backup))
         with open(backup, encoding="utf-8") as f:

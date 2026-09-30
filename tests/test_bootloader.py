@@ -112,9 +112,9 @@ class TestTheDefaultFleet:
     def test_it_mirrors_the_environment_routes(self, monkeypatch):
         """No file: the fleet is the routes the app already reads, so the router has one source."""
         for name in (
-            "DEEPAGENTS_ARCHITECT_MODEL",
-            "DEEPAGENTS_CODER_DEEP_MODEL",
-            "DEEPAGENTS_CODER_STANDARD_MODEL",
+            "ALETH_ARCHITECT_MODEL",
+            "ALETH_CODER_DEEP_MODEL",
+            "ALETH_CODER_STANDARD_MODEL",
         ):
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "k")

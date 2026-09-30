@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Optional
 
 from tools import mcp_stdio
 
-SERVER_NAME = "deepagents-exec"
+SERVER_NAME = "aleth-exec"
 SERVER_VERSION = "1.0.0"
 
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -215,7 +215,7 @@ def run_workspace_command(command: str, *, root: str, timeout: int = DEFAULT_TIM
     except docker_sandbox.SandboxError as error:
         return (
             f"Error: Command refused: container isolation is required but unavailable ({error}). "
-            "Start the Docker daemon, or point DEEPAGENTS_DOCKER_BIN at a reachable runtime. "
+            "Start the Docker daemon, or point ALETH_DOCKER_BIN at a reachable runtime. "
             "Commands are never run on the host."
         )
 

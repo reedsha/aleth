@@ -376,7 +376,7 @@ test.describe("every action's result view", () => {
 
       // The banner is the app's own report of a failure it survived; a renderer that threw
       // would leave the view half-drawn and this would name it.
-      await expect(page.locator("#resultView")).not.toContainText("[DeepAgents UI]");
+      await expect(page.locator("#resultView")).not.toContainText("[Aleth UI]");
       expect(errors, `uncaught errors while rendering ${label}`).toEqual([]);
     });
   }

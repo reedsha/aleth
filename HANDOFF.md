@@ -1,4 +1,4 @@
-# 🚀 DEEPAGENTS STUDIO: MASTER AGENT HANDOFF & ARCHITECTURE SPECIFICATION
+# 🚀 ALETH STUDIO: MASTER AGENT HANDOFF & ARCHITECTURE SPECIFICATION
 
 > **CRITICAL DIRECTIVE FOR ANY INCOMING AGENT:**
 > Read this document completely before modifying or executing any code. This single
@@ -15,7 +15,7 @@
 
 ## 📌 1. Executive Summary & Objective
 
-**Project Name:** DeepAgents Desktop UI & Multi-Agent Orchestrator Studio
+**Project Name:** Aleth Desktop UI & Multi-Agent Orchestrator Studio
 **Primary Goal:** A native desktop application built with **Python (`pywebview`)**,
 **HTML5/CSS3**, and **vanilla JavaScript**, styled as an off-code development IDE:
 neutral high-contrast dark greys, 1px pane borders, monospaced technical data, and
@@ -45,7 +45,7 @@ machine-state twin (`plan.json`).
 ## 🗂️ 2. Repository & File Structure
 
 ```
-deepagents/
+aleth/
 ├── app.py                     # pywebview host: window, BridgeAPI (the JS-facing API), worker thread
 ├── main.py                    # Entrypoint: desktop UI by default, headless with --cli
 ├── registry.py                # AgentRegistry facade (~158 lines) — delegates to orchestration/
@@ -97,7 +97,7 @@ deepagents/
 │   ├── code_metrics.py        # Static source metrics (complexity, security) for Analyze
 │   ├── test_runner.py         # Runs the test a task wrote; the result view's real verdict
 │   ├── git_status.py          # VCS status for the tree (snapshot fallback outside a repo)
-│   ├── workspace.py           # PROJECT_DIR (DEEPAGENTS_WORKSPACE_DIR) + PLAN_DIR pointers
+│   ├── workspace.py           # PROJECT_DIR (ALETH_WORKSPACE_DIR) + PLAN_DIR pointers
 │   ├── shell_tools.py         # Full shell (Coders) + restricted shell (Architect)
 │   ├── settings.py            # Provider endpoint + model-route settings (on disk)
 │   ├── laya_bench.py          # Dev-only: Laya checkpoint I/O benchmark
@@ -196,10 +196,10 @@ deepagents/
 ├── 1ST/2ND/3RD_POLISHING.md   # The three polishing plans + their progress logs. Listed in
 │                              #   NON_PLAN_MD_FILES, so the switcher never offers them.
 │
-├── my_project_workspace/      # RETIRED location of PROJECT_DIR (now DEEPAGENTS_WORKSPACE_DIR)
+├── my_project_workspace/      # RETIRED location of PROJECT_DIR (now ALETH_WORKSPACE_DIR)
 │   ├── main.py / weather_api.py / ui_view.html   # Legacy artifacts of the earlier weather plan
 │   ├── test_*.py / PROGRESS.md
-│   └── .deepagents_backups/   # Per-task deliverable snapshots (rollback source),
+│   └── .aleth_backups/   # Per-task deliverable snapshots (rollback source),
 │                              #   plus plan_revision/ — the before-image the result view's
 │                              #   "Revert Changes" restores from
 │
@@ -211,7 +211,7 @@ package that registry.py delegates to is called `orchestration/` — a package n
 `registry` would shadow the module.
 
 **Two directories, do not conflate them.** `tools/workspace.py` owns both pointers:
-`PROJECT_DIR` = `DEEPAGENTS_WORKSPACE_DIR` (default `~/workspaces/my_project`) — the **sandbox**
+`PROJECT_DIR` = `ALETH_WORKSPACE_DIR` (default `~/workspaces/my_project`) — the **sandbox**
 that generated code, deliverables and backups land in, and a path *in the daemon's filesystem*,
 because a container bind-mounts it — and `PLAN_DIR` = the **repo root** (where `PLAN.md` and
 its `plan.json` twin live, so the roadmap is version-controlled). A plan edit therefore
@@ -263,7 +263,7 @@ Python by PyO3 and built by maturin. `tools/plan_parser.py`, `tools/plan_state.p
 ```sh
 # Rebuild the extension after ANY change under crates/ (installs into ./venv):
 cd crates/deepagents_core
-export VIRTUAL_ENV="C:\\Users\\muham\\OneDrive\\Desktop\\deepagents\\venv"
+export VIRTUAL_ENV="C:\\Users\\muham\\OneDrive\\Desktop\\aleth\\venv"
 ../../venv/Scripts/maturin.exe develop --release
 
 # Rust unit tests (tokenizer, parser, state, slicing):
@@ -363,10 +363,10 @@ Additional invariants:
   operation.** That is the rule that keeps "who changes this?" answerable; `python
   tools/check_ui_state.py` fails if a field gains a second writer. Reads stay direct.
 - **The head watchdog no longer names 35 entry points.** It checks one thing: that
-  `window.DeepAgents` exists, i.e. that the bundle executed at all. Everything finer-grained
+  `window.Aleth` exists, i.e. that the bundle executed at all. Everything finer-grained
   is reported from inside the module graph, where the names are visible: `runStartupStep`
   names a failed wiring step, and the wiring reports any cached element that did not resolve.
-- **`window.DeepAgents` is the only thing this bundle publishes.** It carries the boot
+- **`window.Aleth` is the only thing this bundle publishes.** It carries the boot
   marker and `diagnostics()` (the app's own DOM-cache health report, which the Playwright
   suite asserts on). Do not add a second global; add to that object or, better, import.
 - A failure in a startup step is reported as a visible banner — that is intended behaviour,
@@ -466,7 +466,7 @@ streams `laya_tagging_started` / `_progress` / `_done`). The Retry buttons call
 
 ```
 1. Snapshot the task's deliverables into
-   .deepagents_backups/<key>/  together with _meta.json.
+   .aleth_backups/<key>/  together with _meta.json.
 2. emit "delegation"      -> the right-pane tree pulses the target card
    emit "coder_spawn"     -> a Coder card slides in beside the Architect card
 3. The Coder writes source and test files, ticks the task's checkbox in the plan,
@@ -542,7 +542,7 @@ body{height:100vh;overflow:hidden}
 
 ### 1. Left Pane — 250px, collapsible to a ~52px rail
 
-- **Brand row:** `DEEPAGENTS` + `STUDIO` badge + the collapse chevron (`btnToggleLeftSidebar`).
+- **Brand row:** `ALETH` + `STUDIO` badge + the collapse chevron (`btnToggleLeftSidebar`).
 - **Tabs:** Agents · Plans · Files · Env (`#tabSidebarAgents` / `Plans` / `Files` / `Env`,
   wired in `ui/js/wire.js` → `setSidebarTab`). Each section below is one tab panel; the
   Plans tab is also the single entry point for plan selection (§6.3).
@@ -555,7 +555,7 @@ body{height:100vh;overflow:hidden}
   folders in the frontend. Click a folder row to expand/collapse. Each leaf carries a
   colour-coded VCS letter (`.tree-vcs`, amber `M` changed / green `U` new) sourced from
   `tools/git_status.py` — git when the workspace is its own work tree, the
-  `.deepagents_backups/` snapshots otherwise. The file sizes are gone.
+  `.aleth_backups/` snapshots otherwise. The file sizes are gone.
 - **ENVIRONMENT (Env tab):** one row per variable in the app's own `.env` — **name, set/unset
   flag and character count only; the value never crosses the bridge**. The eye icon
   toggles a second line with that metadata and the note "value stays in the backend".
@@ -725,7 +725,7 @@ The action parameter form is **not** here — it is the docked command drawer in
      watchdog naming any missing entry points and a Node harness pinning the bundles to
      their sources.
    - *Fix (current):* the inlining is gone. `npm run build` emits one JS and one CSS asset
-     into `dist/`, and `app.py` maps the host name `deepagents.local` onto that directory
+     into `dist/`, and `app.py` maps the host name `aleth.local` onto that directory
      with WebView2's `SetVirtualHostNameToFolderMapping`, so the document and its two
      assets are ordinary https requests the OS layer completes. The watchdog stays (it is
      the only in-window signal when a startup step fails); the Node harness is replaced by
@@ -988,7 +988,7 @@ The action parameter form is **not** here — it is the docked command drawer in
 ## 📋 9. Current Status of `PLAN.md`
 
 **The active plan is `PLAN.md` at the repo root** (`PLAN_DIR == PROJECT_ROOT`), titled
-**"DeepAgents Studio Architecture Upgrade Roadmap"** — a *tracked* file, with its
+**"Aleth Studio Architecture Upgrade Roadmap"** — a *tracked* file, with its
 `plan.json` twin beside it (gitignored). It is **not** in `my_project_workspace/`; that
 directory is the sandbox for generated code (§2).
 
@@ -1019,14 +1019,14 @@ Notes for whoever continues:
 - The plan **is** written by the app now, not only by hand: `add_plan_task` (the one-click
   "Add to Plan"), the Update Plan admin bypass, rollback and a plan switch all reach
   `save_plan_state`. An automatic before-image of the last revision is kept in
-  `my_project_workspace/.deepagents_backups/plan_revision/` — what the result view's
+  `my_project_workspace/.aleth_backups/plan_revision/` — what the result view's
   **Revert Changes** restores.
 - `tests/_plan_prebak.md` is the **previous** plan ("FastAPI Cloud Weather Microservice",
   10 tasks). It is untracked and, since `plan.json` was rehydrated, it is the last copy —
   do not delete it without asking.
 - `my_project_workspace/` still holds the generated artifacts of the earlier weather plan
   (`main.py`, `test_main.py`, `weather_api.py`, `test_weather_api.py`, `ui_view.html`,
-  `test_ui_view.py`, `PROGRESS.md`) and `.deepagents_backups/` with keys `bugfix`,
+  `test_ui_view.py`, `PROGRESS.md`) and `.aleth_backups/` with keys `bugfix`,
   `custom`, `task-1` … `task-7`. They are unrelated to the active plan.
 - The workspace is gitignored, so `list_directory`/`find_path` do not show it — use the
   shell. If a plan edit appears to do nothing, remember `load_plan_state` rehydrates only
@@ -1122,7 +1122,7 @@ evaluation: `window.evaluate_js(f"window.onAgentEvent && window.onAgentEvent({es
 string (`app.py:51–84, 189–197`). JS→Python is pywebview's `js_api` proxy over `BridgeAPI`
 (46 methods). Python↔Rust is in-process PyO3 with `serde_json` text on every crossing
 (`crates/deepagents_core/src/lib.rs`). Frontend delivery is a WebView2 virtual-host mapping
-(`SetVirtualHostNameToFolderMapping("deepagents.local", dist/)`, installed by
+(`SetVirtualHostNameToFolderMapping("aleth.local", dist/)`, installed by
 monkeypatching `edgechromium.EdgeChrome.on_webview_ready` at class level, `app.py:109–160`);
 `file://` is the off-Windows fallback. The single external integration point is an
 OpenAI-compatible endpoint (`orchestration/system2.py:119–177`: `timeout=180 s`,
@@ -1147,10 +1147,10 @@ pointers owned by `tools/workspace.py` (`PROJECT_DIR = my_project_workspace/`,
 | `plan.json` | JSON indent 2, 1,931 lines / 73,901 B | no | `state.rs` |
 | `.env` | dotenv | no | operator; `override=True` (`env_boot.py:50`) |
 | `agents/*.py` | Python source | yes | runtime regex rewrite (`prompt_editor.py`) |
-| `.deepagents_backups/**` + `_meta.json` | files + JSON | no | `tools/recovery.py` (unpruned) |
+| `.aleth_backups/**` + `_meta.json` | files + JSON | no | `tools/recovery.py` (unpruned) |
 
 **State integrity** is enforced by three mechanisms: (1) one `fs2` exclusive lock over both
-files, on a temp-dir file named `deepagents_plan_locks/<fnv1a64(canonical(plan_dir))>.lock`
+files, on a temp-dir file named `aleth_plan_locks/<fnv1a64(canonical(plan_dir))>.lock`
 (`state.rs:37–92`); (2) atomic per-file writes — `<path>.tmp<pid>` → `sync_all()` →
 `fs::rename`, retried 10×15 ms (`state.rs:108–153`); (3) drift detection on read, rehydrating
 the JSON from the Markdown only when `md_mtime > json_mtime` strictly (`state.rs:264–340`).
@@ -1188,7 +1188,7 @@ joined, because every workflow thread is a daemon. **Run concurrency is hard-cap
 by an in-memory `_execution_thread.is_alive()` guard (`app.py:615–620`); the UI re-arms from
 `get_run_state()` (`app.py:635`). Locks in play: `_console_lock`, `Resolver._lock` +
 `_RESOLVER_LOCK`, and the Rust file lock — with no documented ordering between them. No
-pytest-wide timeout is configured. Snapshots under `.deepagents_backups/**` are never pruned
+pytest-wide timeout is configured. Snapshots under `.aleth_backups/**` are never pruned
 (no retention code found in `tools/recovery.py`).
 
 ### 11.4 Failure Modes & Technical Debt
@@ -1285,7 +1285,7 @@ Throughput is single-user (one workflow at a time); event rate is throttled to ~
 20 ms stream pacing. Volume: `PLAN.md` 123 lines / 6 sections / 23 tasks (100%); `plan.json`
 1,931 lines; docs `3RD_POLISHING.md` 103,941 B + `HANDOFF.md` 62,068 B; build output
 653,755 B (JS 122,577, CSS 81,136, source map 389,982 = 3.18× the shipped JS). The only
-unbounded growth vector is `.deepagents_backups/**`. No p95/p99 instrumentation exists in
+unbounded growth vector is `.aleth_backups/**`. No p95/p99 instrumentation exists in
 the product code; the figures above are from harness benchmarks, not runtime telemetry.
 
 ### 11.6 Verification — measured this pass
@@ -1325,7 +1325,7 @@ token, POSIX rlimits + a process group) is deleted.
 * `--user <uid>:<gid>` — the container process runs as the **host** user, so files written
   through the workspace bind mount keep the caller's ownership instead of becoming root-owned.
   Windows has no POSIX uid, so the value defaults to `1000` and is overridable with
-  `DEEPAGENTS_SANDBOX_UID`/`DEEPAGENTS_SANDBOX_GID`;
+  `ALETH_SANDBOX_UID`/`ALETH_SANDBOX_GID`;
 * the workspace as the **only** host path, an OCI bind mount
   (`--mount type=bind,source=<root>,target=/workspace`) that is also the container's working
   directory — so the command's cwd is the workspace root and nothing outside it is reachable;
@@ -1343,18 +1343,18 @@ which had to rebuild the environment to strip secret-looking names.
 **Refused, never degraded.** If the Docker daemon cannot be reached, or the `docker` client is
 missing, `run_isolated` raises `SandboxError` and the exec server reports
 `Error: Command refused: container isolation is required but unavailable ...`. There is no
-unsandboxed fallback and no `DEEPAGENTS_SANDBOX=auto`/`=off`: a silent host run is the exact
+unsandboxed fallback and no `ALETH_SANDBOX=auto`/`=off`: a silent host run is the exact
 failure the perimeter exists to prevent. `tests/test_security_boundaries.py`
 (`NoImportTimeToolCatalogTests`) pins that no production module shells out
 (`subprocess(..., shell=True)`) and that the deleted perimeter cannot return.
 
-**The image contract.** Payloads run in `deepagents-sandbox:latest`, built from
+**The image contract.** Payloads run in `aleth-sandbox:latest`, built from
 `docker/sandbox.Dockerfile` (Python 3.12 plus pytest, pytest-xdist, pytest-timeout, pytest-mock,
 coverage, requests, responses and freezegun) because the commands the app runs are a workspace's
 own build and test commands. `tools/test_runner.py` — the result view's verdict runner — runs
 pytest **in the same container**, since pytest imports and executes the workspace's own
 `conftest.py` and test modules. When the image is absent it is built once, behind a
-cross-process lock, on first use; a *custom* `DEEPAGENTS_SANDBOX_IMAGE` that is absent is an
+cross-process lock, on first use; a *custom* `ALETH_SANDBOX_IMAGE` that is absent is an
 error rather than a build, because the repo's Dockerfile describes the sandbox image and nothing
 else. A machine with no reachable runtime gets the `unavailable` verdict, never a host run.
 

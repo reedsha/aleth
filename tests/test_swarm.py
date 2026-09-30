@@ -31,8 +31,8 @@ from tests import stub_worker
 SYSTEM2_ENV = {
     "OPENAI_API_KEY": "test-key",
     "OPENAI_BASE_URL": "https://example.invalid/v1",
-    "DEEPAGENTS_SYSTEM2": "1",
-    "DEEPAGENTS_EMBEDDER": "hashing",
+    "ALETH_SYSTEM2": "1",
+    "ALETH_EMBEDDER": "hashing",
 }
 
 PLANNER_SPEC = "tests.stub_planner:scripted"

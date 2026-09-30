@@ -6,9 +6,9 @@ byte range included -- surviving the round trip through the vector store.
 
 The suite runs on :class:`HashingEmbedder`, a deterministic offline embedder, so it needs
 no model download and no network. The real ``all-MiniLM-L6-v2`` path is exercised by
-``MiniLmTests``, which is skipped unless ``DEEPAGENTS_TEST_MINILM=1`` is set:
+``MiniLmTests``, which is skipped unless ``ALETH_TEST_MINILM=1`` is set:
 
-    set DEEPAGENTS_TEST_MINILM=1
+    set ALETH_TEST_MINILM=1
     .\\venv\\Scripts\\python.exe -m unittest tests.test_semantic_index -v
 """
 
@@ -228,8 +228,8 @@ class BuildFromPathsTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.environ.get("DEEPAGENTS_TEST_MINILM") == "1",
-    "set DEEPAGENTS_TEST_MINILM=1 to run the real-model test",
+    os.environ.get("ALETH_TEST_MINILM") == "1",
+    "set ALETH_TEST_MINILM=1 to run the real-model test",
 )
 class MiniLmTests(unittest.TestCase):
     def test_real_model_indexes_and_retrieves(self):

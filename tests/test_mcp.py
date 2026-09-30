@@ -41,7 +41,7 @@ WINDOWS_TRAVERSAL_SHAPES = ("..\\..\\outside.txt", "..\\..\\secret.txt", "C:\\Wi
 # daemon, so the runtime is the in-repo double (``tests/fake_docker.py``): the argv, the child
 # process and the output plumbing are all real, and only the container itself is emulated.
 FAKE_DOCKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_docker.py")
-FAKE_DOCKER_ENV = {"DEEPAGENTS_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
+FAKE_DOCKER_ENV = {"ALETH_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
 
 
 class MCPServerTestCase(unittest.TestCase):
@@ -83,7 +83,7 @@ class MCPClientTests(MCPServerTestCase):
     def test_the_client_handshakes_and_lists_the_filesystem_tools(self):
         with mcp_workspace_client(self.tmp) as client:
             self.assertEqual(client.server_info.get("serverInfo", {}).get("name"),
-                             "deepagents-filesystem")
+                             "aleth-filesystem")
             names = [tool["name"] for tool in client.list_tools()]
 
         self.assertEqual(sorted(names), ["create_file", "read_file", "write_file"])

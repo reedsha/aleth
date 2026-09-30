@@ -8,7 +8,7 @@ vocabulary no matter where the workspace lives:
   answers, and a folder that merely sits inside a parent repository (the app's sandbox does)
   is not mistaken for one;
 * anywhere else (the app's own gitignored sandbox, or a plain folder) -- the deliverable
-  snapshots under ``.deepagents_backups/`` are read instead, so the badge still means "an
+  snapshots under ``.aleth_backups/`` are read instead, so the badge still means "an
   agent touched this" rather than going permanently blank.
 
 Only two letters ever leave here: ``M`` (changed) and ``U`` (new). The tree is a glance, not
