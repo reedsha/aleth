@@ -30,6 +30,13 @@ from tools.mcp_client import (
 SOURCE = "def alpha():\n    return 1\n"
 REPLACEMENT = "def alpha():\n    return 2\n"
 
+IS_WINDOWS = sys.platform == "win32"
+
+# Shapes that only *mean* a traversal on Windows. On POSIX a backslash is an ordinary filename
+# character and a drive letter is a relative name, so neither can leave the root -- asserting a
+# refusal there would be asserting the wrong thing.
+WINDOWS_TRAVERSAL_SHAPES = ("..\\..\\outside.txt", "..\\..\\secret.txt", "C:\\Windows\\win.ini")
+
 # Every command now runs in a Docker container. These tests run on a machine with no Docker
 # daemon, so the runtime is the in-repo double (``tests/fake_docker.py``): the argv, the child
 # process and the output plumbing are all real, and only the container itself is emulated.
@@ -102,12 +109,11 @@ class MCPClientTests(MCPServerTestCase):
         """Containment is the resolved-path check, so no shape of string gets through."""
         self._write("inside.py", "ok = True\n")
         with mcp_workspace_client(self.tmp) as client:
-            for candidate in (
-                "../outside.txt",
-                "..\\..\\outside.txt",
-                "/etc/passwd",
-                os.path.join(self.tmp, "..", "outside.txt"),
-            ):
+            candidates = ["../outside.txt", "/etc/passwd",
+                          os.path.join(self.tmp, "..", "outside.txt")]
+            if IS_WINDOWS:
+                candidates.append(WINDOWS_TRAVERSAL_SHAPES[0])
+            for candidate in candidates:
                 with self.assertRaises(MCPError, msg=candidate) as caught:
                     client.read_file(candidate)
                 self.assertIn("Path traversal denied", str(caught.exception))
@@ -311,12 +317,12 @@ class MCPExecServerTests(MCPServerTestCase):
 
     def test_every_escaping_argument_shape_is_refused(self):
         with self._session() as client:
-            for candidate in (
-                "cat ../../secret.txt",
-                "cat ..\\..\\secret.txt",
-                "cat /etc/passwd",
-                "cat C:\\Windows\\win.ini",
-            ):
+            candidates = ["cat ../../secret.txt", "cat /etc/passwd"]
+            if IS_WINDOWS:
+                # A backslash and a drive letter only escape on Windows; on POSIX both are
+                # ordinary relative names that cannot leave the root.
+                candidates += ["cat ..\\..\\secret.txt", "cat C:\\Windows\\win.ini"]
+            for candidate in candidates:
                 with self.assertRaises(MCPError, msg=candidate) as caught:
                     client.call_tool("execute_command", {"command": candidate})
                 self.assertIn("Path traversal denied", str(caught.exception))

@@ -8,7 +8,9 @@ would. So the argv contract, the output/exit plumbing, the timeout-and-force-rem
 fail-closed refusal are all exercised for real; only the container itself is emulated.
 
 The tests that need an actual container are skipped unless a daemon answers *and* the configured
-image is already present locally (so the suite never silently pulls over the network).
+image is already present locally (so the suite never silently pulls over the network). They are
+expected to run in the same environment as the daemon -- see the module docstring of
+``tools/docker_sandbox.py`` for why the perimeter refuses to bridge an OS boundary.
 """
 
 import json
@@ -56,7 +58,7 @@ def _image_present():
     try:
         completed = subprocess.run(
             [*docker_sandbox.docker_bin(), "image", "inspect", docker_sandbox.image()],
-            capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
+            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -69,13 +71,12 @@ class CommandContractTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="docker_sandbox_")
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-        # Pin the runtime so the contract is asserted against a known argv, not whatever engine
-        # this machine happens to have (a WSL bridge, for instance).
+        # Pin the runtime so the contract is asserted against a known argv, not whatever client
+        # this machine happens to have.
         env_patcher = mock.patch.dict(os.environ, fake_docker_env())
         env_patcher.start()
         self.addCleanup(env_patcher.stop)
-        docker_sandbox.reset_runtime()
-        self.addCleanup(docker_sandbox.reset_runtime)
+        docker_sandbox.reset_caches()
 
     def _argv(self, command="echo hi", **kwargs):
         return docker_sandbox.build_command(command, root=self.root, name="probe", **kwargs)
@@ -96,14 +97,22 @@ class CommandContractTests(unittest.TestCase):
 
     def test_the_workspace_is_the_only_bind_mount_and_the_working_directory(self):
         argv = self._argv()
+        resolved = str(Path(self.root).resolve())
         self.assertEqual(self._flag(argv, "--workdir"), docker_sandbox.WORKSPACE_MOUNT)
         self.assertEqual(
             self._flag(argv, "--mount"),
-            f"type=bind,source={docker_sandbox.container_mount_source(self.root)}"
-            f",target={docker_sandbox.WORKSPACE_MOUNT}",
+            f"type=bind,source={resolved},target={docker_sandbox.WORKSPACE_MOUNT}",
         )
         # Exactly one host path is mounted; nothing else from the host is visible.
         self.assertEqual(argv.count("--mount"), 1)
+
+    def test_the_workspace_path_is_used_as_written(self):
+        """No translation: the path is a path in the daemon's own filesystem."""
+        self.assertEqual(
+            self._flag(self._argv(), "--mount"),
+            f"type=bind,source={str(Path(self.root).resolve())},"
+            f"target={docker_sandbox.WORKSPACE_MOUNT}",
+        )
 
     def test_memory_cpu_and_the_process_tree_are_capped(self):
         argv = self._argv()
@@ -154,24 +163,35 @@ class IdentityTests(unittest.TestCase):
 
 class RuntimeCommandTests(unittest.TestCase):
     def setUp(self):
-        docker_sandbox.reset_runtime()
-        self.addCleanup(docker_sandbox.reset_runtime)
+        docker_sandbox.reset_caches()
+        self.root = tempfile.mkdtemp(prefix="docker_sandbox_runtime_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
-    def test_the_default_runtime_is_docker_when_it_is_on_the_path(self):
+    def test_docker_on_the_path_is_the_runtime(self):
         with mock.patch.dict(os.environ, {}, clear=True), \
-                mock.patch.object(docker_sandbox, "_detect_runtime", return_value=["docker"]):
+                mock.patch("shutil.which", return_value="/usr/bin/docker"):
             self.assertEqual(docker_sandbox.docker_bin(), ["docker"])
 
-    def test_a_runtime_reached_through_wsl_is_recognised_as_a_bridge(self):
-        """The bridge is recognised from the argv, so an explicit override is translated too."""
-        argv = ["C:\\Windows\\system32\\wsl.exe", "-d", "Ubuntu", "--", "docker"]
-        self.assertEqual(docker_sandbox._wsl_distro(argv), "Ubuntu")
-        self.assertIsNone(docker_sandbox._wsl_distro(["docker"]))
-        self.assertIsNone(docker_sandbox._wsl_distro(["wsl", "-l", "-q"]))
+    def test_a_missing_client_is_a_fatal_environment_error(self):
+        """The perimeter does not proxy across an OS boundary or fall back to the host."""
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch("shutil.which", return_value=None):
+            with self.assertRaises(EnvironmentError) as caught:
+                docker_sandbox.docker_bin()
+        self.assertIn("not on PATH", str(caught.exception))
 
-    def test_a_windows_path_becomes_its_wsl_form(self):
-        self.assertEqual(docker_sandbox._conventional_wsl_path("C:/w/x/y"), "/mnt/c/w/x/y")
-        self.assertEqual(docker_sandbox._conventional_wsl_path("/already/posix"), "/already/posix")
+    def test_a_missing_client_refuses_the_command_at_the_tool_boundary(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch("shutil.which", return_value=None):
+            with self.assertRaises(docker_sandbox.SandboxError) as caught:
+                docker_sandbox.run_isolated("echo hi", cwd=self.root, timeout=5)
+        self.assertIn("not on PATH", str(caught.exception))
+
+    def test_a_missing_client_is_reported_as_no_containment(self):
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch("shutil.which", return_value=None):
+            self.assertFalse(docker_sandbox.available())
+            self.assertFalse(docker_sandbox.capabilities().containment)
 
     def test_the_runtime_is_overridable(self):
         with mock.patch.dict(os.environ, {docker_sandbox.DOCKER_BIN_ENV: "podman"}):
@@ -222,10 +242,10 @@ class AvailabilityTests(unittest.TestCase):
             self.assertTrue(docker_sandbox.capabilities().image_present)
 
     def test_an_absent_image_is_reported_as_absent(self):
-        docker_sandbox.reset_runtime()
+        docker_sandbox.reset_caches()
         with mock.patch.dict(os.environ, fake_docker_env(FAKE_DOCKER_IMAGE_MISSING="1")):
             self.assertFalse(docker_sandbox.image_present("nothing:here"))
-        docker_sandbox.reset_runtime()
+        docker_sandbox.reset_caches()
 
 
 class IsolatedRunTests(unittest.TestCase):
@@ -251,7 +271,10 @@ class IsolatedRunTests(unittest.TestCase):
 
     def test_the_isolation_flags_reach_the_runtime(self):
         self._run("echo hi")
-        argv = _invocations(self.log)[0]
+        # The runtime is asked about the image first, so the log holds more than the run.
+        runs = [call for call in _invocations(self.log) if call and call[0] == "run"]
+        self.assertEqual(len(runs), 1)
+        argv = runs[0]
         self.assertIn("--network=none", argv)
         self.assertIn("--user", argv)
         self.assertEqual(argv[-3:], ["/bin/sh", "-c", "echo hi"])
@@ -262,7 +285,8 @@ class IsolatedRunTests(unittest.TestCase):
         self.assertTrue(result.timed_out)
 
         calls = _invocations(self.log)
-        name = calls[0][calls[0].index("--name") + 1]
+        run = next(call for call in calls if call and call[0] == "run")
+        name = run[run.index("--name") + 1]
         removals = [call for call in calls if call[:2] == ["rm", "-f"]]
         self.assertEqual(removals, [["rm", "-f", name]], "the container was not force-removed")
 
@@ -328,6 +352,22 @@ class LegacyPerimeterRemovedTests(unittest.TestCase):
         self.assertIn("docker_sandbox.run_isolated", source)
         self.assertNotIn("from tools import sandbox", source)
 
+    def test_the_perimeter_does_not_bridge_an_os_boundary(self):
+        """No proxy, no path translation: the orchestrator runs where the daemon runs.
+
+        The module *documents* why (it names WSL to explain the refusal), so this asserts the
+        absence of the machinery -- no bridge helper, no ``wslpath`` call -- and the presence of
+        the fatal error.
+        """
+        with open(
+            os.path.join(REPO_ROOT, "tools", "docker_sandbox.py"), "r", encoding="utf-8"
+        ) as handle:
+            source = handle.read()
+        self.assertNotIn("def _wsl", source)
+        self.assertNotIn("wslpath", source)
+        self.assertNotIn("DEEPAGENTS_DOCKER_WSL_DISTRO", source)
+        self.assertIn("raise EnvironmentError", source)
+
 
 class ImageContractTests(unittest.TestCase):
     """The image contract: the sandbox tag, and a build only for that tag."""
@@ -336,8 +376,8 @@ class ImageContractTests(unittest.TestCase):
         self.root = tempfile.mkdtemp(prefix="docker_sandbox_image_")
         self.log = os.path.join(self.root, "docker.log")
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-        docker_sandbox.reset_runtime()
-        self.addCleanup(docker_sandbox.reset_runtime)
+        docker_sandbox.reset_caches()
+        self.addCleanup(docker_sandbox.reset_caches)
 
     def test_the_default_image_is_the_sandbox_tag(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -389,109 +429,18 @@ class ImageContractTests(unittest.TestCase):
                 docker_sandbox.run_isolated("echo hi", cwd=self.root, timeout=5)
 
 
-def _bridged_distro():
-    """The WSL distribution the engine is reached through, or ``None`` for a native engine."""
-    return docker_sandbox._wsl_distro(docker_sandbox.docker_bin())
-
-
-def _engine_workspace():
-    """A workspace the engine can write to **without corrupting host permissions**.
-
-    With a WSL-hosted engine the workspace must live on the Linux filesystem: a container writing
-    through a Windows-drive (9p DrvFs) bind mount creates files with no Windows ACL -- mode 0000,
-    unreadable by the host. So the directory is created on the Linux side and addressed from
-    Windows through the ``\\wsl$`` share, which is the same directory and the way the app's own
-    file I/O would address it.
-
-    Returns ``(windows_path, linux_path, cleanup)``.
-    """
-    distro = _bridged_distro()
-    if not distro:
-        path = tempfile.mkdtemp(prefix="docker_sandbox_real_")
-        return path, path, lambda: shutil.rmtree(path, ignore_errors=True)
-
-    wsl = docker_sandbox.docker_bin()[0]
-    completed = subprocess.run(
-        [wsl, "-d", distro, "--", "mktemp", "-d", "-p", "/tmp", "deepagents-real-XXXXXX"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-    )
-    linux = (completed.stdout or "").strip()
-    if completed.returncode != 0 or not linux.startswith("/"):
-        raise unittest.SkipTest(
-            f"could not create a Linux workspace: {(completed.stderr or '').strip()[:120]}"
-        )
-    share = "\\\\wsl$\\" + distro + linux.replace("/", "\\")
-
-    def cleanup():
-        subprocess.run([wsl, "-d", distro, "--", "rm", "-rf", linux],
-                       capture_output=True, timeout=60)
-
-    return share, linux, cleanup
-
-
-class WslPathTranslationTests(unittest.TestCase):
-    """The path forms the engine can be given, and the one that must be refused."""
-
-    def setUp(self):
-        docker_sandbox.reset_runtime()
-        self.addCleanup(docker_sandbox.reset_runtime)
-        self.root = tempfile.mkdtemp(prefix="docker_sandbox_paths_")
-        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-
-    def test_a_wsl_share_translates_to_its_linux_path(self):
-        self.assertEqual(
-            docker_sandbox._wsl_unc_to_linux("\\\\wsl$\\Ubuntu\\home\\reedsha\\ws"),
-            "/home/reedsha/ws",
-        )
-        self.assertEqual(
-            docker_sandbox._wsl_unc_to_linux("\\\\wsl.localhost\\Ubuntu\\srv\\ws"),
-            "/srv/ws",
-        )
-        self.assertIsNone(docker_sandbox._wsl_unc_to_linux("C:\\Users\\x"))
-
-    def test_a_wsl_share_is_used_without_asking_for_a_drive_translation(self):
-        with mock.patch.object(
-            docker_sandbox, "docker_bin",
-            return_value=["wsl", "-d", "Ubuntu", "--", "docker"],
-        ), mock.patch.object(
-            docker_sandbox, "_wsl_path", side_effect=AssertionError("wslpath must not be needed")
-        ):
-            self.assertEqual(
-                docker_sandbox.container_mount_source("\\\\wsl$\\Ubuntu\\tmp\\ws"),
-                "/tmp/ws",
-            )
-
-    def test_a_windows_drive_workspace_is_refused_when_the_engine_is_bridged(self):
-        """A container write through 9p DrvFs lands with no ACL; refusing beats corrupting."""
-        with mock.patch.object(
-            docker_sandbox, "docker_bin",
-            return_value=["wsl", "-d", "Ubuntu", "--", "docker"],
-        ), mock.patch.object(
-            docker_sandbox, "_wsl_path", return_value="/mnt/c/Users/x/ws"
-        ):
-            with self.assertRaises(docker_sandbox.SandboxError) as caught:
-                docker_sandbox.container_mount_source("C:\\Users\\x\\ws")
-        self.assertIn("no Windows ACL", str(caught.exception))
-
-    def test_a_native_engine_uses_the_path_as_it_is(self):
-        with mock.patch.object(docker_sandbox, "docker_bin", return_value=["docker"]):
-            self.assertEqual(
-                docker_sandbox.container_mount_source(self.root),
-                str(Path(self.root).resolve()),
-            )
-
-
 @unittest.skipUnless(_image_present(), "no Docker daemon or image present")
 class RealContainerTests(unittest.TestCase):
     """The real thing, end to end: a live daemon, the built image, a real bind mount.
 
-    Skipped unless a daemon answers and the image is present. The workspace is chosen so the
-    engine can write to it safely (see :func:`_engine_workspace`).
+    Skipped unless a daemon answers and the image is present. These run where the daemon runs --
+    the perimeter refuses to bridge an OS boundary, so there is no remote variant to fall back
+    to.
     """
 
     def setUp(self):
-        self.root, self.linux, cleanup = _engine_workspace()
-        self.addCleanup(cleanup)
+        self.root = tempfile.mkdtemp(prefix="docker_sandbox_real_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
     def test_a_command_runs_in_a_container_with_the_workspace_mounted(self):
         result = docker_sandbox.run_isolated("pwd", cwd=self.root, timeout=120)
@@ -529,22 +478,18 @@ class RealContainerTests(unittest.TestCase):
 
     def test_the_written_file_is_owned_by_the_mapped_identity(self):
         """``--user <uid>:<gid>`` reaches the host filesystem, not just ``id`` inside."""
-        distro = _bridged_distro()
-        if not distro:
-            self.skipTest("ownership on a native engine is the process uid")
+        if not hasattr(os, "getuid"):
+            self.skipTest("no POSIX identity on this platform")
 
-        result = docker_sandbox.run_isolated("printf owned > owned.txt", cwd=self.root, timeout=120)
+        result = docker_sandbox.run_isolated(
+            "printf owned > owned.txt", cwd=self.root, timeout=120
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-        completed = subprocess.run(
-            [docker_sandbox.docker_bin()[0], "-d", distro, "--", "stat", "-c", "%u:%g",
-             f"{self.linux}/owned.txt"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-        )
+        info = os.stat(Path(self.root) / "owned.txt")
         self.assertEqual(
-            completed.stdout.strip(), ":".join(docker_sandbox.host_identity()),
-            f"the file the container wrote is not owned by the mapped identity: "
-            f"{(completed.stderr or '').strip()[:120]}",
+            (info.st_uid, info.st_gid), (os.getuid(), os.getgid()),
+            "the file the container wrote is not owned by the mapped identity",
         )
 
 

@@ -3015,7 +3015,12 @@ class SourceSpanBridgeTests(WorkspaceTestCase):
         self.assertIn("Path traversal denied", res["error"])
 
     def test_it_refuses_a_backslash_traversal_and_an_absolute_path(self):
-        for candidate in ("..\\..\\secret.txt", "/etc/passwd"):
+        candidates = ["/etc/passwd"]
+        if sys.platform == "win32":
+            # A backslash only traverses on Windows; on POSIX it is an ordinary filename
+            # character, so a name containing one cannot leave the workspace.
+            candidates.append("..\\..\\secret.txt")
+        for candidate in candidates:
             res = self.app.BridgeAPI().get_source_span(candidate, 0, 5)
             self.assertFalse(res["success"], candidate)
             self.assertIn("Path traversal denied", res["error"])

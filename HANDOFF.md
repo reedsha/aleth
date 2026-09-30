@@ -970,14 +970,14 @@ The action parameter form is **not** here — it is the docked command drawer in
       `icacls` answered "Access is denied", Python raised `PermissionError`, and the file was
       effectively lost to the user. `--user` was not the cause — root-created files were equally
       unreadable.
-    - *Fix:* the perimeter translates a `\\wsl$\<distro>\<path>` share to its Linux path and uses
-      it directly, and it **refuses** a Windows-drive workspace when the engine is bridged rather
-      than corrupting the user's filesystem. `tools/docker_sandbox.py` explains both supported
-      layouts in its refusal.
-    - *Guard:* `tests/test_docker_sandbox.py::WslPathTranslationTests` pins the translation and
-      the refusal, and the daemon-backed tests create their workspace on the Linux side and
-      assert the file the container wrote is readable, rewritable and owned by the mapped
-      identity.
+    - *Fix:* the perimeter refuses to bridge an OS boundary at all. `docker_bin()` raises
+      `EnvironmentError` when the client is not on `PATH`, and the workspace path is used as a
+      path *in the daemon's filesystem* — so the orchestrator runs where the daemon runs, on the
+      Linux filesystem, with no path translation and no proxy. A proxy would also break the
+      process-tree guarantee: killing the proxy leaves the container orphaned.
+    - *Guard:* `tests/test_docker_sandbox.py::LegacyPerimeterRemovedTests` pins the absence of
+      bridge machinery and the presence of the fatal error, and the daemon-backed tests assert
+      the file the container wrote is readable, rewritable and owned by the mapped identity.
 
 ---
 
@@ -1354,24 +1354,26 @@ cross-process lock, on first use; a *custom* `DEEPAGENTS_SANDBOX_IMAGE` that is 
 error rather than a build, because the repo's Dockerfile describes the sandbox image and nothing
 else. A machine with no reachable runtime gets the `unavailable` verdict, never a host run.
 
-**An engine that lives in WSL, and where the workspace may live.** When `docker` is not on
-`PATH` the perimeter bridges to an engine inside WSL (override the distro with
-`DEEPAGENTS_DOCKER_WSL_DISTRO`) and translates the workspace path for the Linux engine.
+**Run where the daemon runs.** The perimeter speaks to the daemon over the `docker` client and
+treats the workspace path as a path *in the daemon's own filesystem*. Both are only true in one
+namespace, one filesystem and one signal space, so:
 
-* **Supported:** a workspace on the Linux filesystem, addressed from Windows as
-  `\\wsl$\<distro>\<path>`. The share translates straight to a Linux path, the bind mount is an
-  ordinary ext4 mount, and the Windows app reads and writes the same directory through the share.
-* **Refused:** a workspace on a Windows drive. It becomes a `/mnt/c` (9p DrvFs) bind mount, and a
-  container writing through one creates files with **no usable Windows ACL** — they land with mode
-  `0000` and Windows can neither read nor enumerate them. That is host permissions corruption, so
-  the perimeter raises `SandboxError` instead of producing files the user cannot open. (An engine
-  with Windows file sharing — Docker Desktop — is the other way to keep a Windows-drive
-  workspace.)
+* **The client must be on `PATH`.** If it is not, `docker_bin()` raises `EnvironmentError`
+  (surfaced as a `SandboxError` refusal at the tool boundary). A missing client is a fatal
+  configuration error, not something to work around — this module is not a path-translation
+  utility and does not proxy commands through another OS.
+* **No OS bridging.** There is no WSL bridge, no `wslpath` call and no `\\wsl$` rewriting.
+  Proxying `docker run` through another OS's interpreter would also break the process-tree
+  guarantee: killing the *proxy* leaves the container running in the daemon's namespace,
+  orphaned and unreachable by the timeout path.
+* **A Windows-drive workspace is not usable.** A container writing through a `/mnt/c` (9p DrvFs)
+  bind mount creates files with **no usable Windows ACL** — mode `0000`, which Windows can
+  neither read nor enumerate. So when the daemon lives on Linux, the orchestrator and its
+  workspace live there too.
 
 **Verification.** The daemon-backed tests in `tests/test_docker_sandbox.py` run against the live
-engine — no skips — and create their workspace on the Linux side for the reason above. They prove
-the mount, that the container is not root, that the network is denied, that a file the container
-writes is readable *and* rewritable by the host, and that the file is owned by the identity
-`--user` mapped (`stat` on the engine's own filesystem). The argv contract, the
-timeout/force-remove and the fail-closed refusal are additionally proven without a daemon by the
-in-repo runtime double (`tests/fake_docker.py`).
+engine in the daemon's own environment — no skips — and prove the mount, that the container is
+not root, that the network is denied, that a file the container writes is readable *and*
+rewritable by the host, and that the file is owned by the identity `--user` mapped (`os.stat` on
+the host). The argv contract, the timeout/force-remove and the fail-closed refusal are
+additionally proven without a daemon by the in-repo runtime double (`tests/fake_docker.py`).
