@@ -65,6 +65,8 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from tools import env_sanitizer, process_control, stream_drain
+
 IMAGE_ENV = "ALETH_SANDBOX_IMAGE"
 DOCKER_BIN_ENV = "ALETH_DOCKER_BIN"
 UID_ENV = "ALETH_SANDBOX_UID"
@@ -472,30 +474,60 @@ def run_isolated(
 
     try:
         process = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace",
+            argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env=env_sanitizer.sanitized_environment(),
+            # Its own process group, so the timeout path can end the whole tree.
+            **process_control.spawn_kwargs(),
         )
     except OSError as error:
         raise SandboxError(
             f"the container runtime {docker_bin()[0]!r} could not be started: {error}"
         ) from error
 
-    try:
-        stdout, stderr = process.communicate(timeout=int(timeout))
-    except subprocess.TimeoutExpired:
-        # The container owns its process tree, so killing the client is not enough: the
-        # container is force-removed by name and only then is the client reaped.
-        _force_remove(name)
-        process.kill()
-        stdout, stderr = process.communicate()
+    # Drain both streams **while the client runs**, into a bounded window. Reading after the
+    # process exits would deadlock on a full pipe, and ``communicate()`` would retain every byte
+    # a chatty command wrote (see ``tools.stream_drain``).
+    out_buffer, err_buffer, out_thread, err_thread = stream_drain.drain_pair(
+        process.stdout, process.stderr
+    )
+
+    def _receipts() -> IsolatedResult:
         return IsolatedResult(
-            -1, stdout or "", stderr or "", sandboxed=True, timed_out=True,
-            notes="the container was force-removed after the timeout",
+            process.returncode if process.returncode is not None else -1,
+            stream_drain.decode(out_buffer.render()),
+            stream_drain.decode(err_buffer.render()),
+            sandboxed=True,
         )
 
-    returncode = process.returncode if process.returncode is not None else -1
-    stdout = stdout or ""
-    stderr = stderr or ""
-    if returncode in DOCKER_CLIENT_ERROR_CODES and _is_unreachable_runtime(stderr, stdout):
-        raise SandboxError(f"the Docker daemon could not be reached ({_diagnostic(stderr)})")
-    return IsolatedResult(returncode, stdout, stderr, sandboxed=True)
+    try:
+        process.wait(timeout=int(timeout))
+    except subprocess.TimeoutExpired:
+        # Two things must die, and they are different things: the client's process group, and the
+        # container the client launched. Killing the client alone leaves the container running.
+        process_control.kill_group(process)
+        _force_remove(name)
+        try:
+            process.wait(timeout=process_control.DEFAULT_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:  # pragma: no cover - a client that ignores SIGKILL
+            pass
+        out_thread.join(timeout=5)
+        err_thread.join(timeout=5)
+        process_control.close_pipes(process)
+        result = _receipts()
+        result.returncode = -1
+        result.timed_out = True
+        result.notes = "the container was force-removed after the timeout"
+        return result
+
+    out_thread.join(timeout=5)
+    err_thread.join(timeout=5)
+    process_control.close_pipes(process)
+
+    result = _receipts()
+    if result.returncode in DOCKER_CLIENT_ERROR_CODES and _is_unreachable_runtime(
+        result.stderr, result.stdout
+    ):
+        raise SandboxError(
+            f"the Docker daemon could not be reached ({_diagnostic(result.stderr)})"
+        )
+    return result

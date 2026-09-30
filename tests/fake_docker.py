@@ -28,7 +28,9 @@ Optional knobs, read from the environment:
 * ``FAKE_DOCKER_INFO_EMPTY``  -- answer ``info`` with status 0 and no stdout, which is what a
   Windows client does when the daemon is down (the trap ``available()`` must not fall into);
 * ``FAKE_DOCKER_IMAGE_MISSING`` -- answer ``image inspect`` with "no such image";
-* ``FAKE_DOCKER_BUILD_FAIL``  -- fail ``docker build``.
+* ``FAKE_DOCKER_BUILD_FAIL``  -- fail ``docker build``;
+* ``FAKE_DOCKER_FLOOD_MB``    -- write N megabytes to stdout in 64 KB chunks, bracketed by a
+  ``HEAD-MARKER`` and a ``TAIL-MARKER``, to exercise the bounded stream drainer.
 """
 
 from __future__ import annotations
@@ -119,7 +121,31 @@ def _build() -> int:
     return 0
 
 
+def _flood(megabytes: int) -> int:
+    """Write ``megabytes`` of output in chunks, with identifiable ends.
+
+    In chunks and straight to the pipe, with no buffering on this side: the point is to fill the
+    OS pipe buffer (64 KB) and prove the parent keeps reading while this runs. A parent that
+    waited for exit before reading would deadlock here.
+    """
+    out = sys.stdout.buffer
+    out.write(b"HEAD-MARKER\n")
+    chunk = b"x" * 65536
+    written = 0
+    target = int(megabytes) * 1024 * 1024
+    while written < target:
+        out.write(chunk)
+        written += len(chunk)
+    out.write(b"\nTAIL-MARKER\n")
+    out.flush()
+    return 0
+
+
 def _run(argv: list) -> int:
+    flood = os.environ.get("FAKE_DOCKER_FLOOD_MB")
+    if flood:
+        return _flood(int(flood))
+
     if os.environ.get("FAKE_DOCKER_DAEMON_DOWN"):
         sys.stderr.write(
             'docker: error during connect: this error may indicate that the docker daemon '

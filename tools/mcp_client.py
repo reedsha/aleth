@@ -27,6 +27,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
+from tools import env_sanitizer, process_control, stream_drain
+
 PROTOCOL_VERSION = "2024-11-05"
 # Every IPC read is bounded. A server that stalls is killed and reaped rather than left
 # holding a pipe, which is the one failure mode that hangs an orchestrator forever.
@@ -71,7 +73,9 @@ class MCPClient:
         self.timeout = timeout
         self._process: Optional[subprocess.Popen] = None
         self._responses: "queue.Queue[Dict[str, Any]]" = queue.Queue()
-        self._stderr: List[str] = []
+        # Bounded: a server that floods its log must not be able to grow this process. See
+        # ``tools.stream_drain`` for the window and why both ends are kept.
+        self._stderr = stream_drain.DualBuffer()
         self._next_id = 1
         self._lock = threading.Lock()
         self.server_info: Dict[str, Any] = {}
@@ -80,9 +84,11 @@ class MCPClient:
     def start(self) -> "MCPClient":
         if self._process is not None:
             return self
-        env = dict(os.environ)
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + existing if existing else "")
+        # The child gets an **allow-listed** environment, never the host's. A model-authored tool
+        # call reaches this process, and ``dict(os.environ)`` handed it every credential the
+        # operator had exported. ``PYTHONPATH`` is added deliberately: the server imports
+        # ``tools``, and that is this app's decision rather than something the shell exported.
+        env = env_sanitizer.sanitized_environment(extra={"PYTHONPATH": str(REPO_ROOT)})
         self._process = subprocess.Popen(
             self.command,
             cwd=str(REPO_ROOT),
@@ -93,6 +99,8 @@ class MCPClient:
             text=True,
             encoding="utf-8",
             bufsize=1,
+            # Its own process group, so one signal reaches the whole tree the server forks.
+            **process_control.spawn_kwargs(),
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -112,14 +120,25 @@ class MCPClient:
                 continue
 
     def _drain_stderr(self) -> None:
+        """Read stderr continuously into a bounded window.
+
+        Continuously, because a child that writes more than the pipe buffer blocks in ``write()``
+        until someone reads. Bounded, because the window is 1 MB: before this, the lines were
+        appended to an unbounded list, so a server that logged megabytes -- or looped -- grew
+        this process without limit.
+        """
         process = self._process
         if process is None or process.stderr is None:
             return
-        for line in process.stderr:
-            self._stderr.append(line.rstrip())
+        stream_drain.drain_text(process.stderr, self._stderr)
 
     def close(self) -> None:
-        """Terminate the child and reap it. Idempotent, and safe when it already exited."""
+        """End the child's whole process group and reap it. Idempotent.
+
+        The group, not the process: a server that forked a helper would leave it running if only
+        the direct child were signalled. The final ``wait()`` is what leaves no zombie -- see
+        ``tools.process_control`` for why a ``waitpid(-1)`` sweep is the wrong tool here.
+        """
         process, self._process = self._process, None
         if process is None:
             return
@@ -129,12 +148,14 @@ class MCPClient:
         except OSError:
             pass
         if process.poll() is None:
-            process.terminate()
+            process_control.terminate_group(process)
+        else:
+            # Already gone: collect the status so it cannot linger as a zombie.
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=1)
             except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+                pass
+        process_control.close_pipes(process)
 
     def __enter__(self) -> "MCPClient":
         return self.start()
@@ -144,7 +165,8 @@ class MCPClient:
 
     @property
     def stderr_text(self) -> str:
-        return "\n".join(self._stderr)
+        """The server's stderr, as the bounded receipt (head, marker, tail)."""
+        return stream_drain.decode(self._stderr.render()).strip()
 
     # -- JSON-RPC ----------------------------------------------------------------
     def _send(self, payload: Dict[str, Any]) -> None:
