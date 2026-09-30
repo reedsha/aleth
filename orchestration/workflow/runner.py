@@ -10,14 +10,16 @@ The branches themselves live next door: ``actions_admin`` for the intents the
 Architect resolves alone, ``actions_impl`` for the intents that may write code.
 """
 
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
-from orchestration.workflow import actions_admin, actions_impl, events
+from orchestration.mcp_session import MCPSessionContext
+from orchestration.workflow import actions_admin, actions_impl, events, execution
 from agents.model_routing import architect_model
 from orchestration.workflow.context import WorkflowContext
-from tools.file_tools import get_active_plan_filename, load_plan_state
+from tools.file_tools import get_active_plan_filename, get_project_dir, load_plan_state
 
 # Action tags the UI appends to a generic message to request a specific intent.
 # Order is significant: the first matching tag wins.
@@ -93,51 +95,75 @@ def run_agent_workflow(
     try:
         plan_file = get_active_plan_filename()
         plan_state = load_plan_state()
-        ctx = WorkflowContext(
-            emit_fn=emit,
-            stream_text=stream_text,
-            should_stop=should_stop,
-            plan_file=plan_file,
-        )
 
-        emit({
-            "type": "workflow_started",
-            "plan_file": plan_file,
-            "action_type": action_type
-        })
+        # The run-scoped MCP lifecycle. The servers live exactly as long as this run: the
+        # context manager reaps them on every exit path -- a clean return, an early halt, or
+        # an exception -- so a failed run leaves no child process behind. Process management
+        # lives in orchestration.mcp_session, not here.
+        with MCPSessionContext(get_project_dir()) as mcp_session:
+            # Kernel warm-up, once per run and off the planning path: the semantic embedder is
+            # fetched/loaded on a background thread, and the vector index is reconciled against
+            # the relational graph. Both are best-effort -- a deployment cost or a repair must
+            # not stop a run -- and both are reported where they fail.
+            try:
+                from orchestration import retriever
 
-        emit({
-            "type": "architect_spawn",
-            "agent": "software-architect",
-            "name": "Lead Software Architect",
-            "model": architect_model()
-        })
-        time.sleep(0.3)
+                retriever.prefetch_embedder()
+                retriever.heal_knowledge_index()
+            except Exception as error:
+                print(f"[KnowledgeGraph] warm-up skipped: {type(error).__name__}: {error}", file=sys.stderr)
 
-        if action_type == "update_plan":
-            actions_admin.update_plan_action(ctx, plan_state, action_params, user_message)
-        elif action_type == "analyze":
-            actions_admin.analyze_action(ctx)
-        elif action_type == "recommend":
-            actions_admin.recommend_action(ctx, plan_state)
-        elif action_type == "normalize":
-            actions_admin.normalize_plan_action(ctx, plan_state, action_params)
-        elif action_type == "fix_bug":
-            actions_impl.fix_bug_action(ctx, plan_state, coder_agents, action_params, user_message)
-        elif action_type == "next_step":
-            actions_impl.next_step_action(ctx, plan_state, coder_agents, action_params)
-        else:
-            actions_impl.custom_action(ctx, plan_state, coder_agents, user_message)
+            ctx = WorkflowContext(
+                emit_fn=emit,
+                stream_text=stream_text,
+                should_stop=should_stop,
+                plan_file=plan_file,
+                mcp_session=mcp_session,
+            )
 
-        # A branch that honoured a stop request returns without its own terminal event.
-        # Close the stream here so the UI leaves the running state it was told to leave.
-        if not terminal_seen["value"]:
-            stopped = should_stop()
             emit({
-                "type": "workflow_complete",
-                "status": "stopped" if stopped else "finished",
-                "message": "Halted by user." if stopped else "Workflow completed."
+                "type": "workflow_started",
+                "plan_file": plan_file,
+                "action_type": action_type
             })
+
+            emit({
+                "type": "architect_spawn",
+                "agent": "software-architect",
+                "name": "Lead Software Architect",
+                "model": architect_model()
+            })
+            time.sleep(0.3)
+
+            if action_type == "update_plan":
+                actions_admin.update_plan_action(ctx, plan_state, action_params, user_message)
+            elif action_type == "analyze":
+                actions_admin.analyze_action(ctx)
+            elif action_type == "recommend":
+                actions_admin.recommend_action(ctx, plan_state)
+            elif action_type == "normalize":
+                actions_admin.normalize_plan_action(ctx, plan_state, action_params)
+            elif action_type == "execute_artifact":
+                # The approval path. It applies the artifact a human approved and touches
+                # neither System 1 (the Gatekeeper router) nor System 2 (the planner): the state
+                # is IN_PROGRESS and the plan is locked, so there is no decision left to make.
+                execution.run_approved_artifact(ctx, plan_state, coder_agents, action_params)
+            elif action_type == "fix_bug":
+                actions_impl.fix_bug_action(ctx, plan_state, coder_agents, action_params, user_message)
+            elif action_type == "next_step":
+                actions_impl.next_step_action(ctx, plan_state, coder_agents, action_params)
+            else:
+                actions_impl.custom_action(ctx, plan_state, coder_agents, action_params, user_message)
+
+            # A branch that honoured a stop request returns without its own terminal event.
+            # Close the stream here so the UI leaves the running state it was told to leave.
+            if not terminal_seen["value"]:
+                stopped = should_stop()
+                emit({
+                    "type": "workflow_complete",
+                    "status": "stopped" if stopped else "finished",
+                    "message": "Halted by user." if stopped else "Workflow completed."
+                })
 
     except Exception as e:
         emit({

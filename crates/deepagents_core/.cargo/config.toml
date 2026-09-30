@@ -1,0 +1,7 @@
+# PyO3 0.29 links against Python with `raw-dylib` by default on Windows. Under
+# the windows-gnu toolchain that makes rustc synthesise an import library with
+# `dlltool` at link time, which fails here. Opting out makes PyO3 link against
+# the interpreter's own `python3XX.lib` instead -- the file ships with the CPython
+# install, so nothing extra has to be built or installed.
+[env]
+PYO3_USE_RAW_DYLIB = "0"

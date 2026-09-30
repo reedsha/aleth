@@ -10,6 +10,22 @@ __pycache__/
 # the app, not authored by hand.
 my_project_workspace/
 
-# The plan's derived machine state. The roadmap itself (PLAN.md) is tracked on purpose --
-# it is the project's own document -- but plan.json is rewritten from it by the app.
-/plan.json
+# The plan's state database. The roadmap itself (PLAN.md) is tracked on purpose -- it is
+# the project's own document, rendered from the store -- but the SQLite database is the
+# machine's, and it is never committed.
+/deepagents_state.db
+/deepagents_state.db-wal
+/deepagents_state.db-shm
+
+# Node tooling: Vite and its dependencies
+node_modules/
+
+# Vite build output, generated from ui/ by `npm run build` and served by the app
+dist/
+
+# Playwright: traces and screenshots of a failed structural test run
+test-results/
+playwright-report/
+
+# Rust build output for the compiled core (hundreds of MB, rebuilt by maturin)
+crates/*/target/

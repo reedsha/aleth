@@ -2,9 +2,20 @@
 // ============================================================================
 // PyWebView Integration & Plan Initialization
 // ============================================================================
-async function onPyWebViewReady() {
+import { beginRunUi } from "./actions.js";
+import { installBus } from "./bridge-bus.js";
+import { renderSidebarAgents } from "./agents.js";
+import { reportStartupFailure, showToast } from "./notify.js";
+import { openCreatePlanModal } from "./plan-modals.js";
+import { applyPlanData } from "./plan-tree.js";
+import { renderSidebarWorkspaceTree } from "./sidebar.js";
+import { DOM, state } from "./store.js";
+import { refreshWorkbenchChrome } from "./workbench.js";
+
+export async function onPyWebViewReady() {
   console.log("[PyWebView] API connected");
-  window.onAgentEvent = handleAgentEvent;
+  // The single inbound sink: the backend delivers every event to this one function.
+  installBus();
 
   try {
     const agentsData = await window.pywebview.api.get_agents();
@@ -28,6 +39,13 @@ async function onPyWebViewReady() {
     }
 
     // A reload mid-run leaves the backend thread alive while `state.isExecuting` resets, so
+    // The UI is loaded and its inbound bus is bound, so the backend may start the swarm. The
+    // cold-start tick is gated on this: a tick before these listeners exist would broadcast
+    // task_state_updated into nothing and the DAG would render stale until the next plan load.
+    if (typeof window.pywebview.api.ui_ready === "function") {
+      await window.pywebview.api.ui_ready();
+    }
+
     // Stop stays hidden and a second run is launchable. Ask the backend and re-arm the lock
     // (audit H6). Guarded: an older bridge without the method keeps the old behaviour.
     if (typeof window.pywebview.api.get_run_state === "function") {
@@ -96,7 +114,7 @@ function isDemoModeRequested() {
   }
 }
 
-function initFallbackMode() {
+export function initFallbackMode() {
   if (!isDemoModeRequested()) {
     const message = "Desktop bridge unavailable: the workspace could not be loaded. " +
       "Restart the app. (For a layout-only preview in a browser, open this page with ?demo=1.)";
@@ -199,7 +217,7 @@ function renderFallbackDemoData() {
   });
 }
 
-function applyAgentsData(data) {
+export function applyAgentsData(data) {
   if (!data) return;
   state.mainAgents = data.main_agents || [];
   state.coderAgents = data.coder_agents || [];
@@ -209,7 +227,7 @@ function applyAgentsData(data) {
   renderSidebarAgents();
 }
 
-function updateWorkspaceUI(dirPath) {
+export function updateWorkspaceUI(dirPath) {
   state.workspaceDir = dirPath;
   const parts = dirPath.split(/[/\\]/);
   const folderName = parts[parts.length - 1] || dirPath;

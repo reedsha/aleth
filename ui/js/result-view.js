@@ -29,6 +29,13 @@
 //   recommend   -> summary.proposals                      (one card per proposal)
 //   custom      -> nothing; the plain stream is the answer
 
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { openFilesTab } from "./sidebar.js";
+import { setHtml, setText } from "./safe-dom.js";
+import { DOM, clearPlanTreeBeforeUpdate, clearRunSummary, state } from "./store.js";
+import { setWorkbenchView } from "./workbench.js";
+
 const RESULT_LABELS = {
   next_step: { icon: "\u26A1", label: "Execute Next Step" },
   fix_bug: { icon: "\uD83D\uDC1B", label: "Fix Bug" },
@@ -65,7 +72,7 @@ function resultTestBridge() {
 
 // Called on the terminal event. A refusal is not a result -- it is a request for input,
 // and the transcript the console is already holding is the answer to it.
-function mountResultView() {
+export function mountResultView() {
   const kind = state.selectedAction || "custom";
   if (kind === "custom") return;
   if (state.lastRunRefused) return;
@@ -75,26 +82,25 @@ function mountResultView() {
 
 // A new run supersedes whatever the last one left on screen, including the payloads the
 // terminal event does not carry.
-function resetResultView() {
+export function resetResultView() {
   resultRenderToken++;
   state.resultViewOpen = false;
   state.resultViewKind = null;
-  state.lastSummary = null;
-  state.lastRunRefused = false;
-  state.planTreeBeforeUpdate = null;
+  clearRunSummary();
+  clearPlanTreeBeforeUpdate();
   if (DOM.resultView) DOM.resultView.classList.remove("active");
   refreshResultAffordance();
 }
 
 // Dismissing keeps the payload, so the workbench's Result button can bring the view back
 // without re-running anything. Without that, dismissing would be a one-way door.
-function closeResultView() {
+export function closeResultView() {
   state.resultViewOpen = false;
   if (DOM.resultView) DOM.resultView.classList.remove("active");
   refreshResultAffordance();
 }
 
-function openResultView() {
+export function openResultView() {
   if (!state.resultViewKind) return;
   renderResultView(state.resultViewKind);
 }
@@ -117,8 +123,8 @@ function renderResultView(kind) {
   if (DOM.resultIcon) DOM.resultIcon.textContent = meta.icon;
   if (DOM.resultKind) DOM.resultKind.textContent = meta.label;
   if (DOM.resultTitle) DOM.resultTitle.textContent = "";
-  if (DOM.resultMetrics) DOM.resultMetrics.innerHTML = "";
-  if (DOM.resultBody) DOM.resultBody.innerHTML = '<div class="result-note">Reading the result\u2026</div>';
+  if (DOM.resultMetrics) setText(DOM.resultMetrics, "");
+  if (DOM.resultBody) setHtml(DOM.resultBody, '<div class="result-note">Reading the result\u2026</div>');
   DOM.resultView.classList.add("active");
   refreshResultAffordance();
 
@@ -282,19 +288,19 @@ async function renderExecuteResult(kind, token) {
   const files = resultFiles(res);
   const totals = resultTotals(res);
   if (DOM.resultMetrics) {
-    DOM.resultMetrics.innerHTML = [
+    setHtml(DOM.resultMetrics, [
       resultPill(`${totals.files} file${totals.files === 1 ? "" : "s"} changed`, "neutral"),
       resultPill(`+${totals.added}`, "add"),
       resultPill(`-${totals.removed}`, "del"),
       resultTestPill(tests, files)
-    ].join("");
+    ].join(""));
   }
 
   if (files.length === 0) {
-    DOM.resultBody.innerHTML = resultNoDiffHtml(res);
+    setHtml(DOM.resultBody, resultNoDiffHtml(res));
     return;
   }
-  DOM.resultBody.innerHTML = `<div class="result-diff-list">${files.map(resultDiffBlockHtml).join("")}</div>`;
+  setHtml(DOM.resultBody, `<div class="result-diff-list">${files.map(resultDiffBlockHtml).join("")}</div>`);
 }
 
 async function renderBugfixResult(kind, token) {
@@ -309,12 +315,12 @@ async function renderBugfixResult(kind, token) {
   const files = resultFiles(res);
   const totals = resultTotals(res);
   if (DOM.resultMetrics) {
-    DOM.resultMetrics.innerHTML = [
+    setHtml(DOM.resultMetrics, [
       resultPill(`${totals.files} file${totals.files === 1 ? "" : "s"} patched`, "neutral"),
       resultPill(`+${totals.added}`, "add"),
       resultPill(`-${totals.removed}`, "del"),
       resultTestPill(tests, files)
-    ].join("");
+    ].join(""));
   }
 
   const rootCause = summary.root_cause
@@ -328,7 +334,7 @@ async function renderBugfixResult(kind, token) {
     ? resultNoDiffHtml(res)
     : `<div class="result-diff-list">${files.map(resultDiffBlockHtml).join("")}</div>`;
 
-  DOM.resultBody.innerHTML = `
+  setHtml(DOM.resultBody, `
     <div class="result-split">
       <section class="result-pane result-pane-cause">
         <h3 class="result-pane-title">Root cause</h3>
@@ -341,7 +347,7 @@ async function renderBugfixResult(kind, token) {
         ${patch}
       </section>
     </div>
-  `;
+  `);
 }
 
 // --- Update Plan: the roadmap as a diff -------------------------------------
@@ -406,12 +412,12 @@ function renderPlanUpdateResult(kind, token) {
   const diff = planTreeDiff(before, after);
   const counted = diff.added.length + diff.removed.length + diff.changed.length;
   if (DOM.resultMetrics) {
-    DOM.resultMetrics.innerHTML = [
+    setHtml(DOM.resultMetrics, [
       resultPill(`${after.length} tasks`, "neutral"),
       resultPill(`+${diff.added.length}`, "add"),
       resultPill(`\u2212${diff.removed.length}`, "del"),
       resultPill(`${diff.changed.length} updated`, "neutral")
-    ].join("");
+    ].join(""));
   }
 
   const column = (title, rows, tone) => `
@@ -422,14 +428,14 @@ function renderPlanUpdateResult(kind, token) {
   `;
 
   if (counted === 0) {
-    DOM.resultBody.innerHTML = `
+    setHtml(DOM.resultBody, `
       <div class="result-note">The roadmap's tasks are unchanged; only the surrounding text may differ.</div>
       ${planUpdateFooterHtml()}
-    `;
+    `);
     return;
   }
 
-  DOM.resultBody.innerHTML = `
+  setHtml(DOM.resultBody, `
     <div class="result-tree-diff">
       ${column("Added", diff.added, "added")}
       ${column("Removed", diff.removed, "removed")}
@@ -446,7 +452,7 @@ function renderPlanUpdateResult(kind, token) {
         : ""}
     </div>
     ${planUpdateFooterHtml()}
-  `;
+  `);
 }
 
 // Update Plan writes the plan as the run finishes, so there is nothing left to "approve" -- the
@@ -492,11 +498,11 @@ function renderAnalyzeResult(kind, token) {
   if (DOM.resultTitle) DOM.resultTitle.textContent = summary.title || "Codebase analysis";
 
   if (DOM.resultMetrics) {
-    DOM.resultMetrics.innerHTML = [
+    setHtml(DOM.resultMetrics, [
       resultPill(summary.status || "Analysis Complete", "neutral"),
       resultPill(`${files.length} file${files.length === 1 ? "" : "s"} inspected`, "neutral"),
       resultPill(`${findings.length} finding${findings.length === 1 ? "" : "s"}`, "neutral")
-    ].join("");
+    ].join(""));
   }
 
   const statTiles = [
@@ -539,7 +545,7 @@ function renderAnalyzeResult(kind, token) {
     ? `<div class="result-note">${unparsed.length} module${unparsed.length === 1 ? "" : "s"} could not be parsed and ${unparsed.length === 1 ? "is" : "are"} excluded: ${unparsed.map(escapeHtml).join(", ")}.</div>`
     : "";
 
-  DOM.resultBody.innerHTML = `
+  setHtml(DOM.resultBody, `
     <div class="result-dashboard">
       <div class="result-stat-grid">${statTiles.join("")}</div>
       <div class="result-two-col">
@@ -563,7 +569,7 @@ function renderAnalyzeResult(kind, token) {
       ${unparsedNote}
       ${metricsNote}
     </div>
-  `;
+  `);
 }
 
 // --- Recommend: one actionable card per proposal ---------------------------
@@ -578,10 +584,10 @@ function renderRecommendResult(kind, token) {
   if (DOM.resultTitle) DOM.resultTitle.textContent = summary.title || "Strategic recommendations";
 
   if (DOM.resultMetrics) {
-    DOM.resultMetrics.innerHTML = [
+    setHtml(DOM.resultMetrics, [
       resultPill(summary.status || "Advisory Formulated", "neutral"),
       resultPill(`${proposals.length} proposal${proposals.length === 1 ? "" : "s"}`, "neutral")
-    ].join("");
+    ].join(""));
   }
 
   const cards = proposals.map((proposal, index) => `
@@ -593,7 +599,7 @@ function renderRecommendResult(kind, token) {
     </article>
   `).join("");
 
-  DOM.resultBody.innerHTML = `
+  setHtml(DOM.resultBody, `
     <div class="result-cards-wrap">
       <div class="result-cards">
         ${proposals.length ? cards : '<div class="result-note">No proposals were returned.</div>'}
@@ -606,12 +612,12 @@ function renderRecommendResult(kind, token) {
         : ""}
       <div class="result-note">"Add to Plan" appends this proposal to the active plan as a pending task and saves it \u2014 the click is the confirmation, so there is no second step.</div>
     </div>
-  `;
+  `);
 }
 
 // --- Interactions -----------------------------------------------------------
 // Delegated from the mount, because every renderer rewrites the body wholesale.
-function handleResultViewClick(event) {
+export function handleResultViewClick(event) {
   const button = event.target && event.target.closest
     ? event.target.closest("[data-result-action]")
     : null;
@@ -694,6 +700,6 @@ async function revertPlanUpdate(button) {
   }
 }
 
-function initResultView() {
+export function initResultView() {
   closeResultView();
 }

@@ -2,9 +2,14 @@
 // ============================================================================
 // Left Sidebar Dynamic Agent Navigation
 // ============================================================================
-function renderSidebarAgents() {
-  DOM.sidebarMainAgentsList.innerHTML = "";
-  DOM.sidebarCoderAgentsList.innerHTML = "";
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { setHtml, setText } from "./safe-dom.js";
+import { DOM, state } from "./store.js";
+
+export function renderSidebarAgents() {
+  setText(DOM.sidebarMainAgentsList, "");
+  setText(DOM.sidebarCoderAgentsList, "");
 
   if (DOM.countMainAgents) DOM.countMainAgents.textContent = state.mainAgents.length;
   if (DOM.countCoderAgents) DOM.countCoderAgents.textContent = state.coderAgents.length;
@@ -14,7 +19,7 @@ function renderSidebarAgents() {
     item.className = "agent-list-item";
     item.id = `navAgent_${agent.id}`;
     item.title = `${agent.display_name} - Click to view/edit system prompt`;
-    item.innerHTML = `
+    setHtml(item, `
       <div class="agent-item-icon main">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polygon points="12 2 2 7 12 12 22 7 12 2"/>
@@ -23,11 +28,11 @@ function renderSidebarAgents() {
         </svg>
       </div>
       <div class="agent-item-info">
-        <span class="agent-item-name">${agent.display_name}</span>
+        <span class="agent-item-name">${escapeHtml(agent.display_name)}</span>
         <span class="agent-item-sub">Coordinator</span>
       </div>
       <span class="agent-status-indicator"></span>
-    `;
+    `);
     if (state.activeAgentIds && state.activeAgentIds.has(agent.id)) item.classList.add("thinking");
     item.addEventListener("click", () => openPromptEditor(agent.id));
     DOM.sidebarMainAgentsList.appendChild(item);
@@ -38,7 +43,7 @@ function renderSidebarAgents() {
     item.className = "agent-list-item";
     item.id = `navAgent_${agent.id}`;
     item.title = `${agent.display_name} - Click to view/edit system prompt`;
-    item.innerHTML = `
+    setHtml(item, `
       <div class="agent-item-icon coder">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="16 18 22 12 16 6"/>
@@ -46,11 +51,11 @@ function renderSidebarAgents() {
         </svg>
       </div>
       <div class="agent-item-info">
-        <span class="agent-item-name">${agent.display_name}</span>
+        <span class="agent-item-name">${escapeHtml(agent.display_name)}</span>
         <span class="agent-item-sub">Sub-Agent</span>
       </div>
       <span class="agent-status-indicator"></span>
-    `;
+    `);
     if (state.activeAgentIds && state.activeAgentIds.has(agent.id)) item.classList.add("thinking");
     item.addEventListener("click", () => openPromptEditor(agent.id));
     DOM.sidebarCoderAgentsList.appendChild(item);
@@ -85,7 +90,7 @@ function openPromptEditor(agentId) {
   if (DOM.coreRulesContent) DOM.coreRulesContent.style.display = "none";
   if (DOM.lblCoreToggle) DOM.lblCoreToggle.textContent = "Show Protected Rules ▼";
 
-  DOM.editorToolsList.innerHTML = "";
+  setText(DOM.editorToolsList, "");
   (agent.tools || []).forEach(toolName => {
     const pill = document.createElement("span");
     pill.className = "tool-pill";
@@ -104,7 +109,7 @@ function openPromptEditor(agentId) {
   if (navItem) navItem.classList.add("active-agent");
 }
 
-function closePromptEditor() {
+export function closePromptEditor() {
   DOM.promptEditorView.style.display = "none";
   DOM.chatWorkspaceView.style.display = "flex";
   DOM.chatWorkspaceView.classList.add("active");
@@ -115,17 +120,17 @@ function closePromptEditor() {
 // numbers, so re-rendering it on every keystroke was wasted work (audit M11).
 let lastEditorLineCount = -1;
 
-function updateEditorMetrics() {
+export function updateEditorMetrics() {
   const text = DOM.txtSystemPrompt.value;
   const lines = text.split("\n");
   DOM.promptCharCount.textContent = `${text.length} chars • ${lines.length} lines`;
   if (lines.length !== lastEditorLineCount) {
     lastEditorLineCount = lines.length;
-    DOM.editorLineNumbers.innerHTML = lines.map((_, i) => i + 1).join("<br>");
+    setHtml(DOM.editorLineNumbers, lines.map((_, i) => i + 1).join("<br>"));
   }
 }
 
-async function saveCurrentSystemPrompt() {
+export async function saveCurrentSystemPrompt() {
   if (!state.activeAgentForEditor) return;
   const agentId = state.activeAgentForEditor.id;
   const newPrompt = DOM.txtSystemPrompt.value;

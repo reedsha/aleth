@@ -5,6 +5,11 @@
 // what is safe to show -- whether the variable resolves, and how long its value is -- which
 // is enough to tell a set-but-empty variable from a populated one.
 
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { setHtml } from "./safe-dom.js";
+import { DOM } from "./store.js";
+
 const ENV_MASK_TEXT = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
 
 const ENV_REVEAL_ICON =
@@ -43,9 +48,9 @@ function renderEnvironmentVariables(variables) {
   const list = variables || [];
   if (DOM.countEnvVars) DOM.countEnvVars.textContent = String(list.length);
 
-  DOM.sidebarEnvList.innerHTML = list.length
+  setHtml(DOM.sidebarEnvList, list.length
     ? list.map(envRowMarkup).join("")
-    : '<div class="env-empty">No environment variables are configured.</div>';
+    : '<div class="env-empty">No environment variables are configured.</div>');
 }
 
 // One delegated listener rather than one per row: the list is re-rendered wholesale on
@@ -66,13 +71,13 @@ function handleEnvListClick(event) {
     : "Show what is known about this variable";
 }
 
-async function refreshEnvironmentVariables() {
+export async function refreshEnvironmentVariables() {
   if (!DOM.sidebarEnvList) return;
 
   if (!envPanelHasBridge()) {
     if (DOM.countEnvVars) DOM.countEnvVars.textContent = "0";
-    DOM.sidebarEnvList.innerHTML =
-      '<div class="env-empty">The desktop app is needed to read environment variables.</div>';
+    setHtml(DOM.sidebarEnvList,
+      '<div class="env-empty">The desktop app is needed to read environment variables.</div>');
     return;
   }
 
@@ -87,7 +92,7 @@ async function refreshEnvironmentVariables() {
   }
 }
 
-function initEnvironmentPanel() {
+export function initEnvironmentPanel() {
   if (DOM.sidebarEnvList) {
     DOM.sidebarEnvList.addEventListener("click", handleEnvListClick);
   }

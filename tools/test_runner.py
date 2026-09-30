@@ -5,10 +5,18 @@ no code ever executed it, so the view could only say "not run". This supplies th
 verdict by running the test file(s) a task wrote and reading the runner's own result -- its
 exit status and its summary line -- rather than inferring a badge from prose.
 
+**Executed in a container, never on the host.** pytest *imports and executes* arbitrary code
+from the workspace -- ``conftest.py``, the test module, and everything an import triggers --
+so running it natively would hand a model-authored file arbitrary code execution on the
+machine. The runner therefore goes through ``tools.docker_sandbox``, exactly like every other
+command the app did not author: no host Python process imports or executes anything inside the
+workspace. A machine without a reachable Docker daemon gets the ``unavailable`` verdict, not a
+host run.
+
 Read-only with respect to the workspace. The test files already exist when this is called;
-they are executed, not written, and byte-code writing and pytest's cache are disabled, so
-merely opening a result view cannot leave new files in a workspace the user did not ask to
-touch.
+they are executed, not written, and byte-code writing and pytest's cache are disabled *inside*
+the container, so merely opening a result view cannot leave new files in a workspace the user
+did not ask to touch.
 
 The answers stay distinct, because the caller draws each one differently: no test file was
 recorded, the recorded file is gone, the tests passed, the tests failed, a collection error
@@ -19,10 +27,15 @@ never reported as a pass.
 import json
 import os
 import re
-import subprocess
-import sys
+import shlex
 from typing import Any, Dict, List
 
+import deepagents_core as _core
+
+from pydantic import ValidationError
+
+from tools import docker_sandbox
+from tools.payloads import TestRunResult, validated, validated_backup_meta
 from tools.workspace import BACKUP_SUBDIR, get_project_dir
 
 # A runaway suite must not hold the result view; the bridge call is synchronous, so this
@@ -48,6 +61,30 @@ _EMPTY_TOTALS = {"passed": 0, "failed": 0, "errors": 0, "skipped": 0}
 # Worst answer wins: one failing file must not be hidden by a passing sibling.
 _VERDICT_PRIORITY = ("failed", "error", "passed", "missing", "unavailable")
 
+# A runner that is simply not installed in the sandbox image is a deployment fact, not a failing
+# test, so it gets its own verdict rather than reading as "no runnable tests".
+_RUNNER_MISSING_RE = re.compile(
+    r"No module named pytest|pytest: command not found|not found: pytest", re.IGNORECASE
+)
+
+
+def _pytest_command(rel_path: str) -> str:
+    """The in-container command that runs one recorded test file.
+
+    The path is shell-quoted because a recorded filename is data, not something to interpolate
+    into a shell line blindly. The two environment settings are applied *inside* the container so
+    the runner cannot litter the workspace through the bind mount, and ``-o addopts=`` drops any
+    reporting plugins the workspace's own pytest config would inject.
+    """
+    return " ".join([
+        "PYTHONDONTWRITEBYTECODE=1",
+        "PYTHONIOENCODING=utf-8",
+        "python", "-m", "pytest", shlex.quote(rel_path),
+        "-q", "--no-header", "--tb=short",
+        "-p", "no:cacheprovider",
+        "-o", "addopts=",
+    ])
+
 
 def _recorded_files(task_key: str) -> List[str]:
     """The workspace-relative files a task's backup metadata records, or an empty list.
@@ -64,6 +101,10 @@ def _recorded_files(task_key: str) -> List[str]:
     except (OSError, ValueError):
         return []
     if not isinstance(meta, dict):
+        return []
+    try:
+        validated_backup_meta(meta)
+    except ValidationError:
         return []
     return [str(name).replace("\\", "/") for name in meta]
 
@@ -122,14 +163,17 @@ def _counts(output: str) -> Dict[str, int]:
 
 
 def _truncate(output: str) -> str:
-    if len(output) <= MAX_OUTPUT_CHARS:
-        return output
-    half = MAX_OUTPUT_CHARS // 2
-    return f"{output[:half]}\n... [truncated] ...\n{output[-half:]}"
+    """The runner's output, cut to its head and its summary line.
+
+    The cut itself is the compiled core's (deepagents_core.text), so all three
+    budgets in the app -- a file read, a shell command and a test run -- are the same
+    arithmetic.
+    """
+    return _core.truncate_test_output(output, MAX_OUTPUT_CHARS)
 
 
 def _run_one(base_dir: str, rel_path: str) -> Dict[str, Any]:
-    """Run one recorded test file and classify what happened."""
+    """Run one recorded test file **in the container** and classify what happened."""
     result: Dict[str, Any] = {
         "filename": rel_path, **_EMPTY_TOTALS,
         "verdict": "missing", "returncode": None, "output": "", "error": None,
@@ -138,44 +182,42 @@ def _run_one(base_dir: str, rel_path: str) -> Dict[str, Any]:
         result["error"] = "The recorded test file is no longer in the workspace."
         return result
 
-    env = dict(os.environ)
-    # A reader that only wanted the verdict must not litter the workspace: no .pyc files
-    # and no .pytest_cache directory.
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-    command = [
-        sys.executable, "-m", "pytest", rel_path,
-        "-q", "--no-header", "--tb=short",
-        "-p", "no:cacheprovider",
-        # Ignore any addopts the workspace's own pytest config would inject: the verdict
-        # must come from this run, not from a project's reporting plugins.
-        "-o", "addopts=",
-    ]
+    # The same perimeter as every other command the app did not author. pytest executes the
+    # workspace's own code, so this is not a place a host process may be used -- a refusal is
+    # the correct answer when the container runtime is unavailable.
     try:
-        completed = subprocess.run(
-            command, cwd=base_dir, capture_output=True, text=True,
-            timeout=TEST_TIMEOUT_SECONDS, encoding="utf-8", errors="replace", env=env,
+        isolated = docker_sandbox.run_isolated(
+            _pytest_command(rel_path), cwd=base_dir, timeout=TEST_TIMEOUT_SECONDS
         )
-    except subprocess.TimeoutExpired:
-        result.update({
-            "verdict": "error",
-            "error": f"Tests did not finish within {TEST_TIMEOUT_SECONDS} seconds.",
-        })
-        return result
-    except OSError as exc:
+    except docker_sandbox.SandboxError as exc:
         result.update({
             "verdict": "unavailable",
             "error": f"Could not start the test runner: {exc}",
         })
         return result
 
-    output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-    counts = _counts(output)
-    result.update(counts)
-    result["returncode"] = completed.returncode
+    if isolated.timed_out:
+        result.update({
+            "verdict": "error",
+            "error": f"Tests did not finish within {TEST_TIMEOUT_SECONDS} seconds.",
+        })
+        return result
+
+    output = ((isolated.stdout or "") + "\n" + (isolated.stderr or "")).strip()
+    result["returncode"] = isolated.returncode
     result["output"] = _truncate(output)
 
-    if completed.returncode == 0:
+    if isolated.returncode != 0 and _RUNNER_MISSING_RE.search(output):
+        result.update({
+            "verdict": "unavailable",
+            "error": "The test runner (pytest) is not installed in the sandbox image.",
+        })
+        return result
+
+    counts = _counts(output)
+    result.update(counts)
+
+    if isolated.returncode == 0:
         result["verdict"] = "passed"
     elif counts["failed"]:
         result["verdict"] = "failed"
@@ -230,22 +272,22 @@ def run_task_tests(task_id: str) -> Dict[str, Any]:
     }
     task_key = str(task_id or "").strip()
     if not task_key:
-        return {"success": False, "error": "No task id given.", "task_id": task_id, **empty}
+        return validated(TestRunResult, {"success": False, "error": "No task id given.", "task_id": task_id, **empty})
 
     files = test_files_for_task(task_key)
     if not files:
-        return {
+        return validated(TestRunResult, {
             "success": True, "task_id": task_key, **empty,
             "summary": "No test file was recorded for this task.",
-        }
+        })
 
     base_dir = get_project_dir()
     tests = [_run_one(base_dir, rel) for rel in files]
     totals = {key: sum(test[key] for test in tests) for key in _EMPTY_TOTALS}
     verdict = _aggregate_verdict([test["verdict"] for test in tests])
     ran = any(test["verdict"] in ("passed", "failed", "error") for test in tests)
-    return {
+    return validated(TestRunResult, {
         "success": True, "found": True, "ran": ran, "verdict": verdict,
         "task_id": task_key, "tests": tests, "totals": totals,
         "summary": _summary_line(totals, verdict),
-    }
+    })

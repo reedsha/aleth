@@ -1,0 +1,9 @@
+# This crate builds with the self-contained GNU toolchain.
+#
+# The MSVC toolchain needs the Windows SDK's import libraries (kernel32.lib and
+# friends) to link anything, and this machine has the MSVC compiler but not the
+# SDK. The windows-gnu toolchain ships its own linker and import libraries, so it
+# needs nothing installed beyond rustup itself -- which is why the toolchain is
+# pinned here rather than left to the machine default.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "deepagents_core"
+version = "0.1.0"
+description = "Compiled core engine for DeepAgents Studio: plan parsing, dual-sync state and context slicing."
+requires-python = ">=3.9"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "deepagents_core"

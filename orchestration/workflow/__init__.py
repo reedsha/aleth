@@ -9,6 +9,7 @@ generation      fills a deliverable's contents from a real System 2 call when co
 ledger          the Living Behavioral Ledger: milestone logs and core-fact wrap-up
 actions_admin   administrative-bypass intents, resolved without a coder
 actions_impl    implementation intents, which may write code through a coder
+execution       the deterministic execution half: apply an approved artifact, no decisions
 runner          intent resolution, action dispatch and failure handling
 """
 
@@ -17,6 +18,7 @@ from orchestration.workflow import (
     actions_impl,
     context,
     events,
+    execution,
     generation,
     ledger,
     runner,
@@ -30,6 +32,7 @@ __all__ = [
     "actions_impl",
     "context",
     "events",
+    "execution",
     "generation",
     "ledger",
     "runner",

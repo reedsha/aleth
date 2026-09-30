@@ -10,6 +10,13 @@
 // into folders needs no second bridge method and no guessing about which names are
 // directories -- a name only ever appears as a folder if some path has a segment below it.
 
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { checkPlanStructureGate } from "./plan-modals.js";
+import { applyPlanData } from "./plan-tree.js";
+import { setHtml } from "./safe-dom.js";
+import { DOM, setAvailablePlans, state } from "./store.js";
+
 const SIDEBAR_LEFT_KEY = "deepagents.sidebarCollapsed";
 const SIDEBAR_RIGHT_KEY = "deepagents.planSidebarCollapsed";
 
@@ -100,7 +107,7 @@ function toggleRightSidebar() {
 // only: switching never re-renders and never loses a panel's scroll position. The block's
 // off-state is a class rather than the `hidden` attribute -- an author rule already sets
 // `display` on these blocks, and author rules beat the UA's [hidden] rule.
-function setSidebarTab(tab) {
+export function setSidebarTab(tab) {
   const names = ["agents", "plans", "files", "env"];
   const active = names.indexOf(tab) >= 0 ? tab : "agents";
   state.sidebarTab = active;
@@ -126,7 +133,7 @@ function setSidebarTab(tab) {
 
 // The rail's ⇆ reveals the Plans tab rather than opening the switcher modal. The modal stays
 // reachable from the tab's own expand button.
-function openPlansTab() {
+export function openPlansTab() {
   if (state.sidebarCollapsed) setLeftSidebarCollapsed(false);
   setSidebarTab("plans");
 }
@@ -135,21 +142,21 @@ function openPlansTab() {
 // Plan list (left pane)
 // ---------------------------------------------------------------------------
 
-function renderSidebarPlans() {
+export function renderSidebarPlans() {
   if (!DOM.sidebarPlansList) return;
   const plans = Array.isArray(state.availablePlans) ? state.availablePlans : [];
   if (DOM.countSidebarPlans) DOM.countSidebarPlans.textContent = String(plans.length);
 
   if (plans.length === 0) {
-    DOM.sidebarPlansList.innerHTML = '<div class="tree-empty">No .md plans found in the workspace yet.</div>';
+    setHtml(DOM.sidebarPlansList, '<div class="tree-empty">No .md plans found in the workspace yet.</div>');
     return;
   }
 
   // The same chip the switcher draws, so the two surfaces cannot drift apart.
-  DOM.sidebarPlansList.innerHTML = plans.map((name) => {
+  setHtml(DOM.sidebarPlansList, plans.map((name) => {
     const active = name === state.activePlan ? " active" : "";
     return `<button type="button" class="plan-chip${active}" data-plan="${escapeHtml(name)}">${escapeHtml(name)}</button>`;
-  }).join("");
+  }).join(""));
 }
 
 // The set of plan files is a backend fact, not something to remember across events: a
@@ -159,7 +166,7 @@ async function refreshSidebarPlans() {
   if (api && typeof api.get_plan_files === "function") {
     try {
       const plans = await api.get_plan_files();
-      if (Array.isArray(plans)) state.availablePlans = plans;
+      setAvailablePlans(plans);
     } catch (_err) {
       /* offline / no bridge: fall back to the list already in state */
     }
@@ -169,7 +176,7 @@ async function refreshSidebarPlans() {
 
 // Switching from the tab runs the same path the switcher's chips do, including the advisory
 // structural gate -- one behaviour, two entry points.
-async function switchActivePlan(planName) {
+export async function switchActivePlan(planName) {
   if (!planName) return;
   if (planName === state.activePlan) {
     // A silent no-op reads as a broken click; say the plan is already active (audit L9).
@@ -202,7 +209,7 @@ async function switchActivePlan(planName) {
 // The top bar's Files button reveals the sidebar's Files tab instead of a centred modal: the
 // tree already lives there, and mirroring it in a modal was the redundancy this pass removed.
 // The full explorer (search, counts) stays reachable from the tab's own expand button.
-function openFilesTab() {
+export function openFilesTab() {
   if (state.sidebarCollapsed) setLeftSidebarCollapsed(false);
   setSidebarTab("files");
 }
@@ -305,28 +312,28 @@ function renderTreeContents(node, budget) {
   return html;
 }
 
-function renderSidebarWorkspaceTree(files) {
+export function renderSidebarWorkspaceTree(files) {
   if (!DOM.sidebarTree) return;
 
   const list = files || [];
   if (DOM.countTreeFiles) DOM.countTreeFiles.textContent = String(list.length);
 
   if (list.length === 0) {
-    DOM.sidebarTree.innerHTML =
-      '<div class="tree-empty">No files in this workspace yet.</div>';
+    setHtml(DOM.sidebarTree,
+      '<div class="tree-empty">No files in this workspace yet.</div>');
     return;
   }
 
   const budget = { rows: 0, truncated: false };
   const html = renderTreeContents(buildWorkspaceTree(list), budget);
-  DOM.sidebarTree.innerHTML = budget.truncated
+  setHtml(DOM.sidebarTree, budget.truncated
     ? html + `<div class="tree-note">Showing the first ${TREE_MAX_ROWS} entries.</div>`
-    : html;
+    : html);
 }
 
 // Re-reads the listing after the workspace itself changed. bootstrap seeds the tree from
 // the workspace info it already fetched; only a later change needs a fresh call.
-async function refreshSidebarWorkspaceTree() {
+export async function refreshSidebarWorkspaceTree() {
   if (!DOM.sidebarTree) return;
   if (!(window.pywebview && window.pywebview.api && window.pywebview.api.get_workspace_info)) return;
 
@@ -338,7 +345,7 @@ async function refreshSidebarWorkspaceTree() {
   }
 }
 
-function initSidebars() {
+export function initSidebars() {
   state.sidebarCollapsed = readSidebarFlag(SIDEBAR_LEFT_KEY);
   // The right pane is a fixed rail now: the plan tracker it used to hold is rendered in
   // the centre workbench, so there is nothing to expand into and the stored preference is

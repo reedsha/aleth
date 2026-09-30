@@ -16,7 +16,7 @@ returns, exactly as the inline branches did.
 
 import os
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 from agents import laya as laya_gate
 # ``laya_gate`` owns the vocabulary (routing a task to a Coder, naming a domain), which
@@ -25,36 +25,94 @@ from agents import laya as laya_gate
 # ``LAYA_BACKEND=model`` opts the checkpoint in, so this call site reads the same either way.
 from agents import laya_model
 from agents.model_routing import architect_model, coder_model
-from orchestration.workflow import generation, ledger, reasoning, templates
+from orchestration.workflow import executor, generation, ledger, planner, reasoning, templates
 from orchestration.workflow.context import WorkflowContext, roadmap_brief
 from orchestration.workflow.events import tool_call, tool_result
 from tools.file_tools import (
     backup_file_for_task,
     compile_plan_json_to_markdown,
     list_workspace_files,
+    overwrite_source,
     read_source,
     save_plan_state,
-    write_file,
 )
-from tools.shell_tools import command_failed, execute_restricted_command
+from tools.shell_result import command_failed
 from tools.task_tags import UI_TAG
+from tools.workspace import get_active_plan_filename, get_project_dir
+from storage.db import plan_id_for
 # Imported directly rather than through the ``tools.file_tools`` façade: the test runner is
 # its own lower-layer tool (stdlib subprocess + pytest), not a file operation.
 from tools.test_runner import run_task_tests
 
 
+def _refuse_if_blocked(ctx: Any, plan_file: str, task: Mapping[str, Any]) -> bool:
+    """Refuse a directive aimed at a blocked node. Returns ``True`` when it refused.
+
+    **Architectural law: a blocked node is a blocked node.** Whether the node was chosen by
+    the scheduler or named explicitly by a ``fix_bug``/``custom`` directive, the prerequisite
+    state either exists or it does not -- and a model asked to work on a node whose state is
+    missing will invent a reality to compensate, then write code against it. So every path
+    through this module passes the same gate, and every refusal is the same payload.
+    """
+    from storage.db import get_store, plan_id_for
+    from tools.workspace import get_active_plan_filename
+
+    plan_id = plan_id_for(get_active_plan_filename())
+    store = get_store()
+    task_id = str(task.get("id") or "")
+    if not task_id or store.is_task_eligible(plan_id, task_id):
+        return False
+
+    blockers = store.incomplete_blockers(plan_id, task_id)
+    title = str(task.get("title") or task_id)
+    ctx.stream_text(
+        "software-architect",
+        f"> [SCHEDULER] '{title}' is blocked and was not run.\n"
+        f"> Incomplete blocker(s): {', '.join(blockers)}.\n"
+        f"> Complete them first; the artifact DAG draws the edges that gate this task.",
+        log_type="decision",
+        delay=0.02,
+    )
+    ctx.emit_fn({
+        "type": "architect_summary",
+        "agent": "software-architect",
+        "summary": {
+            "title": "Task Blocked By Dependencies",
+            "status": "Input Required",
+            "files": [plan_file],
+            "deliverables": [
+                f"'{title}' was not run: its blockers are not complete.",
+                f"Incomplete: {', '.join(blockers)}.",
+            ],
+            "proposals": [f"Complete {', '.join(blockers)} first, then run this task."],
+        },
+    })
+    ctx.emit_fn({
+        "type": "workflow_complete",
+        "status": "finished",
+        "message": f"'{title}' is blocked by incomplete dependencies.",
+    })
+    return True
+
+
 def _write_checked(agent_id: str, filename: str, content: str) -> str:
     """Writes a deliverable and makes a failure loud.
 
-    ``write_file`` returns an error *string* on failure (``tools/file_ops.py``) rather than
-    raising, so callers that ignored its return value narrated "Successfully patched" and
-    went on to complete the task even when nothing was written. Raising here lets the runner
-    turn it into the ``agent_error`` + terminal ``workflow_complete`` it already emits, which
-    aborts the action before a false verdict is recorded.
+    Uses the engine-internal writer, not the model's ``write_file`` tool: that tool refuses
+    to overwrite an existing file (the chokehold), while the workflow must be able to
+    refresh a deliverable a previous run already created. A failure raises, so the runner
+    turns it into ``agent_error`` + a terminal ``workflow_complete`` instead of narrating a
+    write that never happened.
     """
-    result = write_file.invoke({"filename": filename, "content": content})
-    if isinstance(result, str) and result.startswith("Error writing file"):
-        raise RuntimeError(f"{agent_id} could not write {filename}: {result}")
+    # NOTE: the Artifact Gate is deliberately *not* applied here. Intercepting the engine's
+    # own writes was the wrong place for it: it made the gate a control-flow mechanism
+    # instead of a boundary. Planning and execution are now separate phases (see
+    # ``orchestration.workflow.planner`` / ``executor``), and the gate remains where it
+    # belongs -- a fail-safe on the model's ``edit_ast_node`` tool.
+    try:
+        return overwrite_source(filename, content)
+    except OSError as error:
+        raise RuntimeError(f"{agent_id} could not write {filename}: {error}") from error
     return result
 
 
@@ -120,6 +178,16 @@ def fix_bug_action(
         })
         return
 
+    # A fix aimed at a named node passes the same eligibility gate as the scheduler: the
+    # prerequisite state either exists or it does not, and a model told to patch a node whose
+    # state is missing would write code against a reality it invented to compensate.
+    if target_task_id:
+        directive_node = planner.task_by_id(plan_state, target_task_id) or planner.task_by_dag_id(
+            plan_id_for(get_active_plan_filename()), target_task_id
+        )
+        if directive_node is not None and _refuse_if_blocked(ctx, ctx.plan_file, directive_node):
+            return
+
     ctx.stream_text("software-architect", f"> [PHASE 1: BUG DIAGNOSIS] Architect inspecting codebase to locate bug...\n> Directive: Analyze root cause before summoning Coder.", delay=0.02)
     time.sleep(0.3)
     if ctx.should_stop(): return
@@ -176,10 +244,30 @@ def fix_bug_action(
         })
         return
     target_file = reported_target or py_files[0]
+
+    # The regression test is part of the fix, so it is one of the task's declared
+    # deliverables: the artifact carries its bytes like any other target, and the executor
+    # lands it in the same pass as the patch.
     test_file = generation.paired_test_path(target_file) if reported_target else ""
     if not test_file:
         test_file = [f for f in py_files if "test" in f]
         test_file = test_file[0] if test_file else "test_main.py"
+
+    # PHASE 1 -- PLAN, with DAG supremacy: a fix that named no plan task gets an ephemeral
+    # node, and either way it is planned and the run yields. Nothing is written here. The
+    # report travels as the task's own detail, so the planner sees the symptom it is fixing
+    # rather than only the file it lives in.
+    directive_task = planner.ensure_task_for_directive(
+        plan_id=plan_id_for(get_active_plan_filename()),
+        task=planner.task_by_id(plan_state, action_params.get("targetTaskId")),
+        task_id=action_params.get("targetTaskId"),
+        title=f"Fix bug in {target_file}",
+        files=[target_file, test_file],
+        details=[f"Bug report: {clean_bug}"] if clean_bug else [],
+    )
+    if planner.needs_planning(directive_task):
+        planner.plan_and_yield(ctx, task=directive_task, plan_file=ctx.plan_file)
+        return
 
     # Read target file
     ctx.emit_fn(tool_call(
@@ -256,74 +344,26 @@ def fix_bug_action(
     backup_file_for_task(task_key, test_file)
     time.sleep(0.2)
 
-    # Surgical patch. Written by System 2 when it is available -- it is the only thing here
-    # that can reason about the reported cause -- and by the local patch below when it is
-    # not, so the offline behaviour is unchanged.
-    patched_code = curr_code
-    if "def run" in patched_code:
-        patched_code = patched_code.replace(
-            'def run(self) -> Dict[str, Any]:',
-            'def run(self) -> Dict[str, Any]:\n        # Bugfix: Input validation & error boundary'
-        )
-    else:
-        patched_code = f"# Bugfix Applied: {clean_bug[:60]}\n" + patched_code
-
-    generated = generation.generate_code(
-        coder_id=target_coder_id,
-        filename=target_file,
-        # An attached log or report has to reach the Coder, not just the sufficiency gate: the
-        # attachment's name alone was used as a truthiness check, so the evidence the user
-        # supplied never informed the patch (audit H8). Injected into the context here rather
-        # than as a new narration line, so the pinned event stream is unchanged.
-        context_text=(
-            f"Bug report:\n{clean_bug}\n\n"
-            + (
-                f"Attachment ({action_params.get('bugAttachment', 'attachment')}):\n"
-                f"{(action_params.get('bugAttachmentContent') or '').strip()}\n\n"
-                if (action_params.get("bugAttachmentContent") or "").strip()
-                else ""
-            )
-            + f"Current contents of `{target_file}`:\n{curr_code}"
-        ),
-        task_title=f"Fix bug in {target_file}",
-        plan_file=ctx.plan_file,
-        fallback_code=patched_code,
-        on_request=lambda model, prompt_chars: ctx.stream_text(
-            target_coder_id,
-            f"> System 2 request: {model} is patching `{target_file}` "
-            f"from the report and the current file ({prompt_chars:,} prompt chars)...",
-            log_type="decision",
-            delay=0.02,
-        ),
-    )
-
-    if generated.used_llm and generated.reasoning:
-        # The model's own deliberation, shown in the Coder's card: what the patch is based on.
-        reasoning.stream_thought(ctx.stream_text, target_coder_id, generated.reasoning)
-
+    # The artifact IS the payload. The task reached this half only because a human approved
+    # it (`in_progress`), so the plan a human approved is applied verbatim -- one splice per
+    # target, no model call, no second guess.
     ctx.emit_fn(tool_call(
         target_coder_id, "write_file", {"filename": target_file},
-        f"Applying surgical bug patch to {target_file}"
+        f"Applying the approved bug patch to {target_file}"
     ))
     time.sleep(0.3)
-    _write_checked(target_coder_id, target_file, generated.code)
+    applied = executor.execute_approved(
+        plan_id_for(get_active_plan_filename()),
+        str(directive_task.get("id")),
+        workspace_dir=get_project_dir(),
+    )
+    if not applied.success:
+        raise RuntimeError(
+            f"{target_coder_id} could not apply the approved plan: {applied.error}"
+        )
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
-        f"Successfully patched {target_file}"
-    ))
-
-    # Regression test
-    ctx.stream_text(target_coder_id, f"> Updating regression test in `{test_file}`...", delay=0.02)
-    ctx.emit_fn(tool_call(
-        target_coder_id, "write_file", {"filename": test_file},
-        f"Updating regression test suite in {test_file}"
-    ))
-    time.sleep(0.3)
-    test_code = templates.BUGFIX_REGRESSION_TEST
-    _write_checked(target_coder_id, test_file, test_code)
-    ctx.emit_fn(tool_result(
-        target_coder_id, "write_file",
-        f"Regression tests updated in {test_file}"
+        f"Applied the approved plan to {target_file} and {test_file}"
     ))
 
     # Coder summary
@@ -356,7 +396,7 @@ def fix_bug_action(
         f"Verifying patched syntax for {target_file}"
     ))
     time.sleep(0.3)
-    check_res = execute_restricted_command.invoke({"command": f"python -m py_compile {target_file}"})
+    check_res = ctx.mcp_session.execute(f"python -m py_compile {target_file}", restricted=True)
     compile_error = check_res.strip() if command_failed(check_res) else ""
     ctx.emit_fn(tool_result(
         "software-architect", "execute_restricted_command",
@@ -404,10 +444,15 @@ def fix_bug_action(
         fix_proposals[0] = f"Retry the bug fix once the failure in `{target_file}` is addressed."
 
     # When the UI named the task, the verdict lands in the plan, not only in the transcript.
-    # A failed fix keeps (or sets) the task `[!]`; a verified fix clears a failed mark back to
-    # `pending` -- the failure it was marked for has been addressed, so the task is runnable
-    # again -- and leaves a task that was not failed in its own state. Either way it is not
-    # *completed*: a patched bug is not a finished milestone, so only a re-run completes it.
+    # A failed fix sets the task `[!]`; a verified fix records the evidence and leaves the
+    # status alone -- it is not *completed*, because a patched bug is not a finished
+    # milestone, so only a re-run completes it.
+    #
+    # There is deliberately no "clear a failed mark back to pending" branch any more. Under
+    # the two-phase lifecycle a task reaches execution only after approval has already moved
+    # it to `in_progress`, so a `failed` status can never be observed here: the branch was
+    # unreachable, and keeping a ghost "pre-approval" status to feed it would be bolting
+    # linear scripting onto a state machine.
     if target_task_id:
         target_task = None
         for sec in plan_state.get("sections", []):
@@ -424,11 +469,6 @@ def fix_bug_action(
                     f"Verification failed: {failure_reason}"
                 )
             else:
-                if target_task.get("status") == "failed":
-                    # Clear the mark the fix answered for. Reverting to `pending` (not
-                    # `completed`) keeps the runnable-again signal without claiming a
-                    # milestone the fix's own gate never verified.
-                    target_task["status"] = "pending"
                 target_task.setdefault("details", []).append(
                     f"Bug fix verified in `{target_file}`."
                 )
@@ -489,21 +529,47 @@ def next_step_action(
     target_task = None
     target_sec = None
 
-    # Find targeted or top pending task
-    for sec in plan_state.get("sections", []):
-        for t in sec.get("tasks", []):
-            if target_task_id:
+    # Eligibility is the store's answer, not this branch's opinion. A task may run only when
+    # every blocker recorded in ``task_dependencies`` is ``completed``: executing a child
+    # before its parent provisioned the state it depends on is a race, not a schedule. The
+    # status alone is not enough, which is what this replaced.
+    from storage.db import get_store
+
+    store = get_store()
+    plan_id = plan_id_for(get_active_plan_filename())
+
+    def _eligible(task):
+        return store.is_task_eligible(plan_id, str(task.get("id") or ""))
+
+    # Selection, in the order the two-phase lifecycle needs: an explicitly targeted task
+    # wins; otherwise an *approved* task (``in_progress``) is the one to execute, and only
+    # failing that is the top ``pending`` task selected -- which is the one to *plan*. In
+    # every case the node must be unblocked, so a blocked task is never selected and never
+    # planned: an ineligible milestone is not "next".
+    def _first_with(statuses):
+        for section in plan_state.get("sections", []):
+            for task in section.get("tasks", []):
+                if task.get("status") in statuses and _eligible(task):
+                    return task, section
+        return None, None
+
+    if target_task_id:
+        for sec in plan_state.get("sections", []):
+            for t in sec.get("tasks", []):
                 if t.get("id") == target_task_id or t.get("title") == target_task_id:
                     target_task = t
                     target_sec = sec
                     break
-            else:
-                if t.get("status") == "pending":
-                    target_task = t
-                    target_sec = sec
-                    break
-        if target_task:
-            break
+            if target_task:
+                break
+        # An explicitly targeted task that is blocked is refused, not run -- through the same
+        # gate every other path uses, so the payload is identical.
+        if target_task is not None and _refuse_if_blocked(ctx, plan_file, target_task):
+            return
+    else:
+        target_task, target_sec = _first_with(("in_progress",))
+        if not target_task:
+            target_task, target_sec = _first_with(("pending",))
 
     if not target_task:
         ctx.stream_text("software-architect", "> All tasks in active plan are already completed!", delay=0.02)
@@ -519,6 +585,13 @@ def next_step_action(
             }
         })
         ctx.emit_fn({"type": "workflow_complete", "status": "finished", "message": "All steps complete."})
+        return
+
+    # PHASE 1 -- PLAN. A task that has not been approved is planned, announced, and the run
+    # yields. Nothing is written in this phase: execution is a separate, deterministic pass
+    # (orchestration.workflow.executor) that runs only after a human approves the artifact.
+    if planner.needs_planning(target_task):
+        planner.plan_and_yield(ctx, task=target_task, plan_file=plan_file)
         return
 
     # MODULE 6: Multimodal UI Task Handling. UI-ness is the task's tag -- one field -- so
@@ -571,10 +644,10 @@ def next_step_action(
     })
     time.sleep(0.3)
 
-    # Generate code for the task. The template supplies the shape -- the filenames and
-    # the paired test -- while System 2 supplies the main deliverable's contents when a
-    # provider is configured. With no provider, or a failed call, this is byte-identical
-    # to the canned code the branch wrote before the call existed.
+    # ONE LLM call, and it already happened: the approved artifact carries the exact code,
+    # so this half applies it. There is no second generation step -- the plan a human
+    # approved IS the payload that lands on disk. The template still supplies the filenames
+    # and the paired-test name, because those are the shape of the deliverable, not its code.
     deliverable = templates.select(target_task.get("title", ""), target_task.get("tag"))
     # Where the task says its file belongs beats where the template would drop it. Without
     # this a task about `tools/plan_parser.py` is "completed" by writing main.py, which
@@ -582,30 +655,6 @@ def next_step_action(
     target = generation.task_target_path(target_task)
     out_filename = target or deliverable.filename
     out_test = generation.paired_test_path(out_filename) if target else deliverable.test_filename
-    out_test_code = deliverable.test_code
-    generated = generation.generate_deliverable(
-        coder_id=target_coder_id,
-        task=target_task,
-        plan=plan_state,
-        deliverable=deliverable,
-        plan_file=plan_file,
-        filename=out_filename,
-        image_data_urls=[ui_image_data] if ui_image_data else None,
-        # A real call can take seconds; narrate it so the wait does not read as a hang.
-        # The offline path never fires this, so its event stream is unchanged.
-        on_request=lambda model, prompt_chars: ctx.stream_text(
-            target_coder_id,
-            f"> System 2 request: {model} is writing `{out_filename}` "
-            f"from a {prompt_chars:,}-char task slice (no plan dump)...",
-            log_type="decision",
-            delay=0.02,
-        ),
-    )
-    out_code = generated.code
-
-    if generated.used_llm and generated.reasoning:
-        # The model's reasoning about the deliverable, shown in the Coder's card.
-        reasoning.stream_thought(ctx.stream_text, target_coder_id, generated.reasoning)
 
     ctx.stream_text(target_coder_id, f"> Creating snapshot backup of deliverables for rollback safety...", delay=0.02)
     backup_file_for_task(target_task.get("id"), out_filename)
@@ -617,7 +666,16 @@ def next_step_action(
         f"Writing module deliverables to {out_filename}"
     ))
     time.sleep(0.3)
-    _write_checked(target_coder_id, out_filename, out_code)
+    applied = executor.execute_approved(
+        plan_id_for(get_active_plan_filename()),
+        str(target_task.get("id")),
+        workspace_dir=get_project_dir(),
+    )
+    if not applied.success:
+        raise RuntimeError(
+            f"{target_coder_id} could not apply the approved plan: {applied.error}"
+        )
+    out_code = read_source(out_filename) or ""
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Wrote {len(out_code)} chars to {out_filename}"
@@ -628,11 +686,14 @@ def next_step_action(
         f"Writing test suite to {out_test}"
     ))
     time.sleep(0.3)
-    _write_checked(target_coder_id, out_test, out_test_code)
+    out_test_code = read_source(out_test) or ""
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Wrote {len(out_test_code)} chars to {out_test}"
     ))
+    # The narration below reports what a *model call* cost. Nothing was called in this half,
+    # so the shim says so -- and every branch keyed on it stays exactly as it was offline.
+    generated = generation.GeneratedFile(code=out_code, used_llm=False)
 
     # Architect Verification runs *before* the status is written, so its verdict can choose
     # the status. This is the writer the plan's failed state (`[!]`) needs. Two checks, either
@@ -647,7 +708,7 @@ def next_step_action(
     ))
     time.sleep(0.3)
     cmd_to_run = f"python -m py_compile {out_filename}" if out_filename.endswith(".py") else f"python -m py_compile {out_test}"
-    v_res = execute_restricted_command.invoke({"command": cmd_to_run})
+    v_res = ctx.mcp_session.execute(cmd_to_run, restricted=True)
     # The command's block is never empty, so success has to be read from its exit code, not
     # from the string's truthiness (which is always true). Only a non-zero exit is evidence
     # of a syntax error; an inconclusive result -- no exit status at all -- is not.
@@ -807,10 +868,23 @@ def custom_action(
     ctx: WorkflowContext,
     plan_state: Dict[str, Any],
     coder_agents: Dict[str, Dict[str, Any]],
+    action_params: Dict[str, Any],
     user_message: str,
 ) -> None:
     """The Gatekeeper fallback: classify a free-form prompt, then answer or delegate."""
     plan_file = ctx.plan_file
+
+    # A directive aimed at a named node passes the same eligibility gate as the scheduler.
+    # A purely ad-hoc directive names no node and spawns an ephemeral one with no blockers,
+    # which is instantly eligible -- so this check is a no-op for it, by construction.
+    target_task_id = action_params.get("targetTaskId")
+    if target_task_id:
+        directive_node = planner.task_by_id(plan_state, target_task_id) or planner.task_by_dag_id(
+            plan_id_for(get_active_plan_filename()), target_task_id
+        )
+        if directive_node is not None and _refuse_if_blocked(ctx, plan_file, directive_node):
+            return
+
     verdict = laya_model.classify(user_message)
     is_admin_bypass = verdict.intent == laya_gate.INTENT_ADMIN
 
@@ -927,29 +1001,33 @@ def custom_action(
     target = generation.path_in_text(user_message)
     filename = target or deliverable.filename
     test_filename = generation.paired_test_path(filename) if target else deliverable.test_filename
-    test_content = deliverable.test_code
-    generated = generation.generate_code(
-        coder_id=target_coder_id,
-        filename=filename,
-        context_text=user_message,
-        task_title=user_message,
-        plan_file=ctx.plan_file,
-        fallback_code=deliverable.code,
-        on_request=lambda model, prompt_chars: ctx.stream_text(
-            target_coder_id,
-            f"> System 2 request: {model} is writing `{filename}` "
-            f"from the directive ({prompt_chars:,} prompt chars)...",
-            log_type="decision",
-            delay=0.02,
-        ),
+
+    # PHASE 1 -- PLAN, with DAG supremacy: a free-form directive that named no plan task
+    # gets an ephemeral node, then follows the identical lifecycle. The whole directive is
+    # the task's detail, so the planner plans against the request and not only its title.
+    directive_task = planner.ensure_task_for_directive(
+        plan_id=plan_id_for(get_active_plan_filename()),
+        task=None,
+        title=(user_message or "Custom directive")[:80],
+        files=[filename, test_filename],
+        details=[user_message],
     )
-    code_content = generated.code
-    if generated.used_llm and generated.reasoning:
-        reasoning.stream_thought(ctx.stream_text, target_coder_id, generated.reasoning)
+    if planner.needs_planning(directive_task):
+        planner.plan_and_yield(ctx, task=directive_task, plan_file=plan_file)
+        return
     backup_file_for_task("custom", filename)
     ctx.stream_text(target_coder_id, f"> Writing custom code solution to `{filename}`...", delay=0.02)
-    _write_checked(target_coder_id, filename, code_content)
-    _write_checked(target_coder_id, test_filename, test_content)
+    # The approved artifact is the payload: the executor applies it verbatim, with no model
+    # call in this half.
+    applied = executor.execute_approved(
+        plan_id_for(get_active_plan_filename()),
+        str(directive_task.get("id")),
+        workspace_dir=get_project_dir(),
+    )
+    if not applied.success:
+        raise RuntimeError(
+            f"{target_coder_id} could not apply the approved plan: {applied.error}"
+        )
 
     ctx.emit_fn({
         "type": "coder_summary",
@@ -967,7 +1045,7 @@ def custom_action(
     time.sleep(0.3)
 
     ctx.stream_text("software-architect", f"> Verifying custom implementation via restricted shell...", delay=0.02)
-    v_res = execute_restricted_command.invoke({"command": f"python -m py_compile {filename}"})
+    v_res = ctx.mcp_session.execute(f"python -m py_compile {filename}", restricted=True)
 
     # The verdict is the check's, not a literal. ``v_res`` was previously computed and never
     # read, so a directive that wrote broken code still reported "Verified & Approved"

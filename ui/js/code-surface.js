@@ -19,6 +19,9 @@
 // quoted literal, then a path or URL. The marker alternative is anchored with ^ and the
 // pattern carries no m flag, so it only matches at the head of a line -- and because
 // exec() advances lastIndex past index 0, it fires at most once per line.
+import { escapeHtml } from "./dom.js";
+import { setHtml } from "./safe-dom.js";
+
 const CODE_SURFACE_RE = new RegExp(
   [
     "(^\\s*(?:#{1,6}|[-*+]|\\d+[.)]|>)(?=\\s))",
@@ -125,7 +128,7 @@ function buildCodeSurface(textarea) {
 
   const paint = () => {
     mirrorScrollbarWidth();
-    highlight.innerHTML = codeSurfaceHighlight(textarea.value);
+    setHtml(highlight, codeSurfaceHighlight(textarea.value));
     highlight.scrollTop = textarea.scrollTop;
     highlight.scrollLeft = textarea.scrollLeft;
   };
@@ -169,7 +172,7 @@ function watchCodeSurfaceDialog(textarea, paint) {
   observer.observe(overlay, { attributes: true, attributeFilter: ["style"] });
 }
 
-function initCodeSurfaces() {
+export function initCodeSurfaces() {
   const fields = document.querySelectorAll(".modal-textarea-input");
   for (let i = 0; i < fields.length; i++) {
     buildCodeSurface(fields[i]);
@@ -181,7 +184,7 @@ function initCodeSurfaces() {
 // so a surface that is revealed by a route the watcher above cannot see needs this. The
 // docked command drawer is one: it raises a class on the dock, not a display of its own,
 // and it resets its fields even when it is already open.
-function repaintCodeSurfaces() {
+export function repaintCodeSurfaces() {
   for (let i = 0; i < CODE_SURFACE_PAINTERS.length; i++) {
     CODE_SURFACE_PAINTERS[i]();
   }

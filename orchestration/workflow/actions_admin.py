@@ -17,7 +17,6 @@ from agents import laya as laya_gate
 from agents.laya import inferred_ui
 from tools.code_metrics import analyze_workspace_metrics
 from tools.file_tools import (
-    PLAN_JSON_FILE,
     audit_codebase_plan_sync,
     check_plan_structure,
     compile_plan_json_to_markdown,
@@ -27,9 +26,10 @@ from tools.file_tools import (
     parse_markdown_to_plan_dict,
     save_plan_state,
 )
+from storage.db import DB_FILENAME
 from tools.plan_state import append_pending_task, read_plan_markdown
 from tools.recovery import get_backup_dir, snapshot_plan_revision
-from tools.shell_tools import command_failed, execute_restricted_command
+from tools.shell_result import command_failed
 from tools.task_tags import UI_TAG
 
 
@@ -202,7 +202,7 @@ def analyze_action(ctx: WorkflowContext) -> None:
     drift = laya_gate.plan_drift(
         load_plan_state(),
         file_names,
-        ignore={PLAN_JSON_FILE, get_active_plan_filename()},
+        ignore={DB_FILENAME, get_active_plan_filename()},
     )
     if drift.probability >= laya_gate.DRIFT_THRESHOLD:
         audit_res = audit_codebase_plan_sync()
@@ -242,7 +242,7 @@ def analyze_action(ctx: WorkflowContext) -> None:
             f"Validating syntax for {pyf}"
         ))
         time.sleep(0.2)
-        comp_res = execute_restricted_command.invoke({"command": f"python -m py_compile {pyf}"})
+        comp_res = ctx.mcp_session.execute(f"python -m py_compile {pyf}", restricted=True)
         tested_files.append(pyf)
         ctx.emit_fn(tool_result(
             "software-architect", "execute_restricted_command",

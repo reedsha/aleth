@@ -9,6 +9,11 @@
 //    A route with no value is a legitimate way to reset it, and the default is shown next
 //    to the field so the result is visible before saving.
 
+import { escapeHtml } from "./dom.js";
+import { refreshEnvironmentVariables } from "./env.js";
+import { setHtml } from "./safe-dom.js";
+import { DOM } from "./store.js";
+
 function settingsHasBridge() {
   return !!(window.pywebview && window.pywebview.api &&
     typeof window.pywebview.api.get_settings === "function");
@@ -50,9 +55,9 @@ function settingsFieldMarkup(field) {
 function renderSettings(payload) {
   if (!DOM.settingsFields) return;
   const fields = (payload && payload.fields) || [];
-  DOM.settingsFields.innerHTML = fields.length
+  setHtml(DOM.settingsFields, fields.length
     ? fields.map(settingsFieldMarkup).join("")
-    : '<div class="settings-help">No settings are available.</div>';
+    : '<div class="settings-help">No settings are available.</div>');
 }
 
 function setSettingsStatus(message, kind) {
@@ -124,7 +129,7 @@ async function saveSettingsFromForm() {
   }
 }
 
-function initSettingsPanel() {
+export function initSettingsPanel() {
   if (DOM.btnOpenSettings) DOM.btnOpenSettings.addEventListener("click", openSettingsModal);
   if (DOM.btnCloseSettingsModal) DOM.btnCloseSettingsModal.addEventListener("click", closeSettingsModal);
   if (DOM.btnCancelSettings) DOM.btnCancelSettings.addEventListener("click", closeSettingsModal);

@@ -1,23 +1,25 @@
-"""Agent introspection: reflection over the ``agents/`` packages.
+"""Agent introspection: the explicit role catalog, and the factory that builds agents.
 
-``AgentRegistry.scan_agents`` used to inline all of this. The logic is pure with
-respect to the registry -- it reads the agent modules and returns two grouped
-dictionaries -- with the single exception of prompt-variable interpolation, which
-is injected as a callable so this module never needs the registry back.
+This module used to *discover* agents -- it iterated ``dir(agents.architect)`` looking for a
+``CompiledStateGraph`` instance and read the coder roles off whatever it found. That is why the
+architect could not be removed from module scope: the registry depended on an object being *there*
+when the module was imported, so the global was load-bearing and the catalog was a reflection
+routine rather than a definition.
 
-Keeping the reflection here makes the "what does the UI see about an agent?"
-contract testable without standing up a registry, and keeps the registry focused
-on workflow orchestration.
+Now the roles are explicit data and the catalog is a description. :func:`build_catalog` reports
+what roles exist; :func:`build_agent` is the one place an agent is constructed, from a role and the
+run's MCP session. No scanning, no globals, no import-time coupling to an instance.
 """
 
 import os
-from typing import Any, Callable, Dict, Tuple
-
-from langgraph.graph.state import CompiledStateGraph
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import agents.architect as arch_mod
 import agents.coders as coders_mod
-from agents.model_routing import architect_model, coder_model
+from agents.model_routing import coder_model
+from agents.roles import AgentRole
+
+ARCHITECT_ROLE = arch_mod.ARCHITECT_ROLE
 
 
 def resolve_prompt_variables(prompt: str, active_plan: str) -> str:
@@ -27,82 +29,81 @@ def resolve_prompt_variables(prompt: str, active_plan: str) -> str:
     return prompt.replace("{{ACTIVE_PLAN_FILE}}", active_plan)
 
 
-def build_catalog(resolve: Callable[[str], str]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Dynamically inspects, tracks, and groups available agents into Main and Coder tiers.
+def build_agent(role: AgentRole, context: Any = None) -> Any:
+    """The deterministic factory: a role and a session in, a compiled agent out.
 
-    ``resolve`` interpolates template variables in the prompts that get surfaced to
-    the UI; the registry passes its own bound ``resolve_prompt_variables``.
+    ``context`` is the run's :class:`~orchestration.mcp_session.MCPSessionContext`, and it is what
+    supplies the tools -- so an agent's manifest is whatever the MCP servers advertise at the
+    moment it is built. With no context an agent is built with no tools rather than a snapshot.
 
-    Returns ``(main_agents, coder_agents)``, both keyed by agent id.
+    An unknown role is a refusal, not a fallback: silently building the wrong agent is how a swarm
+    dispatches a node to a worker that cannot do its job.
     """
-    main_agents: Dict[str, Any] = {}
-    coder_agents: Dict[str, Any] = {}
+    if role.name == ARCHITECT_ROLE.name:
+        from agents.architect import build_architect_agent
 
-    # 1. Scan Main Agents from agents.architect
-    for attr_name in dir(arch_mod):
-        obj = getattr(arch_mod, attr_name)
-        # Check for instances initialized via create_deep_agent (CompiledStateGraph)
-        if isinstance(obj, CompiledStateGraph) or hasattr(obj, "nodes"):
-            agent_id = getattr(obj, "name", None) or getattr(obj, "agent_name", "software-architect")
-            display_name = getattr(obj, "display_name", "Lead Software Architect")
-            system_prompt = getattr(arch_mod, "ARCHITECT_SYSTEM_PROMPT", "")
-            core_prompt = getattr(arch_mod, "ARCHITECT_CORE_PROMPT", system_prompt)
-            custom_instructions = getattr(arch_mod, "ARCHITECT_CUSTOM_INSTRUCTIONS", "")
-            model = getattr(obj, "model_name", architect_model())
-            subagents = getattr(obj, "subagents_list", coders_mod.all_coders)
-            subagent_names = [sub.get("name") for sub in subagents if isinstance(sub, dict)]
+        return build_architect_agent(mcp_session=context)
+    if role.name in coders_mod.ROLE_BY_NAME:
+        return coders_mod.build_coder_agent(role, context)
+    raise ValueError(f"unknown role requested: {role.name!r}")
 
-            tools_list = []
-            for t in getattr(obj, "tools_list", []):
-                tools_list.append(getattr(t, "name", str(t)))
 
-            main_agents[agent_id] = {
-                "id": agent_id,
-                "name": agent_id,
-                "display_name": display_name,
-                "type": "main",
-                "role": "Coordinator",
-                "model": model,
-                "system_prompt": resolve(system_prompt),
-                "core_prompt": resolve(core_prompt),
-                "custom_instructions": custom_instructions,
-                "subagents": subagent_names,
-                "tools": tools_list,
-                "file_path": os.path.abspath(arch_mod.__file__),
-                "status": "ready"
-            }
+def _coder_entry(role: AgentRole, *, parent_agent: str, resolve: Callable[[str], str]) -> Dict[str, Any]:
+    """One coder role as the UI's catalog reports it."""
+    if role.name == "coder-deep":
+        core = getattr(coders_mod, "CODER_DEEP_CORE_PROMPT", role.system_prompt)
+        custom = getattr(coders_mod, "CODER_DEEP_CUSTOM_INSTRUCTIONS", "")
+    else:
+        core = getattr(coders_mod, "CODER_STANDARD_CORE_PROMPT", role.system_prompt)
+        custom = getattr(coders_mod, "CODER_STANDARD_CUSTOM_INSTRUCTIONS", "")
 
-            # 2. Scan Coder Agents passed into subagents array
-            for sub in subagents:
-                if isinstance(sub, dict) and not isinstance(sub, CompiledStateGraph):
-                    sub_id = sub.get("name", "coder")
-                    sub_tools = [getattr(t, "name", str(t)) for t in sub.get("tools", [])]
+    return {
+        "id": role.name,
+        "name": role.name,
+        "display_name": role.display_name,
+        "type": "coder",
+        "role": "Sub-Agent",
+        "model": role.model or coder_model(role.name),
+        "description": role.description,
+        "system_prompt": resolve(role.system_prompt),
+        "core_prompt": resolve(core),
+        "custom_instructions": custom,
+        # Bound per node from the MCP session, never snapshotted into the catalog.
+        "tools": [],
+        "parent_agent": parent_agent,
+        "file_path": os.path.abspath(coders_mod.__file__),
+        "status": "ready",
+    }
 
-                    if sub_id == "coder-deep":
-                        coder_core = getattr(coders_mod, "CODER_DEEP_CORE_PROMPT", sub.get("system_prompt", ""))
-                        coder_custom = getattr(coders_mod, "CODER_DEEP_CUSTOM_INSTRUCTIONS", "")
-                    elif sub_id == "coder-standard":
-                        coder_core = getattr(coders_mod, "CODER_STANDARD_CORE_PROMPT", sub.get("system_prompt", ""))
-                        coder_custom = getattr(coders_mod, "CODER_STANDARD_CUSTOM_INSTRUCTIONS", "")
-                    else:
-                        coder_core = sub.get("system_prompt", "")
-                        coder_custom = ""
 
-                    coder_agents[sub_id] = {
-                        "id": sub_id,
-                        "name": sub_id,
-                        "display_name": sub.get("display_name", sub_id.replace("-", " ").title()),
-                        "type": "coder",
-                        "role": "Sub-Agent",
-                        "model": sub.get("model", coder_model(sub_id)),
-                        "description": sub.get("description", ""),
-                        "system_prompt": resolve(sub.get("system_prompt", "")),
-                        "core_prompt": resolve(coder_core),
-                        "custom_instructions": coder_custom,
-                        "tools": sub_tools,
-                        "parent_agent": agent_id,
-                        "file_path": os.path.abspath(coders_mod.__file__),
-                        "status": "ready"
-                    }
+def build_catalog(resolve: Callable[[str], str]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """The roles that exist, as ``(main_agents, coder_agents)`` keyed by agent id.
 
+    A description, not a discovery: the architect is one explicit role and the coders are the
+    explicit tuple, so nothing is inferred from what happens to be in a module's namespace. The
+    ``tools`` list is empty by construction -- a tool set is bound per node at spawn time.
+    """
+    architect = ARCHITECT_ROLE
+    main_agents: Dict[str, Any] = {
+        architect.name: {
+            "id": architect.name,
+            "name": architect.name,
+            "display_name": architect.display_name,
+            "type": "main",
+            "role": "Coordinator",
+            "model": architect.model,
+            "system_prompt": resolve(architect.system_prompt),
+            "core_prompt": resolve(getattr(arch_mod, "ARCHITECT_CORE_PROMPT", architect.system_prompt)),
+            "custom_instructions": getattr(arch_mod, "ARCHITECT_CUSTOM_INSTRUCTIONS", ""),
+            "subagents": [role.name for role in coders_mod.CODER_ROLES],
+            "tools": [],
+            "file_path": os.path.abspath(arch_mod.__file__),
+            "status": "ready",
+        }
+    }
+
+    coder_agents: Dict[str, Any] = {
+        role.name: _coder_entry(role, parent_agent=architect.name, resolve=resolve)
+        for role in coders_mod.CODER_ROLES
+    }
     return main_agents, coder_agents

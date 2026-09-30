@@ -1,0 +1,18 @@
+[package]
+name = "deepagents_core"
+version = "0.1.0"
+edition = "2021"
+description = "Compiled core engine for DeepAgents Studio: plan parsing, dual-sync state and context slicing."
+license = "MIT"
+
+[lib]
+name = "deepagents_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fs2 = "0.4.3"
+pulldown-cmark = "0.13.4"
+pyo3 = { version = "0.29.2", features = ["extension-module"] }
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }

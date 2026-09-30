@@ -1,0 +1,21 @@
+{
+  "tier_0": {
+    "provider": "openai",
+    "model_name": "policy/coder-standard-test",
+    "base_url": "https://api.example.com/v1"
+  },
+
+  "tier_1": {
+    "provider": "openai",
+    "model_name": "policy/coder-deep-test",
+    "base_url": "https://api.example.com/v1",
+    "api_key": "sk-tier1-required"
+  },
+
+  "tier_2": {
+    "provider": "openai",
+    "model_name": "policy/coder-deep-test",
+    "base_url": "https://api.example.com/v1",
+    "api_key": "sk-tier2-required"
+  }
+}

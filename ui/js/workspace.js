@@ -1,8 +1,14 @@
 // ui/js/workspace.js — Workspace file browser, codebase sync audit, and task rollback modals.
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { planStateSummaryHtml, renderPlanTree } from "./plan-tree.js";
+import { setHtml } from "./safe-dom.js";
+import { DOM, state } from "./store.js";
+
 let cachedWorkspaceFiles = [];
 
-async function openWorkspaceFilesModal() {
-  if (DOM.modalFilesList) DOM.modalFilesList.innerHTML = "<div style='color: #64748b; font-size: 12px; padding: 20px; text-align: center;'>Loading workspace files...</div>";
+export async function openWorkspaceFilesModal() {
+  if (DOM.modalFilesList) setHtml(DOM.modalFilesList, "<div style='color: #64748b; font-size: 12px; padding: 20px; text-align: center;'>Loading workspace files...</div>");
   if (DOM.filesModalOverlay) DOM.filesModalOverlay.style.display = "flex";
   if (DOM.inputSearchWorkspaceFiles) DOM.inputSearchWorkspaceFiles.value = "";
 
@@ -27,10 +33,16 @@ async function openWorkspaceFilesModal() {
 
   cachedWorkspaceFiles = files;
   renderFilteredWorkspaceFiles("");
-  setTimeout(() => DOM.inputSearchWorkspaceFiles && DOM.inputSearchWorkspaceFiles.focus(), 60);
+  // The modal overlay was just shown in this same task, so it has no box to receive focus
+  // yet; the next frame focuses after layout instead of after a fixed 60 ms guess.
+  const search = DOM.inputSearchWorkspaceFiles;
+  if (search) {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => search.focus && search.focus());
+    else if (search.focus) search.focus();
+  }
 }
 
-function renderFilteredWorkspaceFiles(query = "") {
+export function renderFilteredWorkspaceFiles(query = "") {
   if (!DOM.modalFilesList) return;
   const q = (query || "").toLowerCase().trim();
   const filtered = q
@@ -42,7 +54,7 @@ function renderFilteredWorkspaceFiles(query = "") {
   }
 
   if (filtered.length === 0) {
-    DOM.modalFilesList.innerHTML = `<div style="color: #64748b; font-size: 13px; text-align: center; padding: 30px;">${q ? "No files match filter." : "No files in workspace yet."}</div>`;
+    setHtml(DOM.modalFilesList, `<div style="color: #64748b; font-size: 13px; text-align: center; padding: 30px;">${q ? "No files match filter." : "No files in workspace yet."}</div>`);
     return;
   }
 
@@ -64,17 +76,17 @@ function renderFilteredWorkspaceFiles(query = "") {
     html += `<div style="color: #64748b; font-size: 11px; text-align: center; padding: 8px;">Showing first ${displayLimit} of ${filtered.length} files. Use filter search above for specific files.</div>`;
   }
 
-  DOM.modalFilesList.innerHTML = html;
+  setHtml(DOM.modalFilesList, html);
 }
 
-function closeWorkspaceFilesModal() {
+export function closeWorkspaceFilesModal() {
   if (DOM.filesModalOverlay) DOM.filesModalOverlay.style.display = "none";
 }
 
 // ============================================================================
 // Module 5: Codebase & Plan Sync Audit Modal
 // ============================================================================
-async function openAuditModal() {
+export async function openAuditModal() {
   // Show modal immediately with scanning state
   setAuditRailMode("audit");
   DOM.auditModalOverlay.style.display = "flex";
@@ -83,8 +95,8 @@ async function openAuditModal() {
     DOM.auditStatusPill.className = "audit-status-pill scanning";
   }
   if (DOM.auditStatusSummary) DOM.auditStatusSummary.textContent = "Analyzing workspace files vs plan.json...";
-  if (DOM.listAuditMissing) DOM.listAuditMissing.innerHTML = "<em style='color:#64748b;font-size:11px;'>Loading...</em>";
-  if (DOM.listAuditExisting) DOM.listAuditExisting.innerHTML = "<em style='color:#64748b;font-size:11px;'>Loading...</em>";
+  if (DOM.listAuditMissing) setHtml(DOM.listAuditMissing, "<em style='color:#64748b;font-size:11px;'>Loading...</em>");
+  if (DOM.listAuditExisting) setHtml(DOM.listAuditExisting, "<em style='color:#64748b;font-size:11px;'>Loading...</em>");
   if (DOM.badgeMissingFilesCount) DOM.badgeMissingFilesCount.textContent = "…";
   if (DOM.badgeExistingFilesCount) DOM.badgeExistingFilesCount.textContent = "…";
   if (DOM.txtUntrackedFiles) DOM.txtUntrackedFiles.textContent = "Scanning...";
@@ -143,12 +155,12 @@ function setAuditRailMode(mode) {
 }
 
 // The bento summary tile's expand affordance: the full standing context, in the rail.
-function openPlanSummaryPanel() {
+export function openPlanSummaryPanel() {
   if (!DOM.auditModalOverlay) return;
   setAuditRailMode("summary");
   if (DOM.txtAuditSummaryFull) {
-    DOM.txtAuditSummaryFull.innerHTML = planStateSummaryHtml(state.planJson)
-      || '<div class="plan-summary-bullet">No global state summary in this plan.</div>';
+    setHtml(DOM.txtAuditSummaryFull, planStateSummaryHtml(state.planJson)
+      || '<div class="plan-summary-bullet">No global state summary in this plan.</div>');
   }
   DOM.auditModalOverlay.style.display = "flex";
 }
@@ -171,15 +183,15 @@ function renderAuditResults(audit) {
   if (DOM.badgeMissingFilesCount) DOM.badgeMissingFilesCount.textContent = missingItems.length;
   if (DOM.listAuditMissing) {
     if (missingItems.length === 0) {
-      DOM.listAuditMissing.innerHTML = "<span style='color:#64748b;font-size:11px;'>No completed tasks with missing deliverables.</span>";
+      setHtml(DOM.listAuditMissing, "<span style='color:#64748b;font-size:11px;'>No completed tasks with missing deliverables.</span>");
     } else {
-      DOM.listAuditMissing.innerHTML = missingItems.map(item => `
+      setHtml(DOM.listAuditMissing, missingItems.map(item => `
         <div class="audit-item">
           <div class="audit-item-title">${escapeHtml(item.title)}</div>
           <div class="audit-item-section">${escapeHtml(item.section || "")}</div>
           <div class="audit-item-files">${(item.missing_files || []).map(f => `<code>${escapeHtml(f)}</code>`).join(", ")}</div>
         </div>
-      `).join("");
+      `).join(""));
     }
   }
 
@@ -188,15 +200,15 @@ function renderAuditResults(audit) {
   if (DOM.badgeExistingFilesCount) DOM.badgeExistingFilesCount.textContent = existingItems.length;
   if (DOM.listAuditExisting) {
     if (existingItems.length === 0) {
-      DOM.listAuditExisting.innerHTML = "<span style='color:#64748b;font-size:11px;'>No pending tasks with pre-existing code.</span>";
+      setHtml(DOM.listAuditExisting, "<span style='color:#64748b;font-size:11px;'>No pending tasks with pre-existing code.</span>");
     } else {
-      DOM.listAuditExisting.innerHTML = existingItems.map(item => `
+      setHtml(DOM.listAuditExisting, existingItems.map(item => `
         <div class="audit-item">
           <div class="audit-item-title">${escapeHtml(item.title)}</div>
           <div class="audit-item-section">${escapeHtml(item.section || "")}</div>
           <div class="audit-item-files">${(item.existing_files || []).map(f => `<code>${escapeHtml(f)}</code>`).join(", ")}</div>
         </div>
-      `).join("");
+      `).join(""));
     }
   }
 
@@ -204,12 +216,12 @@ function renderAuditResults(audit) {
   const untracked = audit.untracked_files || [];
   if (DOM.txtUntrackedFiles) {
     if (untracked.length === 0) {
-      DOM.txtUntrackedFiles.innerHTML = "<span style='color:#64748b;'>None</span>";
+      setHtml(DOM.txtUntrackedFiles, "<span style='color:#64748b;'>None</span>");
     } else {
       const maxShow = 40;
       const preview = untracked.slice(0, maxShow).map(f => `<code>${escapeHtml(f)}</code>`).join(" ");
       const extra = untracked.length > maxShow ? ` <span style='color:#64748b; font-size:10.5px;'>...and ${untracked.length - maxShow} more</span>` : "";
-      DOM.txtUntrackedFiles.innerHTML = preview + extra;
+      setHtml(DOM.txtUntrackedFiles, preview + extra);
     }
   }
 
@@ -218,7 +230,7 @@ function renderAuditResults(audit) {
   if (DOM.btnForceCodeToPlan) DOM.btnForceCodeToPlan.disabled = audit.in_sync;
 }
 
-async function handleAuditResolution(resolutionType) {
+export async function handleAuditResolution(resolutionType) {
   if (DOM.btnSyncPlanToCode) DOM.btnSyncPlanToCode.disabled = true;
   if (DOM.btnForceCodeToPlan) DOM.btnForceCodeToPlan.disabled = true;
 
@@ -249,7 +261,7 @@ async function handleAuditResolution(resolutionType) {
   }
 }
 
-function closeAuditModal() {
+export function closeAuditModal() {
   DOM.auditModalOverlay.style.display = "none";
 }
 
@@ -258,7 +270,7 @@ function closeAuditModal() {
 // ============================================================================
 let rollbackTargetTask = null;
 
-function openRollbackModal(task) {
+export function openRollbackModal(task) {
   rollbackTargetTask = task;
 
   // Populate task title
@@ -278,11 +290,11 @@ function openRollbackModal(task) {
     const allFiles = [...new Set([...files, ...detailFiles])];
 
     if (allFiles.length === 0) {
-      DOM.rollbackFilesList.innerHTML = "<li style='color:#64748b;'>No specific deliverables recorded for this task.</li>";
+      setHtml(DOM.rollbackFilesList, "<li style='color:#64748b;'>No specific deliverables recorded for this task.</li>");
     } else {
-      DOM.rollbackFilesList.innerHTML = allFiles.map(f =>
+      setHtml(DOM.rollbackFilesList, allFiles.map(f =>
         `<li><code>${escapeHtml(f)}</code></li>`
-      ).join("");
+      ).join(""));
     }
   }
 
@@ -293,12 +305,12 @@ function openRollbackModal(task) {
   DOM.rollbackModalOverlay.style.display = "flex";
 }
 
-function closeRollbackModal() {
+export function closeRollbackModal() {
   DOM.rollbackModalOverlay.style.display = "none";
   rollbackTargetTask = null;
 }
 
-async function handleConfirmRollback() {
+export async function handleConfirmRollback() {
   if (!rollbackTargetTask) return;
 
   const taskId = rollbackTargetTask.id;

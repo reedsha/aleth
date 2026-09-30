@@ -2,7 +2,14 @@
 // ============================================================================
 // Plan Setup & Creation Modals (Split: Switch vs Create)
 // ============================================================================
-async function openSwitchPlanModal() {
+import { emit } from "./bus.js";
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { applyPlanData } from "./plan-tree.js";
+import { setHtml, setText } from "./safe-dom.js";
+import { DOM, setAvailablePlans, state } from "./store.js";
+
+export async function openSwitchPlanModal() {
   if (!DOM.switchPlanModalOverlay) return;
   DOM.switchPlanModalOverlay.style.display = "flex";
   // The set of plan files is a backend fact, not something to remember from the last
@@ -14,7 +21,7 @@ async function openSwitchPlanModal() {
   if (api && typeof api.get_plan_files === "function") {
     try {
       const plans = await api.get_plan_files();
-      if (Array.isArray(plans)) state.availablePlans = plans;
+      setAvailablePlans(plans);
     } catch (_err) {
       /* offline / no bridge: fall back to the list already in state */
     }
@@ -22,18 +29,24 @@ async function openSwitchPlanModal() {
   renderExistingPlansList();
 }
 
-function closeSwitchPlanModal() {
+export function closeSwitchPlanModal() {
   DOM.switchPlanModalOverlay.style.display = "none";
 }
 
-function openCreatePlanModal() {
+export function openCreatePlanModal() {
   DOM.inputNewPlanName.value = "PLAN.md";
   DOM.inputProjectIdea.value = "";
   DOM.createPlanModalOverlay.style.display = "flex";
-  setTimeout(() => DOM.inputProjectIdea && DOM.inputProjectIdea.focus(), 60);
+  // The overlay was just shown in this same task, so it has no box to receive focus yet;
+  // the next frame puts focus after layout instead of after a fixed 60 ms guess.
+  const field = DOM.inputProjectIdea;
+  if (field) {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => field.focus && field.focus());
+    else if (field.focus) field.focus();
+  }
 }
 
-function closeCreatePlanModal() {
+export function closeCreatePlanModal() {
   DOM.createPlanModalOverlay.style.display = "none";
 }
 
@@ -49,9 +62,9 @@ function openNormalizeGateModal(planName, report) {
   const issues = (report && report.issues) || [];
   const counts = (report && report.counts) || {};
 
-  DOM.normalizeGateIssues.innerHTML = issues
+  setHtml(DOM.normalizeGateIssues, issues
     .map((text) => `<li>${escapeHtml(text)}</li>`)
-    .join("");
+    .join(""));
 
   const pills = [
     `sections: ${counts.sections || 0}`,
@@ -59,14 +72,14 @@ function openNormalizeGateModal(planName, report) {
     `bullets: ${counts.bullets || 0}`,
     planName ? `file: ${planName}` : "",
   ].filter(Boolean);
-  DOM.normalizeGateCounts.innerHTML = pills
+  setHtml(DOM.normalizeGateCounts, pills
     .map((text) => `<span class="normalize-gate-pill">${escapeHtml(text)}</span>`)
-    .join("");
+    .join(""));
 
   DOM.normalizeGateModalOverlay.style.display = "flex";
 }
 
-function closeNormalizeGateModal() {
+export function closeNormalizeGateModal() {
   DOM.normalizeGateModalOverlay.style.display = "none";
 }
 
@@ -74,7 +87,7 @@ function closeNormalizeGateModal() {
 // lock and Stop like any other launch -- it used to bypass both, letting a second action stop
 // it mid-write while the UI showed no run at all (audit M2/H7). Progress still streams as
 // normal agent events.
-async function handleNormalizeGateConfirm() {
+export async function handleNormalizeGateConfirm() {
   closeNormalizeGateModal();
   const api = window.pywebview && window.pywebview.api;
   if (!api || typeof api.normalize_plan !== "function") {
@@ -86,18 +99,18 @@ async function handleNormalizeGateConfirm() {
     return;
   }
   showToast("Formatting plan via Architect...", "info");
-  beginRunUi();
+  emit("run:begin");
   try {
     const res = await api.normalize_plan();
-    if (res && res.success === false) abortRunUi(res.error || "A run is already in progress.");
+    if (res && res.success === false) emit("run:abort", { message: res.error || "A run is already in progress." });
   } catch (err) {
-    abortRunUi(`Could not format the plan: ${(err && err.message) || err}`);
+    emit("run:abort", { message: `Could not format the plan: ${(err && err.message) || err}` });
   }
 }
 
 // Asks the backend whether the plan just switched to can be read as a milestone plan.
 // Read-only, and a bridge without the method leaves the plan open exactly as before.
-async function checkPlanStructureGate(planName) {
+export async function checkPlanStructureGate(planName) {
   const api = window.pywebview && window.pywebview.api;
   if (!api || !api.validate_plan_structure) return;
   try {
@@ -109,10 +122,10 @@ async function checkPlanStructureGate(planName) {
 }
 
 function renderExistingPlansList() {
-  DOM.existingPlansList.innerHTML = "";
+  setText(DOM.existingPlansList, "");
   const plans = Array.isArray(state.availablePlans) ? state.availablePlans : [];
   if (plans.length === 0) {
-    DOM.existingPlansList.innerHTML = `<span style="font-size: 11px; color: #64748b;">No existing .md files found in workspace.</span>`;
+    setHtml(DOM.existingPlansList, `<span style="font-size: 11px; color: #64748b;">No existing .md files found in workspace.</span>`);
     return;
   }
 
@@ -150,7 +163,7 @@ function renderExistingPlansList() {
   });
 }
 
-async function handleCreatePlanSubmit() {
+export async function handleCreatePlanSubmit() {
   const planName = DOM.inputNewPlanName.value.trim() || "PLAN.md";
   const idea = DOM.inputProjectIdea.value.trim() || "Custom Software Project";
 

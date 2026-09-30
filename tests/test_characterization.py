@@ -18,10 +18,18 @@ import unittest
 from unittest import mock
 
 from tools import file_tools as ft
-from tools.shell_tools import command_exit_code, command_failed
+from tools import workspace as workspace_module
+from tools.shell_result import command_exit_code, command_failed
 from tools.task_tags import UI_TAG
 from tools.workspace import get_plan_dir, set_plan_dir
 from orchestration.workflow import templates
+from storage.db import DB_FILENAME
+
+# Commands now run in a Docker container. This suite runs on a machine with no Docker daemon,
+# so the runtime is the in-repo double (``tests/fake_docker.py``): the argv, the child process
+# and the output plumbing are real, and only the container itself is emulated.
+FAKE_DOCKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_docker.py")
+FAKE_DOCKER_ENV = {"DEEPAGENTS_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
 
 PLAN_MD = """# Project Plan: Demo
 
@@ -297,14 +305,76 @@ class PlanParserTests(unittest.TestCase):
         self.assertEqual(steps[1]["title"], "Dashboard view")
 
 
+def _read_if_present(path):
+    """The file's bytes, or None when it is absent or unreadable right now.
+
+    Best-effort on purpose. This repository is synced by OneDrive, which takes short
+    exclusive handles on files in it, and a hiccup in a harness fixture must not fail
+    whichever test happened to be starting. An unreadable file reads as changed, which
+    makes the caller put the snapshot back -- the safe direction.
+    """
+    for attempt in range(5):
+        try:
+            with open(path, "rb") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            return None
+        except OSError:
+            if attempt == 4:
+                return None
+            time.sleep(0.05)
+    return None
+
+
+def _restore_file(path, content):
+    """Puts the developer's file back: retried, and reported rather than raised.
+
+    A restore that cannot be made is not worth failing a test over -- the plan state is
+    derived and rebuildable -- but it is worth saying out loud, so a persistently locked
+    file is not mistaken for a clean run.
+    """
+    for attempt in range(10):
+        try:
+            with open(path, "wb") as fh:
+                fh.write(content)
+            return
+        except OSError as error:
+            if attempt == 9:
+                print(f"[harness] could not restore {path}: {error}")
+            else:
+                time.sleep(0.05)
+
+
+def _remove_file(path):
+    """Deletes a file that appeared during a test, retried like the restore."""
+    for attempt in range(10):
+        try:
+            os.remove(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            if attempt == 9:
+                print(f"[harness] could not remove {path}: {error}")
+            else:
+                time.sleep(0.05)
+
+
 class WorkspaceTestCase(unittest.TestCase):
     """Base class: isolates every test in a throwaway workspace.
 
-    The real workspace files are snapshotted and restored so the developer's
-    ``my_project_workspace`` is never mutated by the suite.
+    The real plan directory is the developer's own repository, so the suite points both
+    pointers at a temporary directory for the length of each test and puts them back
+    afterwards. Putting them back is done by assigning the module globals rather than by
+    calling the setters: the setters load the plan, which would create a state database in
+    the developer's own directory on every single test.
+
+    The real files are still snapshotted, and put back only if their bytes actually
+    changed: that covers a test that escapes the sandbox, without writing anything in the
+    ordinary case.
     """
 
-    _SNAPSHOT_FILES = ("PLAN.md", "plan.json")
+    _SNAPSHOT_FILES = ("PLAN.md",)
 
     def setUp(self):
         self._orig_dir = ft.get_project_dir()
@@ -313,37 +383,48 @@ class WorkspaceTestCase(unittest.TestCase):
         self._snapshot = {}
         for name in self._SNAPSHOT_FILES:
             path = os.path.join(self._orig_plan_dir, name)
-            if os.path.isfile(path):
-                with open(path, "rb") as fh:
-                    self._snapshot[name] = fh.read()
+            self._snapshot[name] = _read_if_present(path)
 
         self.tmp = tempfile.mkdtemp(prefix="deepagents_chartest_")
-        ft.set_project_dir(self.tmp)
-        # The plan lives in its own directory, separate from the code workspace, and the
-        # real one is the user's roadmap. Point it at the throwaway directory so the suite
-        # never reads or writes that document -- and snapshot it above in case a test
-        # escapes the sandbox anyway.
+        # Point the plan at the throwaway directory *first*: the setters load the plan, and
+        # a load while the pointer still named the developer's directory would create a
+        # state database beside their roadmap.
         set_plan_dir(self.tmp)
+        ft.set_project_dir(self.tmp)
         ft.set_active_plan_filename("PLAN.md")
 
         # System 2 is enabled by default once a provider is configured, which would make
         # these structural tests depend on the developer's shell and reach the network.
         # Pin the offline path for every workspace test; the live path has its own tests.
-        env_patcher = mock.patch.dict(os.environ, {"DEEPAGENTS_SYSTEM2": "0"})
+        #
+        # The container runtime is pinned to the in-repo double for the same reason: a branch
+        # that verifies with ``execute_restricted_command`` runs that command in a container,
+        # and this suite must not need a Docker daemon to be deterministic.
+        env_patcher = mock.patch.dict(
+            os.environ, {"DEEPAGENTS_SYSTEM2": "0", **FAKE_DOCKER_ENV}
+        )
         env_patcher.start()
         self.addCleanup(env_patcher.stop)
 
     def tearDown(self):
-        set_plan_dir(self._orig_plan_dir)
-        ft.set_project_dir(self._orig_dir)
-        ft.set_active_plan_filename(self._orig_plan)
+        # Assigned directly, not through the setters: see the class docstring.
+        workspace_module.PLAN_DIR = self._orig_plan_dir
+        workspace_module.PROJECT_DIR = self._orig_dir
+        workspace_module.ACTIVE_PLAN_FILE = self._orig_plan
+
         for name in self._SNAPSHOT_FILES:
             path = os.path.join(self._orig_plan_dir, name)
-            if name in self._snapshot:
-                with open(path, "wb") as fh:
-                    fh.write(self._snapshot[name])
-            elif os.path.isfile(path):
-                os.remove(path)
+            original = self._snapshot.get(name)
+            if original is None:
+                # It did not exist before the test, so it has no business existing after.
+                if os.path.exists(path):
+                    _remove_file(path)
+                continue
+            if _read_if_present(path) == original:
+                # Nothing wrote to it, so there is nothing to put back -- and no write
+                # that a synced filesystem could refuse.
+                continue
+            _restore_file(path, original)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def write(self, filename, content):
@@ -357,33 +438,17 @@ class WorkspaceTestCase(unittest.TestCase):
 
     # --- plan-state fixtures ---------------------------------------------------
     #
-    # load_plan_state() rehydrates plan.json from the markdown plan whenever the
-    # markdown mtime is strictly greater. save_plan_state() writes plan.json and
-    # then PLAN.md microseconds apart, and the system clock tick (~15.6ms on
-    # Windows) makes that comparison a coin flip -- identical more often than not,
-    # but occasionally plan.json lands one tick earlier.
-    #
-    # That matters because the markdown compiler never emits a Files line, so any
-    # rehydration silently discards every task's `files` (and re-parses details as
-    # loose bullets). Tests that seed machine state must therefore pin plan.json as
-    # the authoritative side, otherwise audit/rollback assertions flake.
-
-    def pin_plan_json_authoritative(self):
-        """Make plan.json strictly newer than the markdown plan."""
-        json_path = ft.get_plan_json_path()
-        md_path = os.path.join(self.tmp, ft.get_active_plan_filename())
-        base = os.path.getmtime(md_path) if os.path.exists(md_path) else time.time()
-        os.utime(json_path, (base + 1, base + 1))
+    # The state lives in a SQLite database in this throwaway directory, so the store is
+    # authoritative and there is no representation race to pin: a save is committed and a
+    # load reads exactly what was committed. These thin wrappers are kept so the tests
+    # below read the same way they always have.
 
     def save_state(self, plan_dict):
-        """save_plan_state, with plan.json pinned as authoritative afterwards."""
-        state = ft.save_plan_state(plan_dict)
-        self.pin_plan_json_authoritative()
-        return state
+        """save_plan_state, and return the canonicalised dictionary it stored."""
+        return ft.save_plan_state(plan_dict)
 
     def read_state(self):
-        """load_plan_state, with plan.json pinned as authoritative first."""
-        self.pin_plan_json_authoritative()
+        """load_plan_state."""
         return ft.load_plan_state()
 
 
@@ -391,44 +456,55 @@ class FileOpTests(WorkspaceTestCase):
     """read_file / write_file / append_to_file / list_workspace_files."""
 
     def test_missing_file_message(self):
-        self.assertEqual(ft.read_file.invoke({"filename": "nope.py"}), "File nope.py does not exist yet.")
+        # The engine reader answers "nothing to read" rather than writing an error string as
+        # file content -- a caller can tell the difference.
+        self.assertEqual(ft.read_source("nope.py"), "")
 
     def test_write_then_read_round_trip(self):
-        result = ft.write_file.invoke({"filename": "pkg/mod.py", "content": "x = 1\n"})
+        result = ft.overwrite_source("pkg/mod.py", "x = 1\n")
         self.assertEqual(result, "Successfully wrote 6 characters to pkg/mod.py.")
-        self.assertEqual(ft.read_file.invoke({"filename": "pkg/mod.py"}), "x = 1\n")
+        self.assertEqual(ft.read_source("pkg/mod.py"), "x = 1\n")
 
-    def test_append(self):
-        ft.write_file.invoke({"filename": "a.txt", "content": "one"})
-        ft.append_to_file.invoke({"filename": "a.txt", "content": "two"})
-        self.assertEqual(ft.read_file.invoke({"filename": "a.txt"}), "one\ntwo\n")
+    def test_a_whole_file_rewrite_cannot_escape_the_workspace(self):
+        """Containment is the engine writer's own guard, not a caller's convention.
 
-    def test_large_file_middle_truncation(self):
-        ft.write_file.invoke({"filename": "big.py", "content": "A" * 7000 + "B" * 7000})
-        content = ft.read_file.invoke({"filename": "big.py"})
-        self.assertIn("Omitted 8000 characters", content)
-        self.assertTrue(content.startswith("A" * 3000))
-        self.assertTrue(content.endswith("B" * 3000))
+        The model's refuse-overwrite chokehold lived in the deleted ``write_file`` tool. What
+        replaces it for the engine's own writer is a resolved-path containment check, so a
+        deliverable can never be published outside the workspace.
+        """
+        with self.assertRaises(Exception) as caught:
+            ft.overwrite_source("../../escaped.py", "boom = True\n")
+        self.assertIn("Path traversal denied", str(caught.exception))
 
-    def test_plan_files_are_never_truncated(self):
-        ft.write_file.invoke({"filename": "BIG.md", "content": "Z" * 9000})
-        self.assertEqual(ft.read_file.invoke({"filename": "BIG.md"}), "Z" * 9000)
+    def test_a_file_is_refreshed_in_place(self):
+        # The engine's writer is not the model's tool: re-running a task must be able to
+        # refresh a deliverable that already exists.
+        ft.overwrite_source("once.py", "first\n")
+        ft.overwrite_source("once.py", "second\n")
+        self.assertEqual(ft.read_source("once.py"), "second\n")
+
+    def test_read_source_is_never_truncated(self):
+        """A caller that writes the text back must get the whole file.
+
+        The token-optimised middle-truncating view belonged to the model's ``read_file`` tool,
+        which is an MCP tool now. The engine reader has no budget: an omitted middle would be
+        silently deleted when the text is written back.
+        """
+        body = "A" * 7000 + "B" * 7000
+        ft.overwrite_source("big.py", body)
+        self.assertEqual(ft.read_source("big.py"), body)
 
     def test_list_workspace_files_prunes_internal_dirs(self):
-        ft.write_file.invoke({"filename": "sub/a.py", "content": ""})
-        ft.write_file.invoke({"filename": "__pycache__/b.pyc", "content": ""})
-        ft.write_file.invoke({"filename": ".deepagents_backups/task-1/c.py", "content": ""})
-        ft.write_file.invoke({"filename": "node_modules/d.js", "content": ""})
+        ft.overwrite_source("sub/a.py", "")
+        ft.overwrite_source("__pycache__/b.pyc", "")
+        ft.overwrite_source(".deepagents_backups/task-1/c.py", "")
+        ft.overwrite_source("node_modules/d.js", "")
 
         paths = [f["path"] for f in ft.list_workspace_files()]
         self.assertIn("sub/a.py", paths)
         self.assertNotIn("__pycache__/b.pyc", paths)
         self.assertNotIn(".deepagents_backups/task-1/c.py", paths)
         self.assertNotIn("node_modules/d.js", paths)
-
-    def test_coder_tool_bundle_contents(self):
-        names = [t.name for t in ft.all_file_tools]
-        self.assertEqual(names, ["read_file", "write_file", "append_to_file"])
 
 
 class PlanStateTests(WorkspaceTestCase):
@@ -437,11 +513,14 @@ class PlanStateTests(WorkspaceTestCase):
     def _save_demo(self):
         return self.save_state(ft.parse_markdown_to_plan_dict(PLAN_MD, "PLAN.md"))
 
-    def test_save_writes_both_representations_with_metrics(self):
+    def test_save_writes_the_store_and_the_markdown_projection(self):
         saved = self._save_demo()
 
-        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "plan.json")))
+        # The store is the source of truth; the markdown is a projection written beside it.
+        self.assertTrue(os.path.isfile(os.path.join(self.tmp, DB_FILENAME)))
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "PLAN.md")))
+        # plan.json is gone for good.
+        self.assertFalse(os.path.isfile(os.path.join(self.tmp, "plan.json")))
         self.assertEqual(saved["metrics"]["total_tasks"], 5)
         self.assertEqual(saved["metrics"]["progress_percent"], 20)
         self.assertEqual(len(saved["steps"]), 5)
@@ -456,26 +535,17 @@ class PlanStateTests(WorkspaceTestCase):
         self.assertEqual(state["metrics"]["total_tasks"], 0)
         self.assertEqual(state["plan_file"], "PLAN.md")
 
-    def test_load_rehydrates_when_markdown_is_newer(self):
+    def test_markdown_does_not_determine_state_once_the_plan_is_stored(self):
+        # The one-time import reads an authored plan; after that the store is authoritative
+        # and editing the markdown must not move state (the dual-sync behaviour is gone).
         self.write("PLAN.md", PLAN_MD)
-        state = ft.load_plan_state()
-        self.assertEqual(len(state["steps"]), 5)
+        self.assertEqual(len(ft.load_plan_state()["steps"]), 5)
 
         self.write("PLAN.md", "# Project Plan: Changed\n\n## 1. Solo\n- [ ] Only task\n")
         os.utime(os.path.join(self.tmp, "PLAN.md"), (9e9, 9e9))
         state = ft.load_plan_state()
-        self.assertEqual(state["title"], "Changed")
-        self.assertEqual([s["title"] for s in state["steps"]], ["Only task"])
-
-    def test_load_recovers_when_plan_json_is_unreadable(self):
-        # An unreadable plan.json (interrupted write, transient file lock, cloud-sync
-        # placeholder) must not be reported to the UI as "no tasks" while the markdown
-        # plan is still intact: the markdown is used to rebuild the machine state.
-        self.write("PLAN.md", PLAN_MD)
-        self.write("plan.json", "{ this is not valid json")
-        state = ft.load_plan_state()
         self.assertEqual(len(state["steps"]), 5)
-        self.assertTrue(os.path.isfile(os.path.join(self.tmp, "plan.json")))
+        self.assertEqual(state["title"], "Demo")
 
     def test_update_plan_task_status(self):
         self._save_demo()
@@ -568,14 +638,12 @@ class PlanStateTests(WorkspaceTestCase):
         ft.load_plan_state()
         self.assertEqual(last_plan_load_error(), "")
 
-    def test_files_survive_rehydration_from_markdown(self):
-        """Both rehydration sides must now agree on a task's deliverables.
+    def test_files_and_details_survive_a_store_round_trip(self):
+        """The store is the only representation, so `files`/`details` cannot be lost.
 
-        compile_plan_json_to_markdown() emits a `Files: ...` detail line for every
-        task that has deliverables, and the parser reads it back. Whichever
-        representation the mtime check prefers, `files` is therefore stable;
-        previously the markdown side silently dropped every entry, so audit and
-        rollback results depended on which write won a sub-millisecond race.
+        The old machine kept two files and picked between them by mtime; the markdown
+        side dropped every `files` entry, so audit and rollback results depended on which
+        write won a sub-millisecond race. There is one representation now.
         """
         self.save_state({
             "title": "Round Trip",
@@ -587,18 +655,10 @@ class PlanStateTests(WorkspaceTestCase):
             ]}],
         })
 
-        # 1. plan.json authoritative -> deliverables intact.
-        from_json = self.read_state()
-        self.assertEqual([t["files"] for t in from_json["steps"]], [["alpha.py"], ["beta.py"]])
-
-        # 2. markdown strictly newer -> same deliverables, rehydrated from markdown.
-        md_path = os.path.join(self.tmp, "PLAN.md")
-        bumped = os.path.getmtime(md_path) + 5
-        os.utime(md_path, (bumped, bumped))
-        from_md = ft.load_plan_state()
-        self.assertEqual([t["files"] for t in from_md["steps"]], [["alpha.py"], ["beta.py"]])
-        self.assertEqual([t["status"] for t in from_md["steps"]], ["completed", "pending"])
-        self.assertEqual([t["details"] for t in from_md["steps"]], [["note one"], []])
+        state = self.read_state()
+        self.assertEqual([t["files"] for t in state["steps"]], [["alpha.py"], ["beta.py"]])
+        self.assertEqual([t["status"] for t in state["steps"]], ["completed", "pending"])
+        self.assertEqual([t["details"] for t in state["steps"]], [["note one"], []])
 
     def test_list_plan_files(self):
         self.write("PLAN.md", PLAN_MD)
@@ -656,11 +716,11 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
                 ],
             }],
         })
-        ft.write_file.invoke({"filename": "kept.py", "content": "k\n"})
-        ft.write_file.invoke({"filename": "built.py", "content": "b\n"})
+        ft.overwrite_source("kept.py", "k\n")
+        ft.overwrite_source("built.py", "b\n")
 
     def test_backup_records_modified_and_created(self):
-        ft.write_file.invoke({"filename": "existing.py", "content": "v1\n"})
+        ft.overwrite_source("existing.py", "v1\n")
         backup_path = ft.backup_file_for_task("task-9", "existing.py")
         self.assertTrue(backup_path and os.path.isfile(backup_path))
 
@@ -673,7 +733,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
 
     def test_audit_detects_both_discrepancy_classes(self):
         self._seed_completed_task_with_missing_deliverable()
-        ft.write_file.invoke({"filename": "untracked.py", "content": "u\n"})
+        ft.overwrite_source("untracked.py", "u\n")
 
         audit = ft.audit_codebase_plan_sync()
         self.assertFalse(audit["in_sync"])
@@ -691,7 +751,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
                  "details": [], "files": ["only.py"]},
             ]}],
         })
-        ft.write_file.invoke({"filename": "only.py", "content": "x\n"})
+        ft.overwrite_source("only.py", "x\n")
 
         audit = ft.audit_codebase_plan_sync()
         self.assertTrue(audit["in_sync"])
@@ -722,12 +782,12 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
         self.assertEqual(statuses["task-3"], "pending")
 
     def test_rollback_restores_modified_file_and_archives_new_file(self):
-        ft.write_file.invoke({"filename": "restored.py", "content": "original\n"})
+        ft.overwrite_source("restored.py", "original\n")
         ft.backup_file_for_task("task-1", "restored.py")
-        ft.write_file.invoke({"filename": "restored.py", "content": "patched\n"})
+        ft.overwrite_source("restored.py", "patched\n")
 
         ft.backup_file_for_task("task-1", "flaky.py")
-        ft.write_file.invoke({"filename": "flaky.py", "content": "new\n"})
+        ft.overwrite_source("flaky.py", "new\n")
 
         self.save_state({
             "title": "RB",
@@ -754,7 +814,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
     def test_rollback_reports_a_failed_file_restore_instead_of_success(self):
         # A rollback that could not put a file back must not report success: the task's status
         # was reset but the workspace still holds the patched code (audit M7).
-        ft.write_file.invoke({"filename": "restored.py", "content": "original\n"})
+        ft.overwrite_source("restored.py", "original\n")
         ft.backup_file_for_task("task-1", "restored.py")
         self.save_state({
             "title": "RB2",
@@ -811,12 +871,12 @@ class TaskDiffTests(WorkspaceTestCase):
     """The read-only diff surface behind the UI's tracked-edits pane."""
 
     def _seed_diffable_task(self):
-        ft.write_file.invoke({"filename": "existing.py", "content": "v1\n"})
+        ft.overwrite_source("existing.py", "v1\n")
         ft.backup_file_for_task("task-9", "existing.py")
-        ft.write_file.invoke({"filename": "existing.py", "content": "v2\n"})
+        ft.overwrite_source("existing.py", "v2\n")
 
         ft.backup_file_for_task("task-9", "brand_new.py")
-        ft.write_file.invoke({"filename": "brand_new.py", "content": "b\n"})
+        ft.overwrite_source("brand_new.py", "b\n")
 
     def test_task_diff_reports_modified_and_created(self):
         self._seed_diffable_task()
@@ -915,7 +975,7 @@ class PreviewSourceTests(WorkspaceTestCase):
     """
 
     def test_reads_the_interface_file(self):
-        ft.write_file.invoke({"filename": ft.PREVIEW_FILENAME, "content": "<h1>hi</h1>\n"})
+        ft.overwrite_source(ft.PREVIEW_FILENAME, "<h1>hi</h1>\n")
         res = ft.read_preview_source()
 
         self.assertTrue(res["success"])
@@ -958,8 +1018,8 @@ class PreviewSourceTests(WorkspaceTestCase):
         self.assertFalse(res["found"])
 
     def test_an_oversized_file_is_truncated_not_refused(self):
-        ft.write_file.invoke({"filename": ft.PREVIEW_FILENAME, "content": "0123456789ABCDEF"})
-        with mock.patch("tools.file_ops.MAX_PREVIEW_CHARS", 10):
+        ft.overwrite_source(ft.PREVIEW_FILENAME, "0123456789ABCDEF")
+        with mock.patch("tools.workspace_io.MAX_PREVIEW_CHARS", 10):
             res = ft.read_preview_source()
 
         self.assertTrue(res["found"])
@@ -1062,7 +1122,9 @@ class RegistryContractTests(WorkspaceTestCase):
         self.assertEqual(architect["model"], "openai:policy/coder-deep-test")
         self.assertEqual(architect["subagents"], ["coder-deep", "coder-standard"])
         self.assertEqual(architect["status"], "ready")
-        self.assertIn("execute_restricted_command", architect["tools"])
+        # The shell is no longer a static catalog entry: it is the exec server's tool, bound
+        # per run from the session (see tests/test_mcp.py).
+        self.assertNotIn("execute_restricted_command", architect["tools"])
         self.assertTrue(architect["file_path"].endswith("architect.py"))
 
         self.assertEqual([a["id"] for a in summary["coder_agents"]], ["coder-deep", "coder-standard"])
@@ -1071,7 +1133,9 @@ class RegistryContractTests(WorkspaceTestCase):
         self.assertEqual(deep["role"], "Sub-Agent")
         self.assertEqual(deep["parent_agent"], "software-architect")
         self.assertEqual(deep["display_name"], "Senior Backend Coder")
-        self.assertIn("execute_shell_command", deep["tools"])
+        # The Coder's shell is the exec server's ``execute_command`` now, bound per run from
+        # the session rather than snapshotted into the catalog.
+        self.assertNotIn("execute_shell_command", deep["tools"])
 
     def test_get_agent_lookup(self):
         import registry as registry_module
@@ -1111,9 +1175,6 @@ class WorkflowEventContractTests(WorkspaceTestCase):
     def _collect(self, action_type, message, params=None):
         import registry as registry_module
 
-        # Registry reads plan state at the top of the workflow; pin it so the
-        # rehydration branch cannot flip mid-suite.
-        self.pin_plan_json_authoritative()
         events = []
         registry_module.registry.run_agent_workflow(
             message, events.append, action_type=action_type, action_params=params or {}
@@ -1245,6 +1306,21 @@ class WorkflowEventContractTests(WorkspaceTestCase):
         reg.stop_event.clear()
 
 
+class _SilentCtx:
+    """A no-op WorkflowContext, so a test can plan without polluting the event stream."""
+
+    plan_file = "PLAN.md"
+
+    def emit_fn(self, event):
+        return None
+
+    def stream_text(self, *args, **kwargs):
+        return None
+
+    def should_stop(self):
+        return False
+
+
 class CoderDelegationEventTests(WorkspaceTestCase):
     """Locks the event streams for the branches that actually spawn a Coder.
 
@@ -1267,9 +1343,6 @@ class CoderDelegationEventTests(WorkspaceTestCase):
     def _collect(self, action_type, message, params=None):
         import registry as registry_module
 
-        # The workflow reads plan state at the top; pin it so the markdown
-        # rehydration branch cannot flip mid-suite.
-        self.pin_plan_json_authoritative()
         events = []
         registry_module.registry.run_agent_workflow(
             message, events.append, action_type=action_type, action_params=params or {}
@@ -1286,8 +1359,113 @@ class CoderDelegationEventTests(WorkspaceTestCase):
 
         registry_module.registry.create_new_plan_file("PLAN.md", "Demo roadmap")
 
+    def setUp(self):
+        super().setUp()
+        # Planning requires System 2, which this suite deliberately disables. Patch the
+        # planner with a canned artifact so these tests exercise the *execution* half of the
+        # lifecycle; the real planner is covered in tests/test_artifact_gate.py.
+        from orchestration.workflow import generation, planner, templates
+
+        def _canned(task, *, plan_id=None, workspace_dir=None, completer=None, session=None,
+                    model=None, base_url=None, api_key=None):
+            # ``model``/``base_url``/``api_key`` are part of ``plan_task``'s contract now: the
+            # caller names the route the router selected and the endpoint that reaches it. The
+            # canned planner ignores them -- it is a fixture, not a router -- but it must accept
+            # them, exactly as the real planner does.
+            title = str(task.get("title") or "")
+            deliverable = templates.select(title, task.get("tag"))
+            files = [str(name) for name in (task.get("files") or []) if str(name).strip()]
+            primary = files[0] if files else deliverable.filename
+            return planner.ImplementationPlanArtifact(
+                plan_id=plan_id or "PLAN",
+                task_id=str(task.get("id") or title),
+                summary=title or "canned",
+                ast_targets=[
+                    planner.ASTTarget(file_path=primary, operation="insert", content=deliverable.code),
+                    planner.ASTTarget(
+                        file_path=generation.paired_test_path(primary),
+                        operation="insert",
+                        content=deliverable.test_code,
+                    ),
+                ],
+                estimated_impact="canned plan for the execution-half tests",
+                # Mandatory on the artifact (Phase 7): a payload without an assessment is refused,
+                # so the canned planner states one like any real one would.
+                complexity_score=2,
+                required_capabilities=[],
+            )
+
+        patcher = mock.patch("orchestration.workflow.planner.plan_task", side_effect=_canned)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _approve(self, task_id):
+        """Approve a task: record its plan, then move it to ``in_progress``.
+
+        This mirrors the real lifecycle -- an artifact exists *because* the task was planned,
+        and approval is what makes it executable. Approving without planning would leave the
+        executor with nothing to apply.
+        """
+        from orchestration.workflow import planner
+
+        task = planner.task_by_id(ft.load_plan_state(), task_id)
+        if task is not None:
+            planner.plan_and_yield(_SilentCtx(), task=task, plan_file="PLAN.md")
+        ft.update_plan_task_status(task_id, "in_progress")
+
+    def _approve_adhoc(self, files, title="Ad-hoc work"):
+        """Pre-create and approve the ephemeral node a directive will look for.
+
+        ``fix_bug``/``custom`` spawn an ``adhoc-N`` node when they name no plan task. To
+        exercise the *execution* half of the lifecycle, that node must already exist and be
+        approved (``in_progress``) before the run -- ``ensure_task_for_directive`` reuses an
+        existing planned/in_progress ad-hoc node rather than spawning a second one.
+        """
+        from orchestration.workflow import planner
+
+        node = planner.spawn_ephemeral_task(plan_id="PLAN", title=title, files=list(files))
+        self._approve(node["id"])
+        return node["id"]
+
+    def _approve_adhoc_with_artifact(self, files, title="Ad-hoc work"):
+        """Plan an ad-hoc node (recording its artifact), then approve it.
+
+        ``_approve_adhoc`` marks a node ``in_progress`` with no artifact, which is the right
+        fixture for the *branch* execution halves. The approval pass applies the stored
+        artifact, so it needs one: this records the plan first, exactly as a real planning
+        run would, then approves it.
+        """
+        from orchestration.workflow import planner
+
+        node = planner.spawn_ephemeral_task(plan_id="PLAN", title=title, files=list(files))
+        planner.plan_and_yield(_SilentCtx(), task=node, plan_file="PLAN.md")
+        ft.update_plan_task_status(node["id"], "in_progress")
+        return node["id"]
+
+    def test_a_pending_task_is_planned_and_the_run_yields(self):
+        """Phase 1: a fresh task produces a plan, not a diff.
+
+        Nothing is written and the run ends ``planned`` -- the task waits for a human
+        approval before any executor touches the code.
+        """
+        self._seed_scaffold()
+        events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
+
+        self.assertEqual(events[-1]["type"], "workflow_complete")
+        self.assertEqual(events[-1]["status"], "planned")
+        self.assertIn("Awaiting Approval", [e.get("summary", {}).get("status") for e in events])
+        # Nothing was written during planning.
+        self.assertFalse(os.path.isfile(os.path.join(self.tmp, "main.py")))
+        # And the task is halted in the store, with the artifact persisted for the executor.
+        halted = [t for t in ft.load_plan_state()["steps"] if t["id"] == "task-2"][0]
+        self.assertEqual(halted["status"], "planned")
+        from storage.db import get_store
+
+        self.assertIsNotNone(get_store().get_artifact("PLAN", "task-2"))
+
     def test_next_step_event_sequence(self):
         self._seed_scaffold()
+        self._approve("task-2")
         events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
 
         self.assertEqual(self._types(events), [
@@ -1369,6 +1547,9 @@ class CoderDelegationEventTests(WorkspaceTestCase):
             test_code="def test_always_fails():\n    assert False\n",
         )
         with mock.patch("orchestration.workflow.templates.select", return_value=failing):
+            # The plan must be written *under the patch*: the artifact carries the payload,
+            # so the failing test only reaches disk if it was in the approved plan.
+            self._approve("task-2")
             events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
 
         plan_event = [e for e in events if e["type"] == "plan_updated"][0]
@@ -1391,8 +1572,94 @@ class CoderDelegationEventTests(WorkspaceTestCase):
             "Task 'Project scaffolding and runtime dependencies' failed verification and needs attention.",
         )
 
+    def test_the_scheduler_skips_a_blocked_task_and_plans_the_eligible_one(self):
+        """Eligibility decides, not list order.
+
+        The scaffold gates task-3 on the still-pending task-2, so the next eligible node is
+        task-2. Selecting by list order would plan task-3 and, once approved, execute it
+        before the state it depends on exists.
+        """
+        from storage.db import get_store
+
+        self._seed_scaffold()
+        events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
+
+        self.assertEqual(events[-1]["status"], "planned")
+        planned = [n.id for n in get_store().get_dag("PLAN").ordered_nodes() if n.status == "planned"]
+        self.assertEqual(planned, ["task-2"])
+
+    def test_a_targeted_task_with_incomplete_blockers_is_refused(self):
+        """A blocked node is never run, even when it is named explicitly."""
+        self._seed_scaffold()
+        events = self._collect(
+            "next_step", "[ACTION: EXECUTE_NEXT_STEP]", {"targetTaskId": "task-5"}
+        )
+
+        self.assertNotIn("delegation", self._types(events))
+        logs = "\n".join(str(e.get("text", "")) for e in events if e["type"] == "log")
+        self.assertIn("blocked", logs.lower())
+        self.assertIn("task-3", logs)
+        self.assertIn("Input Required", [e.get("summary", {}).get("status") for e in events])
+        self.assertEqual(events[-1]["type"], "workflow_complete")
+        self.assertEqual(events[-1]["status"], "finished")
+
+    def test_completing_the_blockers_lets_a_targeted_task_run(self):
+        """The gate opens when the blockers are completed, and only then."""
+        self._seed_scaffold()
+        ft.update_plan_task_status("task-2", "completed")
+        self._approve("task-3")
+        events = self._collect(
+            "next_step", "[ACTION: EXECUTE_NEXT_STEP]", {"targetTaskId": "task-3"}
+        )
+
+        delegation = [e for e in events if e["type"] == "delegation"]
+        self.assertTrue(delegation, self._types(events))
+        self.assertEqual(delegation[0]["target_agent"], "coder-deep")
+
+    def test_a_fix_bug_targeted_at_a_blocked_task_is_refused(self):
+        """A blocked node is a blocked node, however it was named.
+
+        task-5 is gated on the incomplete task-3, so a fix aimed at it would have the model
+        diagnose a node whose prerequisite state does not exist -- and invent the difference.
+        """
+        self._seed_buggy_main()
+        events = self._collect(
+            "fix_bug", "[ACTION: FIX_BUG] something broke",
+            {"bugDescription": "IndexError in run()", "targetTaskId": "task-5"},
+        )
+
+        self.assertNotIn("delegation", self._types(events))
+        logs = "\n".join(str(e.get("text", "")) for e in events if e["type"] == "log")
+        self.assertIn("blocked", logs.lower())
+        self.assertIn("task-3", logs)
+        self.assertIn("Input Required", [e.get("summary", {}).get("status") for e in events])
+        self.assertEqual(events[-1]["type"], "workflow_complete")
+
+    def test_a_custom_directive_targeted_at_a_blocked_task_is_refused(self):
+        self._seed_scaffold()
+        events = self._collect("custom", "add a login endpoint", {"targetTaskId": "task-5"})
+
+        self.assertNotIn("delegation", self._types(events))
+        logs = "\n".join(str(e.get("text", "")) for e in events if e["type"] == "log")
+        self.assertIn("task-3", logs)
+        self.assertEqual(events[-1]["type"], "workflow_complete")
+
+    def test_an_adhoc_directive_is_instantly_eligible(self):
+        """No target node -> an ephemeral one with no blockers, so the gate never fires."""
+        self._seed_scaffold()
+        events = self._collect("custom", "add a login endpoint")
+
+        self.assertEqual(events[-1]["status"], "planned")
+        self.assertNotIn("Task Blocked By Dependencies", [
+            e.get("summary", {}).get("title") for e in events
+        ])
+
     def test_next_step_targets_the_deep_coder_for_core_tasks(self):
         self._seed_scaffold()
+        # task-3 is gated on task-2, so the blocker is completed first -- the scheduler will
+        # not run a node whose blockers are incomplete, targeted or not.
+        ft.update_plan_task_status("task-2", "completed")
+        self._approve("task-3")
         events = self._collect(
             "next_step", "[ACTION: EXECUTE_NEXT_STEP]", {"targetTaskId": "task-3"}
         )
@@ -1405,10 +1672,14 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         spawn = [e for e in events if e["type"] == "coder_spawn"][0]
         self.assertEqual(spawn["model"], "openai:policy/coder-deep-test")
 
-        # An explicit target completes that task, not the first pending one.
+        # An explicit target completes that task, not the first pending one. task-2 is
+        # completed too -- it was the precondition that made task-3 eligible to run at all.
         plan_event = [e for e in events if e["type"] == "plan_updated"][0]
         completed = [t["id"] for t in plan_event["tree"] if t["status"] == "completed"]
-        self.assertEqual(completed, ["task-1", "task-3"])
+        self.assertEqual(completed, ["task-1", "task-2", "task-3"])
+        self.assertEqual(
+            [t["status"] for t in plan_event["tree"] if t["id"] == "task-4"], ["pending"]
+        )
 
     def test_next_step_ui_task_emits_the_vision_directive(self):
         self.save_state({
@@ -1418,6 +1689,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
                  "tag": "FE", "details": [], "files": []},
             ]}],
         })
+        self._approve("task-1")
         events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
 
         logs = [e["text"] for e in events if e["type"] == "log"]
@@ -1462,6 +1734,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         surfaces as a collection error -- 'error', not 'failed' (audit H2).
         """
         self._seed_buggy_main()
+        self._approve_adhoc(["main.py"])
         with mock.patch("orchestration.workflow.actions_impl.run_task_tests",
                         return_value={"verdict": "error", "summary": "1 error"}):
             events = self._collect("fix_bug", "[ACTION: FIX_BUG] something broke",
@@ -1477,8 +1750,13 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         'Verified & Approved' (audit C1). The compile is mocked to fail here.
         """
         self._seed_scaffold()
-        with mock.patch("orchestration.workflow.actions_impl.execute_restricted_command") as fake:
-            fake.invoke.return_value = "[Exit Code: 1]\nSyntaxError: invalid syntax"
+        self._approve_adhoc(["main.py"])
+        # The compile runs through the run's MCP session now, so the session is what a test
+        # stubs -- there is no module-level tool object left to patch.
+        with mock.patch(
+            "orchestration.mcp_session.MCPSessionContext.execute",
+            return_value="[Exit Code: 1]\nSyntaxError: invalid syntax",
+        ):
             events = self._collect("custom", "add a login endpoint")
 
         summary = [e for e in events if e["type"] == "architect_summary"][0]["summary"]
@@ -1492,16 +1770,43 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         # fixture has to return one for the suite to be a passing check rather than an
         # accidental failure -- the "always failed" trap the compile gate was fixed for,
         # in a second guise.
-        ft.write_file.invoke({"filename": "main.py", "content": (
+        ft.overwrite_source("main.py", (
             "from typing import Dict, Any\n\n"
             "class SolutionEngine:\n"
             "    def run(self) -> Dict[str, Any]:\n"
             "        return {'status': 'success', 'verified': True}\n"
-        )})
-        ft.write_file.invoke({"filename": "test_main.py", "content": "def test_ok():\n    assert True\n"})
+        ))
+        ft.overwrite_source("test_main.py", "def test_ok():\n    assert True\n")
+
+    def test_an_unapproved_fix_bug_is_planned_and_the_run_yields(self):
+        """Phase 1 for a fix: the report is planned and the run halts, writing nothing.
+
+        This is the path the console and the palette take -- no pre-approved node -- and it
+        is the one the Artifact Gate has to intercept. It is also the path a stale variable
+        name silently broke: without a test here, planning a fix raised before it could halt.
+        """
+        self._seed_buggy_main()
+        before = self.read("main.py")
+        events = self._collect(
+            "fix_bug", "[ACTION: FIX_BUG] something broke",
+            {"bugDescription": "IndexError in run()"},
+        )
+
+        self.assertEqual(events[-1]["type"], "workflow_complete")
+        self.assertEqual(events[-1]["status"], "planned")
+        self.assertIn("Awaiting Approval", [e.get("summary", {}).get("status") for e in events])
+        # Nothing was written during planning.
+        self.assertEqual(self.read("main.py"), before)
+
+        from storage.db import get_store
+
+        node = [n for n in get_store().get_dag("PLAN").ordered_nodes() if n.id.startswith("adhoc-")][0]
+        self.assertEqual(node.status, "planned")
+        self.assertIsNotNone(get_store().get_artifact("PLAN", node.id))
 
     def test_fix_bug_event_sequence(self):
         self._seed_buggy_main()
+        self._approve_adhoc(["main.py"])
         events = self._collect(
             "fix_bug", "[ACTION: FIX_BUG] something broke",
             {"bugDescription": "IndexError in run()"},
@@ -1515,13 +1820,11 @@ class CoderDelegationEventTests(WorkspaceTestCase):
             "log", "log", "log", "log", "log", "log",
             "delegation", "coder_spawn",
             "log", "log",
-            "tool_call", "tool_result",
-            "log",
-            "tool_call", "tool_result",
+            "tool_call", "tool_result",   # the approved artifact applied
             "coder_summary",
             "log",
-            "tool_call", "tool_result",
-            "tool_call", "tool_result",  # run_task_tests
+            "tool_call", "tool_result",   # py_compile
+            "tool_call", "tool_result",   # run_task_tests
             "architect_summary",
             "workflow_complete",
         ])
@@ -1534,11 +1837,12 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertEqual(delegation["target_agent"], "coder-deep")
         self.assertEqual(delegation["task"], "Fix bug in main.py: IndexError in run()")
 
-        # The surgical patch inserts a guard comment and rewrites the regression test.
+        # The approved artifact IS the payload: the executor writes exactly the bytes the
+        # plan carried -- here the canned plan's deliverable -- and nothing is generated.
         patched = self.read("main.py")
-        self.assertIn("# Bugfix: Input validation & error boundary", patched)
+        self.assertIn("class SolutionEngine", patched)
         self.assertIn("def run(self) -> Dict[str, Any]:", patched)
-        self.assertEqual(self.read("test_main.py"), templates.BUGFIX_REGRESSION_TEST)
+        self.assertEqual(self.read("test_main.py"), templates.SOLUTION_ENGINE_TEST)
         self.assertTrue(
             os.path.isfile(os.path.join(self.tmp, ".deepagents_backups", "bugfix", "main.py"))
         )
@@ -1595,17 +1899,20 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         """
         self._seed_buggy_main()
         with mock.patch(
-            "orchestration.workflow.templates.BUGFIX_REGRESSION_TEST",
+            "orchestration.workflow.templates.SOLUTION_ENGINE_TEST",
             "def test_regression():\n    assert False\n",
         ):
+            # The plan must be recorded under the patch: the artifact carries the test's
+            # bytes, so a failing suite only reaches disk if it was in the approved plan.
+            self._approve_adhoc(["main.py"])
             events = self._collect(
                 "fix_bug", "[ACTION: FIX_BUG] something broke",
                 {"bugDescription": "IndexError in run()"},
             )
 
         coder_summary = [e for e in events if e["type"] == "coder_summary"][0]["summary"]
-        # The coder claims only what it did -- it wrote the patch and the suite; the
-        # Architect runs it.
+        # The coder claims only what it did -- the approved plan was applied; the
+        # Architect runs the tests.
         self.assertEqual(coder_summary["status"], "Patch Applied")
 
         summary = events[-2]["summary"]
@@ -1631,9 +1938,10 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         """
         self._seed_buggy_main()
         with mock.patch(
-            "orchestration.workflow.templates.BUGFIX_REGRESSION_TEST",
+            "orchestration.workflow.templates.SOLUTION_ENGINE_TEST",
             "def test_regression():\n    assert False\n",
         ):
+            self._approve("task-2")
             events = self._collect(
                 "fix_bug", "[ACTION: FIX_BUG] something broke",
                 {"bugDescription": "IndexError in run()", "targetTaskId": "task-2"},
@@ -1652,10 +1960,11 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         )
 
     def test_fix_bug_with_a_target_task_clears_a_failed_mark_back_to_pending(self):
-        """A verified fix clears the `[!]` it answered for.
+        """A verified fix leaves the approved task runnable again, not completed.
 
-        The task is left `pending` -- runnable again -- and not `completed`: the bug is
-        patched, not the milestone, so only a re-run can complete it.
+        Approval is what unlocks execution, so the task the fix answers for arrives
+        `in_progress`; the fix records its verdict there and does not claim the milestone,
+        so only a re-run can complete it.
         """
         self._seed_buggy_main()
         state_dict = self.read_state()
@@ -1664,6 +1973,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
                 if t.get("id") == "task-2":
                     t["status"] = "failed"
         self.save_state(state_dict)
+        self._approve("task-2")
 
         events = self._collect(
             "fix_bug", "[ACTION: FIX_BUG] something broke",
@@ -1672,7 +1982,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
 
         plan_event = [e for e in events if e["type"] == "plan_updated"][0]
         task = next(t for t in plan_event["tree"] if t["id"] == "task-2")
-        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["status"], "in_progress")
         self.assertIn("Bug fix verified in `main.py`.", task["details"])
         self.assertEqual(
             events[-1]["message"], "Bug surgically diagnosed, patched, and verified."
@@ -1681,9 +1991,9 @@ class CoderDelegationEventTests(WorkspaceTestCase):
     def test_fix_bug_with_a_target_task_leaves_a_non_failed_task_in_its_own_state(self):
         """A verified fix never invents or destroys a completion.
 
-        When the task was not `[!]` -- here, already `completed` -- the fix records its
-        evidence and leaves the status exactly as it found it, so patching a bug in finished
-        work cannot un-finish the milestone either.
+        The task is approved to `in_progress` so the fix may run; the fix records its
+        evidence and leaves that approved status alone rather than claiming a milestone
+        its own gate never verified.
         """
         self._seed_buggy_main()
         state_dict = self.read_state()
@@ -1692,6 +2002,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
                 if t.get("id") == "task-2":
                     t["status"] = "completed"
         self.save_state(state_dict)
+        self._approve("task-2")
 
         events = self._collect(
             "fix_bug", "[ACTION: FIX_BUG] something broke",
@@ -1700,11 +2011,12 @@ class CoderDelegationEventTests(WorkspaceTestCase):
 
         plan_event = [e for e in events if e["type"] == "plan_updated"][0]
         task = next(t for t in plan_event["tree"] if t["id"] == "task-2")
-        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["status"], "in_progress")
         self.assertIn("Bug fix verified in `main.py`.", task["details"])
 
     def test_fix_bug_falls_back_to_the_message_and_strips_action_tags(self):
         self._seed_buggy_main()
+        self._approve_adhoc(["main.py"])
         events = self._collect("fix_bug", "[ACTION: FIX_BUG] something broke")
 
         delegation = [e for e in events if e["type"] == "delegation"][0]
@@ -1741,6 +2053,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
     def test_fix_bug_accepts_an_attachment_with_no_description(self):
         """Either half of the client rule is enough, so the gate is not stricter here."""
         self._seed_buggy_main()
+        self._approve_adhoc(["main.py"])
         events = self._collect(
             "fix_bug", "[ACTION: FIX_BUG]", {"bugAttachment": "traceback.txt"}
         )
@@ -1750,6 +2063,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
 
     def test_custom_directive_delegates_to_the_deep_coder(self):
         self._seed_scaffold()
+        self._approve_adhoc(["main.py"])
         events = self._collect("custom", "add a login endpoint")
 
         self.assertEqual(self._types(events), [
@@ -1761,7 +2075,9 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertEqual(delegation["target_agent"], "coder-deep")
         self.assertEqual(delegation["task"], "add a login endpoint")
 
-        self.assertIn("# Custom Solution: add a login endpoint", self.read("main.py"))
+        # The approved artifact is the payload: the executor wrote the plan's bytes, not a
+        # fresh generation. The canned plan uses the task's own title.
+        self.assertIn("class SolutionEngine", self.read("main.py"))
         self.assertTrue(os.path.isfile(os.path.join(self.tmp, "test_main.py")))
 
         # Only the primary deliverable is snapshotted on the custom path.
@@ -1800,6 +2116,88 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         self.assertIn("delegation", self._types(events))
         delegation = [e for e in events if e["type"] == "delegation"][0]
         self.assertEqual(delegation["target_agent"], "coder-deep")
+        # The directive named no plan task, so it was planned and the run yielded: the
+        # execution half -- and the approved artifact it needs -- is still ahead of it.
+        self.assertEqual(events[-1]["status"], "planned")
+
+    def test_an_unapproved_custom_directive_is_planned_and_the_run_yields(self):
+        """Phase 1 for a free-form coding directive: planned and halted, writing nothing.
+
+        The custom path is the Gatekeeper's fallback, so its plan half is reached by a
+        directive that names no plan task and is classified as code modification. Nothing
+        may be written until a human approves the artifact -- the same gate every other
+        branch is behind. This is the custom counterpart of the fix_bug plan-half test:
+        without it, a fault in the plan half (as the fix_bug NameError was) would only be
+        caught by the execution-half tests that pre-approve.
+        """
+        self._seed_scaffold()
+        events = self._collect("custom", "add a login endpoint")
+
+        self.assertEqual(events[-1]["type"], "workflow_complete")
+        self.assertEqual(events[-1]["status"], "planned")
+        self.assertIn("Awaiting Approval", [e.get("summary", {}).get("status") for e in events])
+        # Nothing was written during planning.
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "main.py")))
+
+        from storage.db import get_store
+
+        node = [n for n in get_store().get_dag("PLAN").ordered_nodes() if n.id.startswith("adhoc-")][0]
+        self.assertEqual(node.status, "planned")
+        self.assertIsNotNone(get_store().get_artifact("PLAN", node.id))
+
+    def test_the_approval_pass_applies_the_artifact_without_re_deciding(self):
+        """The execution half calls neither System 1 nor System 2.
+
+        The bug this pins: approval used to re-issue the originating request, so a `custom`
+        directive was re-classified during execution and a different verdict could strand the
+        artifact a human had approved. ``laya_model.classify`` is the only classifier, so
+        making it raise proves the pass never reaches it.
+        """
+        self._seed_scaffold()
+        task_id = self._approve_adhoc_with_artifact(["main.py"])
+
+        with mock.patch(
+            "orchestration.workflow.actions_impl.laya_model.classify",
+            side_effect=AssertionError("System 1 must not run during execution"),
+        ), mock.patch(
+            "orchestration.workflow.execution.run_task_tests",
+            return_value={"verdict": "passed", "summary": "1 passed"},
+        ):
+            events = self._collect("execute_artifact", "", {"taskId": task_id, "planId": "PLAN"})
+
+        # The approved artifact landed, verbatim: what was approved is what is on disk.
+        from storage.db import get_store
+
+        expected = get_store().get_artifact("PLAN", task_id)["ast_targets"][0]["content"]
+        self.assertEqual(self.read("main.py"), expected)
+        # The task reached a terminal state the store records. The status write goes through
+        # update_plan_task_status, which emits on the process-wide bridge bus rather than
+        # through this run's emit_fn -- so the store is the authority here, as it is for the UI.
+        self.assertEqual(get_store().get_dag("PLAN").nodes[task_id].status, "completed")
+        self.assertEqual(events[-1]["type"], "workflow_complete")
+        self.assertEqual(events[-1]["status"], "finished")
+        # Nothing was classified: no Gatekeeper evaluation line appears.
+        logs = "\n".join(str(e.get("text", "")) for e in events if e["type"] == "log")
+        self.assertNotIn("GATEKEEPER", logs)
+
+    def test_the_approval_pass_refuses_when_no_artifact_is_stored(self):
+        """An approval with no artifact is reported and failed, never a silent no-op."""
+        from orchestration.workflow import planner
+
+        self._seed_scaffold()
+        node = planner.spawn_ephemeral_task(plan_id="PLAN", title="No plan", files=["main.py"])
+        ft.update_plan_task_status(node["id"], "in_progress")
+
+        events = self._collect("execute_artifact", "", {"taskId": node["id"], "planId": "PLAN"})
+
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "main.py")))
+        logs = "\n".join(str(e.get("text", "")) for e in events if e["type"] == "log")
+        self.assertIn("No approved artifact", logs)
+        # The refusal is recorded on the task, not only narrated.
+        from storage.db import get_store
+
+        self.assertEqual(get_store().get_dag("PLAN").nodes[node["id"]].status, "failed")
+        self.assertEqual(events[-1]["type"], "workflow_complete")
 
     def test_gatekeeper_answers_a_question_the_old_gate_would_have_delegated(self):
         """A question is administrative on its shape alone, with no keyword needed."""
@@ -1830,6 +2228,7 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         the frontend even when the event sequence itself is unchanged.
         """
         self._seed_scaffold()
+        self._approve("task-2")
         events = self._collect("next_step", "[ACTION: EXECUTE_NEXT_STEP]")
 
         first = {}
@@ -1934,15 +2333,15 @@ class FacadeContractTests(WorkspaceTestCase):
     # name from the module is a breaking change.
     EXPECTED_EXPORTS = (
         "get_project_dir", "set_project_dir", "get_active_plan_filename",
-        "set_active_plan_filename", "get_plan_json_path", "list_plan_files",
+        "set_active_plan_filename", "list_plan_files",
         "walk_workspace", "IGNORE_DIRS", "PROJECT_DIR", "ACTIVE_PLAN_FILE",
         "parse_markdown_to_plan_dict", "compile_plan_json_to_markdown",
         "parse_plan_tree", "load_plan_state", "save_plan_state",
-        "sync_plan_on_disk", "update_plan_task_status", "read_file", "write_file",
-        "append_to_file", "list_workspace_files", "all_file_tools",
-        "MAX_FILE_READ_CHARS", "get_backup_dir", "backup_file_for_task",
+        "sync_plan_on_disk", "update_plan_task_status", "read_source", "overwrite_source",
+        "list_workspace_files", "read_preview_source",
+        "get_backup_dir", "backup_file_for_task",
         "audit_codebase_plan_sync", "resolve_sync_plan_to_codebase",
-        "resolve_sync_code_to_plan", "rollback_task_state", "PLAN_JSON_FILE",
+        "resolve_sync_code_to_plan", "rollback_task_state",
         "BACKUP_SUBDIR", "read_preview_source", "PREVIEW_FILENAME",
         "MAX_PREVIEW_CHARS", "read_environment_variables", "ENV_FILENAME",
         "MAX_ENVIRONMENT_VARIABLES",
@@ -1964,12 +2363,18 @@ class FacadeContractTests(WorkspaceTestCase):
         self.assertEqual(ft.PROJECT_DIR, ft.get_project_dir())
 
     def test_star_import_yields_identical_tool_objects(self):
-        """Agent definitions hold these same objects; copies would diverge."""
+        """The façade re-exports the engine primitives, and no model tool catalog.
+
+        The ``@tool`` wrappers that used to be asserted here are MCP tools now, bound per run
+        from a live server -- so there is no static list to be identical to, and asserting one
+        would be asserting the architecture this change removed.
+        """
         namespace = {}
         exec("from tools.file_tools import *", namespace)
-        self.assertIs(namespace["write_file"], ft.write_file)
-        self.assertIs(namespace["all_file_tools"], ft.all_file_tools)
-        self.assertEqual(len(namespace["all_file_tools"]), 3)
+        self.assertIs(namespace["overwrite_source"], ft.overwrite_source)
+        self.assertIs(namespace["read_source"], ft.read_source)
+        self.assertNotIn("all_file_tools", namespace)
+        self.assertNotIn("write_file", namespace)
 
 
 class PromptEditorTests(unittest.TestCase):
@@ -2011,7 +2416,7 @@ class PromptEditorTests(unittest.TestCase):
         self.arch_mod.ARCHITECT_CUSTOM_INSTRUCTIONS = self._orig["arch_custom"]
         self.coders_mod.CODER_DEEP_CUSTOM_INSTRUCTIONS = self._orig["deep_custom"]
         self.coders_mod.CODER_DEEP_SYSTEM_PROMPT = self._orig["deep_system"]
-        self.coders_mod.coder_deep["system_prompt"] = self._orig["deep_system"]
+        self.coders_mod.coder_deep.system_prompt = self._orig["deep_system"]
         self.arch_mod.build_architect_agent()
         self.registry.scan_agents()
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -2045,12 +2450,12 @@ class PromptEditorTests(unittest.TestCase):
         self.assertTrue(result["success"], result)
         self.assertEqual(self.coders_mod.CODER_DEEP_CUSTOM_INSTRUCTIONS, "Prefer dataclasses.")
         self.assertEqual(
-            self.coders_mod.coder_deep["system_prompt"],
+            self.coders_mod.coder_deep.system_prompt,
             self.coders_mod.CODER_DEEP_SYSTEM_PROMPT,
         )
         self.assertIn(
             self.coders_mod.CODER_DEEP_CORE_PROMPT + "\n\n### Custom Developer Directives:\nPrefer dataclasses.",
-            self.coders_mod.coder_deep["system_prompt"],
+            self.coders_mod.coder_deep.system_prompt,
         )
         self.assertIn(
             'CODER_DEEP_CUSTOM_INSTRUCTIONS = """Prefer dataclasses."""',
@@ -2220,17 +2625,20 @@ class RevertPlanUpdateBridgeTests(WorkspaceTestCase):
 
 
 class WorkflowWriteGuardTests(WorkspaceTestCase):
-    """_write_checked turns file_ops' error *string* into a raised failure.
+    """_write_checked writes through the engine writer and makes a failure loud.
 
-    ``write_file`` does not raise on a failed write, so the code actions used to narrate
-    "Successfully patched" and complete the task regardless (audit H1).
+    The model's ``write_file`` tool refuses to overwrite (the chokehold), so the workflow
+    publishes its own deliverables through ``overwrite_source``; a failure there raises, so
+    the runner aborts the action instead of narrating a write that never happened (H1).
     """
 
     def test_a_failed_write_raises(self):
         from orchestration.workflow import actions_impl
 
-        with mock.patch("orchestration.workflow.actions_impl.write_file") as fake:
-            fake.invoke.return_value = "Error writing file x.py: permission denied"
+        with mock.patch(
+            "orchestration.workflow.actions_impl.overwrite_source",
+            side_effect=OSError("permission denied"),
+        ):
             with self.assertRaises(RuntimeError):
                 actions_impl._write_checked("coder-standard", "x.py", "code")
 
@@ -2316,6 +2724,301 @@ class RunLockBridgeTests(WorkspaceTestCase):
         res = self._api_with_live_run().set_active_plan("OTHER.md")
         self.assertFalse(res["success"])
         self.assertIn("run is in progress", res["error"])
+
+
+class ApproveArtifactBridgeTests(WorkspaceTestCase):
+    """Approval releases execution, and the dispatch is deterministic.
+
+    The plan half returns and its thread ends, so without a dispatch on approval an approved
+    artifact would never reach disk. The dispatch is a dedicated pass
+    (``orchestration.workflow.execution``) that applies the stored artifact directly: it
+    never re-issues the originating request, because re-entering an action branch would
+    re-run System 1 (the Gatekeeper router) and System 2 (the planner). These pin the
+    dispatch and its refusal while a run is live.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+        self._apis = []
+
+    def tearDown(self):
+        # Drain and close every swarm the bridge built *before* the workspace is unlinked. The
+        # swarm's worker callbacks reach the database from the pool's own thread, so unlinking the
+        # temporary directory first leaves them running against a file that is gone -- the
+        # unhandled-traceback race this drain removes.
+        for api in self._apis:
+            api.shutdown_swarm()
+        super().tearDown()
+
+    def _api(self):
+        """A bridge whose swarm is guaranteed to be shut down before the workspace goes away."""
+        api = self.app.BridgeAPI()
+        self._apis.append(api)
+        return api
+
+    def _planned_node(self):
+        """A plan with one ad-hoc task halted in ``planned``, with its artifact stored."""
+        import registry as registry_module
+        from orchestration.workflow import planner
+        from tools import execution_gate
+
+        registry_module.registry.create_new_plan_file("PLAN.md", "Demo roadmap")
+        node = planner.spawn_ephemeral_task(plan_id="PLAN", title="Ad-hoc work", files=["main.py"])
+        execution_gate.plan_artifact(
+            plan_id="PLAN",
+            task_id=node["id"],
+            summary="Ad-hoc work",
+            ast_targets=[planner.ASTTarget(file_path="main.py", operation="insert", content="x = 1\n")],
+        )
+        return node["id"]
+
+    def test_approving_dispatches_the_deterministic_executor(self):
+        import registry as registry_module
+
+        task_id = self._planned_node()
+        api = self._api()
+
+        with mock.patch.object(registry_module.registry, "run_agent_workflow") as runner:
+            res = api.approve_artifact(task_id, "PLAN")
+            if api._execution_thread is not None:
+                api._execution_thread.join(timeout=5)
+
+        self.assertTrue(res["success"], res)
+        self.assertTrue(res["dispatched"])
+        self.assertTrue(runner.called)
+        _args, kwargs = runner.call_args
+        # The dedicated execution pass -- not the request that produced the plan, which would
+        # re-run System 1 and System 2 on the way to the executor.
+        self.assertEqual(kwargs["action_type"], "execute_artifact")
+        self.assertEqual(kwargs["action_params"]["taskId"], task_id)
+        self.assertEqual(kwargs["action_params"]["planId"], "PLAN")
+
+    def test_approval_does_not_dispatch_while_a_run_is_live(self):
+        import threading
+
+        import registry as registry_module
+
+        task_id = self._planned_node()
+        api = self._api()
+        stop = threading.Event()
+        thread = threading.Thread(target=stop.wait, daemon=True)
+        thread.start()
+        self.addCleanup(stop.set)
+        api._execution_thread = thread
+
+        with mock.patch.object(registry_module.registry, "run_agent_workflow") as runner:
+            res = api.approve_artifact(task_id, "PLAN")
+
+        self.assertTrue(res["success"])
+        self.assertFalse(res["dispatched"])
+        self.assertFalse(runner.called)
+
+    def test_approving_a_non_planned_task_is_refused_without_dispatch(self):
+        import registry as registry_module
+        from orchestration.workflow import planner
+
+        registry_module.registry.create_new_plan_file("PLAN.md", "Demo roadmap")
+        node = planner.spawn_ephemeral_task(plan_id="PLAN", title="Not planned yet", files=["main.py"])
+        api = self._api()
+
+        with mock.patch.object(registry_module.registry, "run_agent_workflow") as runner:
+            res = api.approve_artifact(node["id"], "PLAN")
+
+        self.assertFalse(res["success"])
+        self.assertIn("not 'planned'", res["error"])
+        self.assertFalse(runner.called)
+
+
+class AddTaskDependencyBridgeTests(WorkspaceTestCase):
+    """Topology is structure, not prose.
+
+    A blocker edge comes from a JSON ``dependencies`` array or from the explicit
+    ``add_task_dependency`` IPC -- never from parsing the markdown, which is a read-only
+    projection. These pin both sources and the store write behind the second.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def _seed(self):
+        import registry as registry_module
+
+        registry_module.registry.create_new_plan_file("PLAN.md", "Demo roadmap")
+
+    def test_the_scaffold_declares_dependencies_as_structure(self):
+        from storage.db import get_store
+
+        self._seed()
+        nodes = get_store().get_dag("PLAN").nodes
+
+        self.assertEqual(nodes["task-1"].dependencies, [])
+        self.assertEqual(nodes["task-2"].dependencies, ["task-1"])
+        # A shared blocker: task-4 and task-5 are concurrent, not sequential.
+        self.assertEqual(nodes["task-4"].dependencies, ["task-3"])
+        self.assertEqual(nodes["task-5"].dependencies, ["task-3"])
+        self.assertEqual(nodes["task-6"].dependencies, ["task-4", "task-5"])
+
+    def test_the_projection_carries_the_dependencies_to_the_ui(self):
+        import registry as registry_module
+
+        self._seed()
+        plan = registry_module.registry.get_current_plan_data()
+        by_id = {task["id"]: task for task in plan["plan_json"]["steps"]}
+
+        self.assertEqual(by_id["task-6"]["dependencies"], ["task-4", "task-5"])
+
+    def test_the_ipc_adds_an_edge_to_the_store(self):
+        from storage.db import get_store
+
+        self._seed()
+        res = self.app.BridgeAPI().add_task_dependency("task-1", "task-8", "PLAN")
+
+        self.assertTrue(res["success"], res)
+        self.assertIn("task-1", get_store().get_dag("PLAN").nodes["task-8"].dependencies)
+        # The edge is on the node, so a later status write cannot drop it (save_dag rebuilds
+        # the edge table from the nodes).
+        get_store().update_task_status("PLAN", "task-8", "in_progress")
+        self.assertIn("task-1", get_store().get_dag("PLAN").nodes["task-8"].dependencies)
+
+    def test_the_ipc_refuses_an_unknown_node_or_a_self_edge(self):
+        self._seed()
+        api = self.app.BridgeAPI()
+
+        self.assertFalse(api.add_task_dependency("task-1", "ghost", "PLAN")["success"])
+        self.assertFalse(api.add_task_dependency("ghost", "task-1", "PLAN")["success"])
+        self.assertFalse(api.add_task_dependency("task-1", "task-1", "PLAN")["success"])
+
+
+class AmendArtifactBridgeTests(WorkspaceTestCase):
+    """A planned artifact is editable, because a plan is a proposal.
+
+    A hallucinated character should cost one edit, not a rejected run, wasted tokens and a
+    re-plan. The amendment is refused once the task is approved: changing an ``in_progress``
+    artifact would race the execution pass that is reading it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def _planned_node(self):
+        import registry as registry_module
+        from orchestration.workflow import planner
+        from tools import execution_gate
+
+        registry_module.registry.create_new_plan_file("PLAN.md", "Demo roadmap")
+        node = planner.spawn_ephemeral_task(plan_id="PLAN", title="Ad-hoc work", files=["main.py"])
+        execution_gate.plan_artifact(
+            plan_id="PLAN",
+            task_id=node["id"],
+            summary="Ad-hoc work",
+            ast_targets=[planner.ASTTarget(file_path="main.py", operation="insert", content="x = 1\n")],
+        )
+        return node["id"]
+
+    def test_it_rewrites_the_stored_target_content(self):
+        from storage.db import get_store
+
+        task_id = self._planned_node()
+
+        res = self.app.BridgeAPI().update_artifact_target(task_id, 0, "x = 2\n", "PLAN")
+
+        self.assertTrue(res["success"], res)
+        stored = get_store().get_artifact("PLAN", task_id)
+        self.assertEqual(stored["ast_targets"][0]["content"], "x = 2\n")
+
+    def test_it_refuses_an_out_of_range_index(self):
+        task_id = self._planned_node()
+
+        res = self.app.BridgeAPI().update_artifact_target(task_id, 5, "x = 2\n", "PLAN")
+
+        self.assertFalse(res["success"])
+        self.assertIn("out of range", res["error"])
+
+    def test_it_refuses_once_the_task_is_approved(self):
+        from storage.db import get_store
+
+        task_id = self._planned_node()
+        get_store().update_task_status("PLAN", task_id, "in_progress")
+
+        res = self.app.BridgeAPI().update_artifact_target(task_id, 0, "x = 2\n", "PLAN")
+
+        self.assertFalse(res["success"])
+        self.assertIn("only a 'planned' artifact", res["error"])
+
+
+class SourceSpanBridgeTests(WorkspaceTestCase):
+    """The diff surface reads one AST span, never a whole file (Phase 8).
+
+    ``get_source_span`` is span-scoped on purpose: a whole-file read would make a whole-file
+    diff possible, which is exactly what the artifact surface exists to prevent. The span is
+    clamped to the file rather than refused, so a plan recorded against a file that has since
+    shrunk still renders, and a path outside the workspace is refused outright.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def test_it_returns_the_bytes_at_the_recorded_span(self):
+        ft.overwrite_source("main.py", "abcdef\n")
+
+        res = self.app.BridgeAPI().get_source_span("main.py", 1, 4)
+
+        self.assertTrue(res["success"], res)
+        self.assertTrue(res["found"])
+        self.assertEqual(res["text"], "bcd")
+        # The span is read as raw bytes, which is the unit an AST target's byte_range is in
+        # -- so the length is the file's byte count, not its character count (a Windows
+        # text write expands the trailing newline).
+        with open(os.path.join(self.tmp, "main.py"), "rb") as handle:
+            self.assertEqual(res["length"], len(handle.read()))
+        self.assertEqual((res["start"], res["end"]), (1, 4))
+
+    def test_a_missing_file_reports_no_bytes_rather_than_an_error(self):
+        res = self.app.BridgeAPI().get_source_span("nope.py", 0, 10)
+
+        self.assertTrue(res["success"])
+        self.assertFalse(res["found"])
+        self.assertEqual(res["text"], "")
+
+    def test_a_span_past_the_end_is_clamped(self):
+        ft.overwrite_source("main.py", "abc")
+
+        res = self.app.BridgeAPI().get_source_span("main.py", 0, 999)
+
+        self.assertEqual(res["text"], "abc")
+        self.assertEqual(res["end"], 3)
+
+    def test_it_refuses_a_path_outside_the_workspace(self):
+        res = self.app.BridgeAPI().get_source_span("../../secret.txt", 0, 5)
+
+        self.assertFalse(res["success"])
+        self.assertIn("Path traversal denied", res["error"])
+
+    def test_it_refuses_a_backslash_traversal_and_an_absolute_path(self):
+        for candidate in ("..\\..\\secret.txt", "/etc/passwd"):
+            res = self.app.BridgeAPI().get_source_span(candidate, 0, 5)
+            self.assertFalse(res["success"], candidate)
+            self.assertIn("Path traversal denied", res["error"])
 
 
 class ValidatePlanStructureBridgeTests(WorkspaceTestCase):

@@ -8,21 +8,15 @@ workflow.
 """
 
 from typing import NamedTuple, Optional
-import re
 
-from tools.task_tags import UI_TAG
+from tools.task_tags import UI_TAG, UI_KEYWORD_RE
 
 
-# Matched on word boundaries. A bare substring test sent any task whose title merely
-# *contained* those letters to the HTML template: "Build a weather API" became a
-# dashboard because of the "ui" in "build", and "Code review" because of the "view"
-# in "review". The optional trailing "s" keeps the common plurals matching.
-_UI_KEYWORD_RE = re.compile(r"\b(?:ui|frontend|interface|view)s?\b")
-
-# Public alias for Laya's domain tagger. It reuses this exact pattern rather than keeping
-# a second word list that could drift from the selector's, so a task can never be tagged
-# [UI] in the plan tree yet rendered as a plain module here.
-UI_KEYWORD_RE = _UI_KEYWORD_RE
+# ``UI_KEYWORD_RE`` is defined in ``tools.task_tags`` (matched on word boundaries) and
+# re-exported here so the template selector, the plan parser and Laya's domain tagger all
+# read one vocabulary -- no second word list that could drift from the selector's. It
+# lives in the vocabulary module rather than here so that building the parser's tag
+# vocabulary does not have to import the orchestration package on the cold-start path.
 
 
 class Deliverable(NamedTuple):

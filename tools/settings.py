@@ -26,6 +26,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from tools.payloads import SettingsPayload, validated
 from tools.workspace import PROJECT_ROOT
 
 ENV_FILENAME = ".env"
@@ -167,13 +168,13 @@ def read_settings(env_path: Optional[str] = None) -> Dict[str, Any]:
         }
         entries.append(entry)
 
-    return {
+    return validated(SettingsPayload, {
         "success": True,
         "found": found,
         "filename": ENV_FILENAME,
         "fields": entries,
         "error": "",
-    }
+    })
 
 
 def _rewrite_env(path: str, updates: Dict[str, str]) -> None:
@@ -237,13 +238,13 @@ def save_settings(values: Dict[str, Any], env_path: Optional[str] = None) -> Dic
         try:
             _rewrite_env(path, updates)
         except OSError as exc:
-            return {
+            return validated(SettingsPayload, {
                 "success": False,
                 "found": False,
                 "filename": ENV_FILENAME,
                 "fields": read_settings(env_path)["fields"],
                 "error": f"Could not write {ENV_FILENAME}: {exc}",
-            }
+            })
 
         for name, value in updates.items():
             if value:
@@ -254,4 +255,4 @@ def save_settings(values: Dict[str, Any], env_path: Optional[str] = None) -> Dic
     result = read_settings(env_path)
     result["saved"] = sorted(updates)
     result["ignored"] = ignored
-    return result
+    return validated(SettingsPayload, result)

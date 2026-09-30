@@ -1,0 +1,68 @@
+# The dependency manifest.
+#
+# Every third-party distribution the kernel imports directly is declared here, and nothing is
+# left to the transitive graph. That is not bookkeeping: `filelock` guards the embedding model's
+# cache across processes (tools/semantic_index.py), and if it were only present because
+# `huggingface_hub` happens to require it, a future release dropping it would turn the semantic
+# lock into a silent no-op -- a swarm that deadlocks or corrupts its cache in production with
+# nothing to point at. A dependency that correctness rests on is declared, not inherited.
+#
+# Lower bounds are the versions this project is developed and tested against. They are floors
+# rather than exact pins because several of these move quickly and a pin here would rot; the
+# bound says "at least what we validated", which is what a checkout needs.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepagents-studio"
+version = "0.1.0"
+description = "A local AI IDE: a DAG micro-kernel that plans, gates and executes code changes."
+requires-python = ">=3.12"
+dependencies = [
+    # --- the state kernel and the wire contracts ---
+    "pydantic>=2.13",
+    # --- the model provider seam (orchestration/system2.py) ---
+    "openai>=3.19",
+    # --- the knowledge graph: vectors and the semantic embedder ---
+    "numpy>=2.5",
+    "lancedb>=0.39",
+    "pyarrow>=25.0",
+    "torch>=2.14",
+    "transformers>=5.17",
+    # Guards the weights cache across worker processes. Declared on purpose; see the header.
+    "filelock>=4.0",
+    # --- the agent framework and its tool surface ---
+    "deepagents>=0.7.18",
+    "laya>=0.3.20",
+    "langchain-core>=1.6",
+    "astchunk>=0.1.0",
+    # --- the app shell ---
+    "python-dotenv>=1.2",
+    "pywebview>=6.2",
+    # Read by core/config.py for a YAML bootloader config.
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9.1",
+    # Required by pytest.ini's ``-n auto``; not imported by any source file.
+    "pytest-xdist>=3.8",
+]
+
+# ``deepagents_core`` is NOT on PyPI -- it is the Rust/maturin crate in this repository, which the
+# kernel imports as ``deepagents_core`` (tools/plan_state.py) to canonicalise the plan dictionary.
+# It cannot be declared as a versioned dependency, because the version it needs is the one in this
+# checkout. Install it once, editable, from the repository root:
+#
+#     pip install -e crates/deepagents_core
+#
+# Everything above is available from an index; this is the one dependency you build yourself.
+
+[tool.setuptools]
+# The app is run from source rather than installed, but a manifest that could not be built would
+# be a manifest nobody can use. These are the importable packages and top-level modules.
+packages = ["agents", "core", "orchestration", "storage", "tools"]
+py-modules = ["app", "bridge_bus", "env_boot", "main", "registry"]

@@ -6,6 +6,11 @@
 // command calls the same openActionDrawer() the task cards' inline Execute buttons call, so
 // the parameter form, its validation and the confirm path are all unchanged.
 
+import { emit } from "./bus.js";
+import { escapeHtml } from "./dom.js";
+import { setHtml } from "./safe-dom.js";
+import { DOM } from "./store.js";
+
 const COMMANDS = [
   { id: "next_step",   icon: "⚡", label: "Execute Next Step",  hint: "Implement the next pending milestone" },
   { id: "fix_bug",     icon: "🐛", label: "Fix Bug",            hint: "Diagnose and patch a reported defect" },
@@ -22,7 +27,7 @@ function isCommandPaletteOpen() {
   return !!(DOM.commandPaletteOverlay && DOM.commandPaletteOverlay.style.display === "flex");
 }
 
-function openCommandPalette() {
+export function openCommandPalette() {
   if (!DOM.commandPaletteOverlay || !DOM.commandPaletteInput) return;
   paletteIndex = 0;
   DOM.commandPaletteInput.value = "";
@@ -43,13 +48,13 @@ function renderCommandPalette(query) {
     : COMMANDS.slice();
   if (paletteIndex >= paletteFiltered.length) paletteIndex = Math.max(0, paletteFiltered.length - 1);
 
-  DOM.commandPaletteList.innerHTML = paletteFiltered.map((c, i) =>
+  setHtml(DOM.commandPaletteList, paletteFiltered.map((c, i) =>
     `<button type="button" class="palette-item${i === paletteIndex ? " active" : ""}" data-command="${escapeHtml(c.id)}">` +
       `<span class="palette-icon">${c.icon}</span>` +
       `<span class="palette-label">${escapeHtml(c.label)}</span>` +
       `<span class="palette-hint">${escapeHtml(c.hint)}</span>` +
     `</button>`
-  ).join("") || `<div class="palette-empty">No matching command</div>`;
+  ).join("") || `<div class="palette-empty">No matching command</div>`);
 }
 
 function runCommandPaletteSelection() {
@@ -58,7 +63,7 @@ function runCommandPaletteSelection() {
   // The palette closes first: the drawer it opens lives in the dock, and leaving the overlay
   // up would keep the keyboard captured by a surface that is no longer the subject.
   closeCommandPalette();
-  openActionDrawer(chosen.id); // the same entry point the task cards use
+  emit("action:open", { kind: chosen.id }); // the same entry point the task cards use
 }
 
 function handleCommandPaletteKey(event) {
@@ -80,8 +85,8 @@ function handleCommandPaletteKey(event) {
 }
 
 // No DOMContentLoaded here on purpose: wire.js owns the only one, and a second would be a
-// startup-order hazard (see tests/ui_startup_contract.js).
-function initCommandPalette() {
+// startup-order hazard (tests/ui/structural.spec.mjs asserts the single bootstrap).
+export function initCommandPalette() {
   if (DOM.commandPaletteInput) {
     DOM.commandPaletteInput.addEventListener("input", () => renderCommandPalette(DOM.commandPaletteInput.value));
     DOM.commandPaletteInput.addEventListener("keydown", handleCommandPaletteKey);

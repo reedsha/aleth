@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 import threading
 import traceback
 import html as html_module
@@ -13,6 +12,7 @@ from env_boot import load_environment
 for _shadowed in load_environment():
     print(f"[Config] .env overrides the exported {_shadowed}")
 
+from bridge_bus import BridgeBus, WebviewTransport
 from orchestration.plan_tagging import retag_plan
 from registry import registry
 from tools.file_tools import (
@@ -28,8 +28,6 @@ from tools.file_tools import (
     save_plan_state,
     compile_plan_json_to_markdown,
     parse_markdown_to_plan_dict,
-    read_file,
-    write_file,
     audit_codebase_plan_sync,
     resolve_sync_plan_to_codebase,
     resolve_sync_code_to_plan,
@@ -45,9 +43,9 @@ from tools.task_tags import UI_TAG
 from tools.test_runner import run_task_tests as run_task_test_suite
 
 
-# The style of the detached console window. It is a separate document from ui/index.html
-# and is handed to pywebview as inline html, so it needs no subresource fetch and cannot
-# be affected by the module-bundle rules that govern the main window.
+# The style of the detached console window. It is a separate document from the main
+# window's (ui/index.html, built by Vite into dist/ as one JS asset and one stylesheet) and
+# is handed to pywebview as inline html, so it needs no subresource fetch of its own.
 _CONSOLE_WINDOW_STYLE = """
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -81,7 +79,96 @@ _CONSOLE_WINDOW_APPEND_JS = (
     "  stream.appendChild(row);"
     "  window.scrollTo(0, document.body.scrollHeight);"
     "};"
+    "window.__deepAgentsBus = {"
+    "  receive: function (raw) {"
+    "    var event;"
+    "    try { event = JSON.parse(raw); } catch (err) { return; }"
+    "    if (!event || event.type !== 'console_line') return;"
+    "    var keys = Object.keys(event);"
+    "    for (var i = 0; i < keys.length; i++) {"
+    "      if (keys[i] !== 'type' && keys[i] !== 'kind' && keys[i] !== 'text') return;"
+    "    }"
+    "    if (typeof event.kind !== 'string' || typeof event.text !== 'string') return;"
+    "    window.appendLine(event.kind, event.text);"
+    "  }"
+    "};"
 )
+
+
+# --- Frontend delivery -------------------------------------------------------
+#
+# The frontend is built by Vite into ``dist/`` and handed to the webview through
+# WebView2's own virtual-host mapping, not as a ``file://`` document.
+#
+# ``file://`` is the historical failure mode of this window: WebView2 drops
+# individual subresource fetches from a local document intermittently, and a lost
+# module fetch left the window fully rendered but inert -- no click handlers at all,
+# which is indistinguishable from a working app because the packaged build runs with
+# ``debug=False``. The bundle used to be inlined into ``ui/index.html`` to dodge that.
+# Mapping a host name onto the build directory removes the failure at the layer that
+# has the bug: the document and every asset it names become ordinary https requests
+# WebView2 resolves straight out of the folder, with no HTTP server and no inlining.
+
+ASSET_HOST = "deepagents.local"
+
+
+def frontend_root() -> str:
+    """The directory holding the frontend to serve: the Vite build output."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+
+
+def install_asset_host(folder: str, host: str, fallback_url: str) -> bool:
+    """Serves ``folder`` under ``https://<host>/`` inside the WebView2 window.
+
+    Returns True when the mapping is available -- Windows, with pywebview driving the
+    EdgeChromium backend -- so the caller can point the window at the mapped URL
+    rather than at a file path.
+
+    pywebview 6 exposes no public API for WebView2's
+    ``SetVirtualHostNameToFolderMapping``, so the one seam it does expose is used: the
+    handler it runs when CoreWebView2 finishes initializing. Wrapping that handler
+    installs the mapping *before* pywebview performs the window's first navigation,
+    which is the ordering WebView2 requires -- a navigation to a host that is not yet
+    mapped fails, and there is no second chance at it.
+
+    ``Allow`` (rather than ``DenyCors``) is deliberate: the preview pane renders
+    generated markup in a ``srcdoc`` frame, whose opaque origin would be refused
+    access to these assets under the stricter mode.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        # The enum is not re-exported by pywebview, so it is imported from the assembly
+        # pywebview has already loaded -- which is also what makes this the right place
+        # to fail: an unavailable mapping is reported before the window is created, and
+        # the caller falls back to loading the document as a file.
+        from webview.platforms import edgechromium
+        from Microsoft.Web.WebView2.Core import CoreWebView2HostResourceAccessKind
+    except Exception as e:
+        print(f"[UI] WebView2 virtual host mapping is unavailable: {e}")
+        return False
+
+    original = edgechromium.EdgeChrome.on_webview_ready
+
+    def on_webview_ready(self, sender, args):
+        mapped = False
+        if args.IsSuccess:
+            try:
+                sender.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                    host, folder, CoreWebView2HostResourceAccessKind.Allow
+                )
+                mapped = True
+            except Exception as e:
+                print(f"[UI] Could not map {host} to {folder}: {e}")
+        original(self, sender, args)
+        if args.IsSuccess and not mapped:
+            # The window was pointed at the mapped URL, which cannot resolve without
+            # the mapping. Recover by loading the document the way it was loaded
+            # before the mapping existed.
+            self.load_url(fallback_url)
+
+    edgechromium.EdgeChrome.on_webview_ready = on_webview_ready
+    return True
 
 
 def _console_kind(kind) -> str:
@@ -110,14 +197,15 @@ def _console_window_html(backlog) -> str:
     )
 
 
-def _eval_console_line(window, kind, text) -> None:
-    """Pushes one line into the detached window's transcript.
+def _push_console_line_to(window, kind, text) -> None:
+    """Pushes one transcript line into the detached window through the bus sink.
 
-    The values are JSON-encoded, which is a valid JavaScript string literal, so a log line
-    can never break out of the call or corrupt the second window's document.
+    The line travels as a ``console_line`` event validated against the same strict
+    contract as every other bus payload, so the second window cannot be handed a shape
+    the contract does not describe.
     """
-    window.evaluate_js(
-        f"window.appendLine && window.appendLine({json.dumps(str(kind))}, {json.dumps(str(text))});"
+    BridgeBus(WebviewTransport(lambda: window)).dispatch(
+        {"type": "console_line", "kind": str(kind), "text": str(text)}
     )
 
 
@@ -127,8 +215,15 @@ class BridgeAPI:
     """
     def __init__(self):
         self._window = None
+        # The one typed channel to the UI. Built here so it exists before the window is
+        # bound; ``WebviewTransport`` no-ops until ``set_window`` supplies one.
+        self._bus = BridgeBus(WebviewTransport(lambda: self._window))
         self._execution_thread = None
         self._tagging_thread = None
+        # The swarm, built on first use -- never in ``__init__``. Constructing the bridge must not
+        # spawn a process pool or dispatch a node: the test suite builds one constantly, and a cold
+        # tick there would fire the swarm at fixtures that have no planner.
+        self._swarm = None
         # The detached-console window (a real second pywebview window) and the lines that
         # arrived before it finished loading. Touched from the workflow thread, the spawn
         # thread and pywebview's loaded/closed callbacks, so every access takes the lock.
@@ -141,16 +236,17 @@ class BridgeAPI:
         self._window = window
 
     def emit_event(self, event_data: dict):
-        """Pushes structured real-time events to the frontend UI."""
-        if not self._window:
-            return
+        """Pushes a structured real-time event to the frontend UI through the bus.
+
+        The bus validates ``event_data`` against the strict event union before it is
+        serialised, so a drifted payload is reported here rather than delivered. The
+        failure is printed with its stack and swallowed: a dropped *terminal* event would
+        leave the UI stuck in its running state, so this must never raise into the
+        workflow thread (audit M8).
+        """
         try:
-            escaped_json = json.dumps(event_data)
-            self._window.evaluate_js(f"window.onAgentEvent && window.onAgentEvent({escaped_json});")
+            self._bus.dispatch(event_data)
         except Exception as e:
-            # A dropped event can be a dropped *terminal* event, which leaves the UI stuck in
-            # its running state. Print the stack so the failure is diagnosable rather than a
-            # one-line mystery (audit M8).
             traceback.print_exc()
             print(f"[BridgeAPI] Error pushing event to UI: {e}", file=sys.stderr)
 
@@ -493,41 +589,33 @@ class BridgeAPI:
         })
         return res
 
-    def save_plan_content(self, filename: str, content: str):
-        """Saves edited markdown directly back to the active plan file and syncs plan.json."""
-        clean_name = set_active_plan_filename(filename)
-        # The plan lives in the plan directory, not the code workspace, so it is written
-        # with the plan-aware helper rather than the workspace file tool.
-        write_plan_markdown(content)
-        parsed = parse_markdown_to_plan_dict(content, clean_name)
-        saved = save_plan_state(parsed)
-        # save_plan_state persists the *recompiled* markdown, so that is what the UI must be
-        # handed back. Returning the editor's raw text let the workbench show (and mark
-        # clean) a document that differed from what is on disk and from plan.json.
-        try:
-            canonical = compile_plan_json_to_markdown(saved)
-        except Exception:
-            canonical = content
-        data = {
-            "success": True,
-            "filename": clean_name,
-            "content": canonical,
-            "tree": saved.get("steps", []),
-            "plan_json": saved,
-            "plans": list_plan_files()
-        }
-        self.emit_event({
-            "type": "plan_updated",
-            "filename": clean_name,
-            "content": canonical,
-            "tree": saved.get("steps", []),
-            "plan_json": saved
-        })
-        return data
-
     # -------------------------------------------------------------
     # Execution Lifecycle & Card Orchestration
     # -------------------------------------------------------------
+    def _launch_run(self, user_message: str, action_type: str, action_params: dict) -> None:
+        """Start a workflow run on a daemon thread. The caller owns the run lock.
+
+        Factored out of ``start_execution`` because approval launches a run too: an
+        approved artifact is applied by re-issuing the request that proposed it, and that
+        must obey the same lock and the same threading discipline as a user launch.
+        """
+        def target_runner():
+            try:
+                registry.run_agent_workflow(
+                    (user_message or "").strip(),
+                    self.emit_event,
+                    action_type=action_type or "custom",
+                    action_params=action_params or {}
+                )
+            finally:
+                # The run has ended, so whatever it completed has unblocked its children. The tick
+                # is deliberately *outside* the run: the artifact was written to disk by the pass,
+                # and no SQLite transaction is held across that I/O or across this dispatch.
+                self._tick_swarm()
+
+        self._execution_thread = threading.Thread(target=target_runner, daemon=True)
+        self._execution_thread.start()
+
     def start_execution(self, user_message: str, action_type: str = "custom", action_params: dict = None):
         """
         Starts the multi-agent task execution in an asynchronous background thread.
@@ -543,16 +631,7 @@ class BridgeAPI:
             # to stop and joined for one second -- best-effort, and a second thread ran anyway.
             return {"success": False, "error": "A run is already in progress."}
 
-        def target_runner():
-            registry.run_agent_workflow(
-                user_message.strip(),
-                self.emit_event,
-                action_type=action_type or "custom",
-                action_params=action_params or {}
-            )
-
-        self._execution_thread = threading.Thread(target=target_runner, daemon=True)
-        self._execution_thread.start()
+        self._launch_run(user_message, action_type, action_params or {})
 
         return {"success": True, "status": "started", "message": user_message, "action_type": action_type}
 
@@ -709,6 +788,293 @@ class BridgeAPI:
         return self.start_execution(prompt)
 
     # -------------------------------------------------------------
+    # Artifact Gate: approval is the only way past a PLANNED task
+    # -------------------------------------------------------------
+    def approve_artifact(self, task_id: str, plan_id: str = None):
+        """Approves a planned artifact: PLANNED -> IN_PROGRESS, and releases execution.
+
+        The state transition is validated against the store first, so an approval for a
+        task that is not ``planned`` (a double-click, a stale UI) is refused rather than
+        re-running finished work. The events are emitted only after the write commits.
+
+        Approval is what dispatches execution, and the dispatch is a dedicated pass
+        (``orchestration.workflow.execution``) that applies the stored artifact directly.
+        It deliberately does **not** re-issue the request that produced the plan: re-entering
+        an action branch would re-run System 1 (the Gatekeeper router) and System 2 (the
+        planner), and a decision re-run is not deterministic -- the directive could be
+        classified differently the second time and the approved artifact would be stranded.
+        The task is IN_PROGRESS and the artifact is locked, so the pass needs only the task
+        and its plan. The returned ``dispatched`` flag states whether it started; the UI must
+        not assume the artifact landed.
+        """
+        from tools.execution_gate import approve_artifact as approve
+        from tools.workspace import get_active_plan_filename
+        from storage.db import plan_id_for
+
+        resolved_plan = plan_id or plan_id_for(get_active_plan_filename())
+        result = approve(str(task_id), resolved_plan)
+        if not result.get("success"):
+            return result
+
+        if self._execution_thread and self._execution_thread.is_alive():
+            result["dispatched"] = False
+            result["note"] = "Approved; a run is already in progress."
+            return result
+
+        self._launch_run(
+            "",
+            "execute_artifact",
+            {"taskId": str(task_id), "planId": resolved_plan},
+        )
+        result["dispatched"] = True
+        return result
+
+    # -------------------------------------------------------------
+    # The swarm: reactive dispatch, driven by events
+    # -------------------------------------------------------------
+    def _ensure_swarm(self):
+        """The swarm, built on first use. It owns the pool and the in-flight set."""
+        if self._swarm is None:
+            from orchestration.swarm import Swarm
+            from storage.db import get_store, plan_id_for
+            from tools.workspace import get_active_plan_filename, get_project_dir
+
+            self._swarm = Swarm(
+                db_path=get_store().path,
+                plan_id=plan_id_for(get_active_plan_filename()),
+                workspace_dir=get_project_dir(),
+            )
+        return self._swarm
+
+    def _tick_swarm(self) -> list:
+        """Dispatch whatever is runnable right now. Never raises.
+
+        A dispatch failure is reported rather than propagated: the caller is either the tail of a
+        finished run or an approval that has already committed its state, and neither should be
+        undone by the pool being unavailable.
+        """
+        try:
+            return self._ensure_swarm().tick()
+        except Exception as error:
+            print(f"[Swarm] tick skipped: {type(error).__name__}: {error}", file=sys.stderr)
+            return []
+
+    def start_swarm(self):
+        """Cold start: bring the pool up and take one tick.
+
+        Called by the frontend's ready signal, not by ``__init__``. This is what awakens nodes left
+        ``pending`` by a crash -- and it is a single tick, not a loop: the callbacks drive from here.
+        """
+        return {"success": True, "dispatched": self._tick_swarm()}
+
+    def shutdown_swarm(self):
+        """Drain the swarm, close its pool, and forget it. Idempotent, and never raises.
+
+        The swarm's worker callbacks run on the pool's own thread and reach the database, so a
+        caller that is about to remove that database -- an app exit, or a test's temporary
+        directory -- must shut the swarm down first rather than race it. ``_swarm`` is dropped so a
+        later tick builds a fresh swarm rather than dispatching into a shut-down pool.
+        """
+        swarm, self._swarm = self._swarm, None
+        if swarm is None:
+            return {"success": True, "drained": True}
+        try:
+            drained = swarm.shutdown()
+        except Exception as error:
+            print(f"[Swarm] shutdown failed: {type(error).__name__}: {error}", file=sys.stderr)
+            return {"success": False, "drained": False, "error": str(error)}
+        return {"success": True, "drained": drained}
+
+    def ui_ready(self):
+        """The frontend is loaded and its inbound bus is bound: start the swarm.
+
+        The cold-start tick is gated on *this* rather than on a boot step in the entrypoint, because
+        only the frontend knows when its listeners exist. A tick before then would broadcast
+        ``task_state_updated`` into nothing and the DAG would render stale until the next plan load.
+        """
+        return self.start_swarm()
+
+    def reject_artifact(self, task_id: str, feedback: str = "", plan_id: str = None):
+        """Reject a planned artifact: persist the critique and re-dispatch the node.
+
+        The critique is **required**. A blind rejection would re-queue the node with no new
+        information, so the worker would regenerate the same artifact -- exactly the loop the retry
+        budget exists to prevent. The retry is a tick: the node is ``pending`` again and the
+        dispatch query decides whether its budget allows another attempt.
+        """
+        from storage.db import get_store, plan_id_for
+        from tools.workspace import get_active_plan_filename
+
+        note = str(feedback or "").strip()
+        if not note:
+            return {
+                "success": False,
+                "error": "A rejection needs feedback explaining what to change.",
+            }
+
+        resolved = plan_id or plan_id_for(get_active_plan_filename())
+        if not get_store().record_rejection(resolved, str(task_id), note):
+            return {
+                "success": False,
+                "error": f"Unknown task {task_id!r} in plan {resolved!r}.",
+            }
+
+        dispatched = self._tick_swarm()
+        # Announced after the write commits, so the UI's demotion is the backend's, not a guess the
+        # frontend made locally. ``record_rejection`` is a store write and emits nothing itself.
+        self.emit_event({
+            "type": "task_state_updated",
+            "plan_id": resolved,
+            "task_id": str(task_id),
+            "status": "pending",
+        })
+        return {
+            "success": True,
+            "task_id": str(task_id),
+            "plan_id": resolved,
+            "dispatched": dispatched,
+        }
+
+    def add_task_dependency(self, parent_id: str, child_id: str, plan_id: str = None):
+        """Adds one blocker edge to the plan DAG: ``child`` now depends on ``parent``.
+
+        Topology is mutated as structure, never inferred from the document: markdown is a
+        read-only projection, so a relationship is written where relationships live -- the
+        store's node -- and the ``task_dependencies`` table follows from it. The new graph is
+        announced on the same ``plan_updated`` event the tree and the DAG already render, so
+        both repaint from the committed state.
+        """
+        from tools.workspace import get_active_plan_filename
+        from storage.db import plan_id_for, get_store
+
+        resolved_plan = plan_id or plan_id_for(get_active_plan_filename())
+        if not get_store().add_task_dependency(resolved_plan, str(child_id), str(parent_id)):
+            return {
+                "success": False,
+                "error": f"Could not add {parent_id!r} -> {child_id!r} in plan {resolved_plan!r}.",
+            }
+
+        saved = load_plan_state()
+        try:
+            markdown = compile_plan_json_to_markdown(saved)
+        except Exception:
+            markdown = ""
+        self.emit_event({
+            "type": "plan_updated",
+            "filename": saved.get("plan_file") or get_active_plan_filename(),
+            "content": markdown,
+            "tree": saved.get("steps", []),
+            "plan_json": saved,
+        })
+        return {
+            "success": True,
+            "plan_id": resolved_plan,
+            "task_id": str(child_id),
+            "depends_on": str(parent_id),
+        }
+
+    def update_artifact_target(
+        self, task_id: str, target_index: int, new_content: str, plan_id: str = None
+    ):
+        """Amends one AST target's proposed content on a PLANNED artifact.
+
+        The review surface is editable because a plan is a proposal: a hallucinated
+        character should cost one edit, not a rejected run, wasted tokens and a re-plan.
+        The whole artifact is re-validated before it is stored, so an amendment cannot leave
+        a payload the executor would refuse or misread, and the amendment is announced on the
+        same ``artifact_planned`` event the review surface already renders.
+
+        Refused unless the task is still ``planned``: amending an artifact that is already
+        ``in_progress`` would race the execution pass that is reading it.
+        """
+        from tools.payloads import ImplementationPlanArtifact
+        from tools.workspace import get_active_plan_filename
+        from storage.db import plan_id_for, get_store
+
+        resolved_plan = plan_id or plan_id_for(get_active_plan_filename())
+        store = get_store()
+        dag = store.get_dag(resolved_plan)
+        if dag is None:
+            return {"success": False, "error": f"No plan {resolved_plan!r} in the store."}
+        node = dag.nodes.get(str(task_id))
+        if node is None:
+            return {"success": False, "error": f"No task {task_id!r} in plan {resolved_plan!r}."}
+        if node.status != "planned":
+            return {
+                "success": False,
+                "error": f"Task {task_id!r} is {node.status!r}; only a 'planned' artifact can be amended.",
+            }
+
+        payload = store.get_artifact(resolved_plan, str(task_id))
+        if payload is None:
+            return {"success": False, "error": f"No artifact is stored for {task_id!r}."}
+        try:
+            artifact = ImplementationPlanArtifact.model_validate(payload)
+        except Exception as e:
+            return {"success": False, "error": f"The stored artifact is not readable: {e}"}
+
+        try:
+            index = int(target_index)
+        except (TypeError, ValueError):
+            return {"success": False, "error": f"target_index {target_index!r} is not an integer."}
+        if index < 0 or index >= len(artifact.ast_targets):
+            return {"success": False, "error": f"target_index {index} is out of range."}
+
+        artifact.ast_targets[index].content = str(new_content or "")
+        store.save_artifact(resolved_plan, str(task_id), artifact.model_dump())
+        # The same events a fresh plan emits, so the review surface repaints from the stored
+        # payload rather than from this call's return value.
+        self.emit_event({"type": "artifact_planned", "artifact": artifact.model_dump()})
+        self.emit_event({
+            "type": "task_state_updated",
+            "plan_id": resolved_plan,
+            "task_id": str(task_id),
+            "status": "planned",
+        })
+        return {"success": True, "artifact": artifact.model_dump()}
+
+    def get_source_span(self, file_path: str, start: int = 0, end: int = 0):
+        """The current workspace bytes in one artifact target's span. Read-only.
+
+        The diff surface renders one AST target's proposed content against the bytes it
+        would replace, so it reads that span and nothing else: a whole-file read across the
+        bridge would make a whole-file diff possible, which is exactly what the artifact
+        surface exists to avoid. The span is clamped to the file rather than refused, so a
+        plan recorded against a file that has since shrunk still renders.
+
+        Containment is decided by resolving both paths -- ``Path.resolve()`` on the workspace
+        root and on the requested path -- and comparing them, not by string manipulation. A
+        string guard is a zero-day waiting to happen: ``..\\..\\``, a leading ``/``, a drive
+        letter and a symlink are all caught by construction here, and none of them can be
+        missed by a missed edge case in a hand-written pattern.
+        """
+        from pathlib import Path
+
+        try:
+            root = Path(get_project_dir()).resolve()
+            target = (root / str(file_path or "")).resolve()
+            if not target.is_relative_to(root):
+                return {"success": False, "found": False, "file_path": str(file_path or ""),
+                        "start": 0, "end": 0, "length": 0, "text": "",
+                        "error": "Path traversal denied."}
+            with open(target, "rb") as handle:
+                raw = handle.read()
+            length = len(raw)
+            lo = max(0, min(int(start), length))
+            hi = max(lo, min(int(end), length))
+            return {
+                "success": True, "found": True, "file_path": str(file_path or ""),
+                "start": lo, "end": hi, "length": length,
+                "text": raw[lo:hi].decode("utf-8", errors="replace"),
+            }
+        except FileNotFoundError:
+            return {"success": True, "found": False, "file_path": str(file_path or ""),
+                    "start": 0, "end": 0, "length": 0, "text": ""}
+        except Exception as e:
+            return {"success": False, "found": False, "file_path": str(file_path or ""),
+                    "start": 0, "end": 0, "length": 0, "text": "", "error": str(e)}
+
+    # -------------------------------------------------------------
     # Detached console (hybrid console: inline drawer + second window)
     # -------------------------------------------------------------
     def open_console_window(self, backlog=None):
@@ -764,7 +1130,7 @@ class BridgeAPI:
             pending, self._console_buffer = self._console_buffer, []
         for kind, text in pending:
             try:
-                _eval_console_line(window, kind, text)
+                _push_console_line_to(window, kind, text)
             except Exception as e:
                 print(f"[BridgeAPI] Detached console push failed: {e}", file=sys.stderr)
                 with self._console_lock:
@@ -794,12 +1160,12 @@ class BridgeAPI:
         # thread that is emitting into it.
         for pending_kind, pending_text in pending:
             try:
-                _eval_console_line(window, pending_kind, pending_text)
+                _push_console_line_to(window, pending_kind, pending_text)
             except Exception as e:
                 self._console_window = None
                 return {"success": False, "error": str(e)}
         try:
-            _eval_console_line(window, kind, text)
+            _push_console_line_to(window, kind, text)
             return {"success": True}
         except Exception as e:
             self._console_window = None
@@ -824,12 +1190,28 @@ def main(argv=None):
     laya_model.warm_up_async()
 
     api = BridgeAPI()
-    
-    ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "index.html")
+
+    # The window is loaded from the Vite build, not from the hand-authored document in
+    # ui/. A build that has not been made yet is reported as the build step it is,
+    # rather than as a blank window.
+    dist = frontend_root()
+    index_path = os.path.join(dist, "index.html")
+    if not os.path.isfile(index_path):
+        print("The frontend has not been built yet: dist/index.html is missing.")
+        print("Build it once with:  npm install && npm run build")
+        raise SystemExit(1)
+
+    # Mapped delivery where the platform supports it, the file document otherwise, so
+    # the app still opens (without the mapped origin's guarantees) on a backend that
+    # has no virtual-host mapping.
+    if install_asset_host(dist, ASSET_HOST, index_path):
+        ui_url = f"https://{ASSET_HOST}/index.html"
+    else:
+        ui_url = index_path
 
     window = webview.create_window(
         title="DeepAgents • Plan Orchestrator Studio",
-        url=ui_path,
+        url=ui_url,
         js_api=api,
         width=1340,
         height=860,

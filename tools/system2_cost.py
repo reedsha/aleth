@@ -7,7 +7,7 @@ tokens" into a number.
 
 Everything sent here is assembled from this repository's own artifacts -- the real
 ``agents/`` system prompts, the real tool schemas behind ``all_file_tools`` /
-``coder_shell_tools``, and the actual ``PLAN.md`` / ``plan.json`` the Coder is instructed
+``execute_restricted_command``, and the actual ``PLAN.md`` / ``plan.json`` the Coder is instructed
 to read first -- and the token counts are read back from the API's own ``usage``, not
 estimated from character counts.
 
@@ -31,6 +31,8 @@ import json
 import os
 import sys
 from typing import Any, Dict, List
+
+from tools.payloads import CostReportPayload, validated
 
 DEFAULT_MODEL = "policy/free"
 
@@ -69,28 +71,39 @@ def _read_workspace_file(name: str) -> str:
 
 
 def _payloads() -> Dict[str, Any]:
-    """The two roles' real system prompts and tool schemas."""
+    """The two roles' real system prompts and tool schemas.
+
+    The shell schemas come from the MCP exec server's own ``tools/list`` -- the same source
+    the agents bind from -- rather than from a static catalog, which no longer exists. The
+    session is spawned for the measurement and reaped when it ends.
+    """
     from agents import architect, coders
     from orchestration.agent_catalog import resolve_prompt_variables
-    from tools.file_tools import all_file_tools
-    from tools.shell_tools import architect_shell_tools, coder_shell_tools
-    from tools.workspace import get_active_plan_filename
+    from orchestration.mcp_session import MCPSessionContext
+    from tools.workspace import get_active_plan_filename, get_project_dir
 
     plan_name = get_active_plan_filename()
-    return {
-        "admin": {
-            "system": resolve_prompt_variables(architect.ARCHITECT_SYSTEM_PROMPT, plan_name),
-            "tools": _openai_tools(list(architect_shell_tools)),
-        },
-        "coder_deep": {
-            "system": resolve_prompt_variables(coders.coder_deep["system_prompt"], plan_name),
-            "tools": _openai_tools(list(all_file_tools) + list(coder_shell_tools)),
-        },
-        "coder_standard": {
-            "system": resolve_prompt_variables(coders.coder_standard["system_prompt"], plan_name),
-            "tools": _openai_tools(list(all_file_tools) + list(coder_shell_tools)),
-        },
-    }
+    with MCPSessionContext(get_project_dir()) as session:
+        def bound(role: str):
+            return list(session.get_bound_tools(role))
+
+        admin_tools = bound("architect")
+        coder_tools = bound("coder")
+
+        return {
+            "admin": {
+                "system": resolve_prompt_variables(architect.ARCHITECT_SYSTEM_PROMPT, plan_name),
+                "tools": _openai_tools(admin_tools),
+            },
+            "coder_deep": {
+                "system": resolve_prompt_variables(coders.coder_deep.system_prompt, plan_name),
+                "tools": _openai_tools(coder_tools),
+            },
+            "coder_standard": {
+                "system": resolve_prompt_variables(coders.coder_standard.system_prompt, plan_name),
+                "tools": _openai_tools(coder_tools),
+            },
+        }
 
 
 class Meter:
@@ -193,13 +206,13 @@ def main(argv: List[str] = None) -> int:
     print("instructions and subagent wiring, and the code a Coder actually emits.")
 
     if os.environ.get("DEEPAGENTS_COST_JSON"):
-        print(json.dumps({
+        print(json.dumps(validated(CostReportPayload, {
             "admin_input": admin_usage["prompt_tokens"],
             "spawn_turn1_input": first,
             "reads_cost": read_cost,
             "spawn_total": total_in + total_out,
             "turns": args.turns,
-        }))
+        })))
     return 0
 
 

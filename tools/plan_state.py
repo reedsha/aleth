@@ -1,9 +1,15 @@
-"""Dual-sync plan state (plan.json machine state <-> active markdown plan).
+"""SQLite-backed plan state: the single source of truth.
 
-Owns the "which representation is authoritative right now" decision: if the
-markdown plan was edited on disk by a human (or an agent), re-hydrate plan.json
-from it via the AST parser; otherwise read plan.json directly. Saving always
-writes both representations and recomputes progress metrics.
+The engine is now :mod:`storage.db` -- a SQLite DAG. This module is the Python face of
+it: it resolves the paths, performs the one-time import of a plan authored before the
+store existed, projects the DAG onto the plan dictionary every caller already expects,
+and renders the markdown projection for humans.
+
+**Markdown never determines state.** The plan file is written *from* the store as a
+read-only projection, and nothing parses it back: the old ``plan.json`` + mtime
+rehydration machine is gone, and the one-time import below is the only read of an
+authored document. ``plan_structure_report`` reads it for a shape verdict only -- it
+never writes state.
 """
 
 import json
@@ -11,76 +17,79 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+import deepagents_core as _core
+
+import bridge_bus
+from storage.db import (
+    PlanDAG,
+    PlanStore,
+    dag_to_plan_dict,
+    get_store,
+    merge_dag_fields,
+    plan_dict_to_dag,
+    plan_id_for,
+)
+from tools.payloads import (
+    AppendTaskEnvelope,
+    PlanPayload,
+    PlanPrepareEnvelope,
+    validated,
+)
 from tools.plan_parser import (
     check_plan_structure,
     compile_plan_json_to_markdown,
     parse_markdown_to_plan_dict,
 )
-from tools.task_tags import UI_TAG
 from tools.workspace import (
     get_active_plan_filename,
     get_plan_dir,
-    get_plan_json_path,
     get_plan_markdown_path,
 )
 
 
 class PlanWriteError(RuntimeError):
-    """A plan write (or its markdown compile) failed.
+    """A plan write (or its markdown projection) failed.
 
-    Raised rather than swallowed: a caller must not be able to report ``success`` for state
-    the disk never received. The workflow runner turns this into an ``agent_error`` plus a
-    terminal ``workflow_complete``; a bridge method lets it surface as a rejected call.
+    Raised rather than swallowed: a caller must not be able to report ``success`` for
+    state the store never received. The workflow runner turns this into an
+    ``agent_error`` plus a terminal ``workflow_complete``; a bridge method lets it
+    surface as a rejected call.
     """
 
 
-# The most recent reason plan.json could not be read, if any. Read by the UI so a corrupt
-# machine-state file is explained rather than silently shown as an empty plan (audit F3).
+# The most recent reason the plan could not be read or imported, if any. Read by the UI
+# so a store that cannot be opened is explained rather than silently shown as an empty
+# plan (audit F3).
 _LAST_LOAD_ERROR = ""
+
+# The old machine-state file. Read exactly once, to import a plan authored before the
+# store existed; then removed. Never written.
+_LEGACY_JSON = "plan.json"
 
 
 def last_plan_load_error() -> str:
-    """The reason the last plan load could not read plan.json, or "" when it was fine."""
+    """The reason the last plan load could not read the store, or "" when it was fine."""
     return _LAST_LOAD_ERROR
 
 
-def _fold_ui_flag(entry: Dict[str, Any]) -> None:
-    """Folds a legacy ``is_ui`` boolean into the entry's ``tag``, in place.
+def _adopt(target: Dict[str, Any], replacement: Dict[str, Any]) -> Dict[str, Any]:
+    """Replaces ``target``'s contents in place, so a caller's own dict stays current.
 
-    plan.json written before the tag vocabulary existed carries ``is_ui`` and no ``tag``.
-    There is one representation of a task's domain now, not two, so an old file is read up
-    rather than dropped: a true flag becomes the UI tag, and the key itself is removed so
-    the next save writes the new shape.
+    Callers build a plan, save it, and then read the recomputed metrics back out of the
+    same object, so the contents are moved across rather than rebinding the caller's
+    name.
     """
-    if not isinstance(entry, dict) or "is_ui" not in entry:
-        return
-    was_ui = bool(entry.pop("is_ui"))
-    if was_ui and not entry.get("tag"):
-        entry["tag"] = UI_TAG
+    target.clear()
+    target.update(replacement)
+    return target
 
 
-def _migrate_legacy_ui_flag(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Applies :func:`_fold_ui_flag` to every task and sub-step in a loaded plan."""
-    if not isinstance(plan_dict, dict):
-        return plan_dict
-    for section in plan_dict.get("sections") or []:
-        for task in section.get("tasks") or []:
-            _fold_ui_flag(task)
-            for sub_step in task.get("sub_steps") or []:
-                _fold_ui_flag(sub_step)
-    for task in plan_dict.get("steps") or []:
-        _fold_ui_flag(task)
-        for sub_step in task.get("sub_steps") or []:
-            _fold_ui_flag(sub_step)
-    return plan_dict
-
-
-def _empty_plan(title: str) -> Dict[str, Any]:
-    """A valid, empty plan skeleton."""
+def _empty_plan() -> Dict[str, Any]:
+    """The skeleton a plan with nothing stored resolves to (the old ``empty_plan``)."""
     return {
         "version": "1.0",
         "plan_file": get_active_plan_filename(),
-        "title": title,
+        "title": "New Project Plan",
         "state_summary": None,
         "updated_at": time.time(),
         "sections": [],
@@ -91,104 +100,97 @@ def _empty_plan(title: str) -> Dict[str, Any]:
             "in_progress_tasks": 0,
             "failed_tasks": 0,
             "pending_tasks": 0,
-            "progress_percent": 0
-        }
+            "progress_percent": 0,
+        },
     }
 
 
-def _read_plan_json(plan_json_path: str) -> Optional[Dict[str, Any]]:
-    """Read plan.json, or return ``None`` when it is missing or unreadable."""
+def _plan_id() -> str:
+    """The store key for the active plan file."""
+    return plan_id_for(get_active_plan_filename())
+
+
+def _ensure_imported(store: PlanStore, plan_id: str) -> None:
+    """Import a pre-existing plan into the store, exactly once.
+
+    ``plan.json`` (the old machine state) wins when it is present; otherwise the markdown
+    plan is parsed once. After this the store is authoritative and neither file is read
+    for state again -- ``plan.json`` is removed so it cannot be mistaken for one.
+    """
     global _LAST_LOAD_ERROR
-    try:
-        with open(plan_json_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        # Remember *why*: a corrupt machine-state file is otherwise indistinguishable from an
-        # empty plan, and the UI shows a blank tree with no explanation (audit F3).
-        _LAST_LOAD_ERROR = f"plan.json could not be read ({e})"
-        print(f"[DualSync] Error reading plan.json: {e}")
-        return None
+    if store.has_plan(plan_id):
+        return
+
+    legacy_path = os.path.join(get_plan_dir(), _LEGACY_JSON)
+    if os.path.isfile(legacy_path):
+        try:
+            with open(legacy_path, "r", encoding="utf-8") as handle:
+                raw = json.load(handle)
+            plan = validated(PlanPayload, raw)
+            store.save_dag(plan_dict_to_dag(plan, plan_id))
+            _discard_legacy(legacy_path)
+            return
+        except Exception as error:  # a corrupt machine-state file is reported, not hidden
+            _LAST_LOAD_ERROR = f"plan.json could not be read ({error})"
+
+    markdown_path = get_plan_markdown_path()
+    if os.path.isfile(markdown_path):
+        try:
+            with open(markdown_path, "r", encoding="utf-8") as handle:
+                content = handle.read()
+            plan = parse_markdown_to_plan_dict(content, get_active_plan_filename())
+            store.save_dag(plan_dict_to_dag(plan, plan_id))
+        except Exception as error:
+            _LAST_LOAD_ERROR = f"the markdown plan could not be imported ({error})"
 
 
-def _hydrate_from_markdown(plan_md_path: str, plan_json_path: str) -> Optional[Dict[str, Any]]:
-    """Rebuild plan.json from the markdown plan via the AST parser (zero LLM tokens)."""
+def _discard_legacy(path: str) -> None:
+    """Remove the old ``plan.json`` once its state lives in the store (best effort)."""
     try:
-        with open(plan_md_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        plan_dict = parse_markdown_to_plan_dict(content, get_active_plan_filename())
-        # newline="\n" on purpose: the plan directory is the repository, and the default
-        # Windows text write would put CRLF into a document that is version-controlled.
-        with open(plan_json_path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(plan_dict, f, indent=2)
-        return plan_dict
-    except Exception as e:
-        print(f"[DualSync] Error hydrating plan.json from markdown: {e}")
-        return None
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def load_plan_state(force_sync: bool = False) -> Dict[str, Any]:
-    """
-    Dual-Sync Engine:
-    Loads machine state from plan.json.
-    Detects external disk edits to PLAN.md: If PLAN.md is newer than plan.json,
-    re-hydrates plan.json using markdown-it-py AST parser.
+    """The active plan, read from the store and projected onto the plan dictionary.
+
+    ``force_sync`` is accepted because callers used to pass it to force a markdown
+    rehydration; it is now a no-op. The store is always authoritative, so there is
+    nothing to force.
     """
     global _LAST_LOAD_ERROR
     _LAST_LOAD_ERROR = ""
-
-    base_dir = get_plan_dir()
-    plan_md_path = get_plan_markdown_path()
-    plan_json_path = get_plan_json_path()
-
-    md_exists = os.path.exists(plan_md_path)
-    json_exists = os.path.exists(plan_json_path)
-
-    # Case 1: Neither exists yet -> return empty skeleton
-    if not md_exists and not json_exists:
-        return _empty_plan("New Project Plan")
-
-    # Case 2: Only MD exists, or MD is newer than JSON, or force_sync requested, or plan.json is for different file
-    # A plan.json that cannot be read at all is treated as "belongs to a different
-    # file", which hands the markdown plan the chance to rebuild it below. Doing it
-    # this way keeps a single read of plan.json and makes that recovery explicit
-    # rather than a side effect of the comparison.
-    cached_json = _read_plan_json(plan_json_path) if json_exists else None
-    different_file = (
-        cached_json is None
-        or cached_json.get("plan_file", "").lower() != get_active_plan_filename().lower()
-    )
-
-    if md_exists and (not json_exists or force_sync or different_file or os.path.getmtime(plan_md_path) > os.path.getmtime(plan_json_path)):
-        plan_dict = _hydrate_from_markdown(plan_md_path, plan_json_path)
-        if plan_dict is not None:
-            return _migrate_legacy_ui_flag(plan_dict)
-
-    # Case 3: Load directly from plan.json
-    if cached_json is not None:
-        return _migrate_legacy_ui_flag(cached_json)
-
-    return _empty_plan("Project Plan")
+    store = get_store()
+    plan_id = _plan_id()
+    _ensure_imported(store, plan_id)
+    dag = store.get_dag(plan_id)
+    if dag is None:
+        return _empty_plan()
+    return dag_to_plan_dict(dag)
 
 
 def read_plan_markdown() -> str:
-    """The active plan's markdown as text, or ``""`` when it is not on disk.
+    """The active plan's markdown projection as text, or ``""`` when it is absent.
 
-    The plan lives in the plan directory rather than the code workspace, so callers that
-    need its text ask here instead of reaching for the workspace file tool.
+    Read-only, for display. It is never parsed to decide state.
     """
+    path = get_plan_markdown_path()
     try:
-        with open(get_plan_markdown_path(), "r", encoding="utf-8") as f:
-            return f.read()
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
     except OSError:
         return ""
 
 
 def write_plan_markdown(content: str) -> str:
-    """Writes the active plan's markdown into the plan directory."""
+    """Writes the active plan's markdown (the explicit-edit / projection path)."""
     path = get_plan_markdown_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(content)
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except OSError as error:
+        raise PlanWriteError(f"Failed writing the plan markdown: {error}") from error
     return path
 
 
@@ -197,109 +199,113 @@ def plan_structure_report(content: Optional[str] = None) -> Dict[str, Any]:
 
     The Normalization Gate reads this to decide whether an imported ``.md`` can be
     parsed into sections and milestones, or has to be reformatted first. Read-only: it
-    never writes ``plan.json`` or the markdown, so asking the question cannot change
-    the answer.
+    never writes the store, so asking the question cannot change the answer.
     """
     text = read_plan_markdown() if content is None else content
     return check_plan_structure(text)
 
 
+def _write_projection(plan_id: str) -> None:
+    """Re-render PLAN.md from the store (a projection, never a source of state)."""
+    markdown = get_store().render_plan_markdown(plan_id)
+    try:
+        with open(get_plan_markdown_path(), "w", encoding="utf-8") as handle:
+            handle.write(markdown)
+    except OSError as error:
+        print(f"[PlanState] Could not write the markdown projection: {error}")
+
+
 def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist ``plan_dict`` to the store, then render PLAN.md from it.
+
+    The compiled core still canonicalises the dictionary (flattening ``steps``,
+    regrouping a flat plan, recomputing metrics) so the projection and the store agree
+    with the shape every caller already writes. Raises :class:`PlanWriteError` if either
+    half fails, so a caller cannot report success for state the store never received.
     """
-    Persists updated machine state to plan.json and instantly compiles back to PLAN.md.
-    Recalculates all progress metrics automatically.
+    validated(PlanPayload, plan_dict)
+    prepared = validated(PlanPrepareEnvelope, json.loads(_core.prepare_plan_state(
+        json.dumps(plan_dict),
+        get_active_plan_filename(),
+    )))
+    if not prepared["ok"]:
+        raise PlanWriteError(prepared["error"])
+    plan = prepared["plan"]
 
-    Raises :class:`PlanWriteError` if either write fails, so a caller cannot report success
-    for a plan the disk never received -- the plan displayed to the user and the plan on disk
-    must not be allowed to silently diverge.
-    """
-    base_dir = get_plan_dir()
-    plan_md_path = get_plan_markdown_path()
-    plan_json_path = get_plan_json_path()
+    plan_id = _plan_id()
+    store = get_store()
+    existing = store.get_dag(plan_id)
+    dag = plan_dict_to_dag(
+        plan, plan_id, created_at=existing.created_at if existing else None
+    )
+    # The legacy dictionary has no dependency/target/agent fields; carry the stored ones
+    # forward so an ordinary status write does not erase what a later phase wrote.
+    merge_dag_fields(dag, existing)
+    # ``task_dependencies`` is the source of truth for topology, so the incoming document
+    # defines the edges only on the plan's FIRST write -- creation or import. Afterwards an
+    # ordinary save must not reconcile the table from whatever the caller's nodes carry: an
+    # edge added through ``add_task_dependency`` would be erased by the next status write.
+    store.save_dag(dag, sync_edges=existing is None)
 
-    # Flatten steps from sections to ensure consistency. A dict that carries tasks only
-    # in the flat `steps` view (a hand-built or partially migrated plan) would otherwise
-    # flatten to nothing -- wiping `steps` and zeroing every metric. Rebuilding the
-    # nested view from the flat one first keeps such a plan intact.
-    sections = plan_dict.get("sections", [])
-    if not sections:
-        flat = plan_dict.get("steps") or []
-        if flat:
-            grouped: Dict[str, Dict[str, Any]] = {}
-            purged: List[Dict[str, Any]] = []
-            for t in flat:
-                title = t.get("section", "General")
-                sec = grouped.get(title)
-                if sec is None:
-                    sec = {"id": f"sec-{len(grouped) + 1}", "title": title, "tasks": []}
-                    grouped[title] = sec
-                    purged.append(sec)
-                sec["tasks"].append(t)
-            sections = purged
-            plan_dict["sections"] = sections
-
-    all_steps = []
-    for sec in sections:
-        for t in sec.get("tasks", []):
-            t["section"] = sec.get("title", "General")
-            all_steps.append(t)
-
-    total = len(all_steps)
-    completed = len([t for t in all_steps if t.get("status") == "completed"])
-    in_progress = len([t for t in all_steps if t.get("status") == "in_progress"])
-    failed = len([t for t in all_steps if t.get("status") == "failed"])
-    pending = total - completed - in_progress - failed
-    pct = round((completed / total) * 100) if total > 0 else 0
-
-    plan_dict["steps"] = all_steps
-    plan_dict["metrics"] = {
-        "total_tasks": total,
-        "completed_tasks": completed,
-        "in_progress_tasks": in_progress,
-        "failed_tasks": failed,
-        "pending_tasks": pending,
-        "progress_percent": pct
-    }
-    plan_dict["updated_at"] = time.time()
-    plan_dict["plan_file"] = get_active_plan_filename()
-
-    # 1. Write plan.json. A failure here must propagate: returning the dict regardless
-    # reported success for a plan the disk never received (audit C2).
+    # Compiled through this module's own name on purpose: the compile is the seam a test
+    # replaces to prove a failed compile cannot be reported as a successful save.
     try:
-        with open(plan_json_path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(plan_dict, f, indent=2)
-    except Exception as e:
-        raise PlanWriteError(f"Failed writing plan.json: {e}") from e
-
-    # 2. Compile and write PLAN.md
+        compiled_md = compile_plan_json_to_markdown(plan)
+    except Exception as error:
+        raise PlanWriteError(f"Failed compiling to PLAN.md: {error}") from error
     try:
-        compiled_md = compile_plan_json_to_markdown(plan_dict)
-        with open(plan_md_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(compiled_md)
-    except Exception as e:
-        raise PlanWriteError(f"Failed compiling to PLAN.md: {e}") from e
+        with open(get_plan_markdown_path(), "w", encoding="utf-8") as handle:
+            handle.write(compiled_md)
+    except OSError as error:
+        raise PlanWriteError(f"Failed writing PLAN.md: {error}") from error
 
-    return plan_dict
+    return _adopt(plan_dict, plan)
 
 
 def sync_plan_on_disk() -> Dict[str, Any]:
-    """Checks for disk changes and performs bidirectional re-hydration if necessary."""
+    """The current stored state (the old "check the disk" call is now a plain read)."""
     return load_plan_state()
 
 
-def update_plan_task_status(task_id: str, new_status: str, detail_note: Optional[str] = None, files: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Updates a specific task's status in plan.json and syncs to PLAN.md."""
-    plan_dict = load_plan_state()
-    for sec in plan_dict.get("sections", []):
-        for task in sec.get("tasks", []):
-            if task.get("id") == task_id or task.get("title") == task_id:
-                task["status"] = new_status
-                if detail_note:
-                    task.setdefault("details", []).append(detail_note)
-                if files:
-                    task.setdefault("files", []).extend(files)
-                return save_plan_state(plan_dict)
-    return plan_dict
+def _resolve_node_id(dag: PlanDAG, key: str) -> Optional[str]:
+    """A node's id from its id or its title (the lookup the old engine used)."""
+    if key in dag.nodes:
+        return key
+    for node in dag.ordered_nodes():
+        if node.title == key:
+            return node.id
+    return None
+
+
+def update_plan_task_status(
+    task_id: str,
+    new_status: str,
+    detail_note: Optional[str] = None,
+    files: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Move one task's status in a single transaction and announce the change.
+
+    The mutation is committed first, then ``task_state_updated`` is emitted, so the UI is
+    only ever told about a change the database actually holds.
+    """
+    store = get_store()
+    plan_id = _plan_id()
+    dag = store.get_dag(plan_id)
+    if dag is None:
+        return load_plan_state()
+    resolved = _resolve_node_id(dag, task_id)
+    if resolved is None:
+        return dag_to_plan_dict(dag)
+    if not store.update_task_status(plan_id, resolved, new_status, detail_note, files):
+        return dag_to_plan_dict(dag)
+    bridge_bus.emit({
+        "type": "task_state_updated",
+        "plan_id": plan_id,
+        "task_id": resolved,
+        "status": new_status,
+    })
+    _write_projection(plan_id)
+    return dag_to_plan_dict(store.get_dag(plan_id))
 
 
 def append_pending_task(
@@ -308,35 +314,35 @@ def append_pending_task(
     note: Optional[str] = None,
     tag: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Adds a pending task to the plan's last section, creating one for an empty plan.
+    """Add a pending task to the plan's last section, creating one for an empty plan.
 
     One definition of the shape of a task added to a plan, shared by the Architect's
-    Update Plan action and the result view's one-click "Add to Plan", so the two callers
-    cannot drift about what a new milestone looks like. The ``tag`` is the caller's to
-    decide because the UI inference (``agents.laya.inferred_ui``) lives a layer up; the
-    shape itself belongs here, next to the metrics that count it.
+    Update Plan action and the result view's one-click "Add to Plan". Mutates
+    ``plan_state`` in place and returns the new task, as it always has: callers add the
+    task and then save the same dictionary.
     """
-    sections = plan_state.setdefault("sections", [])
-    if sections:
-        target_section = sections[-1]
-    else:
-        # A plan with no sections yet (an empty or freshly-imported one) needs its first
-        # section created and *attached*: save_plan_state rebuilds `steps` from `sections`,
-        # so a bare local dict would be written to and then discarded.
-        target_section = {"id": "sec-1", "title": "General", "tasks": []}
-        sections.append(target_section)
-    task = {
-        "id": f"task-{len(plan_state.get('steps', [])) + 1}",
-        "section": target_section.get("title"),
-        "title": title,
-        "status": "pending",
-        "tag": tag,
-        "details": [note] if note else [],
-        "files": [],
-        # The same keys, in the same order, that the parser writes (tools/plan_parser.py),
-        # so a task added here is shaped exactly like one read out of the markdown (audit M12).
-        "behavioral_log": [],
-        "sub_steps": [],
-    }
-    target_section.setdefault("tasks", []).append(task)
-    return task
+    validated(PlanPayload, plan_state)
+    result = validated(AppendTaskEnvelope, json.loads(_core.append_pending_task(
+        json.dumps(plan_state),
+        title,
+        note,
+        tag,
+    )))
+    if not result["ok"]:
+        raise PlanWriteError(result["error"])
+    _adopt(plan_state, result["plan"])
+    return result["task"]
+
+
+__all__ = [
+    "PlanWriteError",
+    "append_pending_task",
+    "last_plan_load_error",
+    "load_plan_state",
+    "plan_structure_report",
+    "read_plan_markdown",
+    "save_plan_state",
+    "sync_plan_on_disk",
+    "update_plan_task_status",
+    "write_plan_markdown",
+]

@@ -9,7 +9,18 @@
 // the frontend is inlined in the first place, and it means the frame is never loaded at
 // startup: it has no src and no srcdoc until a preview is asked for.
 
+import { showToast } from "./notify.js";
+import { sanitizePreviewHtml } from "./safe-dom.js";
+import { DOM, state } from "./store.js";
+
 const PREVIEW_FILENAME = "ui_view.html";
+
+// The frame holds workspace output, not a trusted document, so it is sandboxed without
+// `allow-scripts` and without `allow-same-origin`: a script that survives the sanitiser
+// would run in an opaque origin with no reach into the app. The attribute is stated here as
+// well as in ui/index.html so a later edit to the markup cannot quietly re-admit either
+// capability, and every srcdoc write goes through one function that applies both.
+const PREVIEW_SANDBOX = "allow-forms allow-modals allow-popups";
 
 // An empty document, so closing the pane tears the loaded one down without the frame
 // falling back to rendering anything of its own.
@@ -44,6 +55,15 @@ function hidePreviewError() {
   if (DOM.previewFail) DOM.previewFail.classList.remove("active");
 }
 
+// The single srcdoc sink: sanitise, then install. DOMPurify strips `<script>`, `on*`
+// handlers and the embedded-content tags from the workspace's document, and the sandbox
+// attribute is (re)applied here so the two guarantees travel together.
+function setPreviewDocument(frame, html) {
+  if (!frame) return;
+  frame.setAttribute("sandbox", PREVIEW_SANDBOX);
+  frame.setAttribute("srcdoc", sanitizePreviewHtml(html));
+}
+
 function loadPreviewFrame(html) {
   const frame = DOM.previewFrame;
   if (!frame) return;
@@ -56,7 +76,7 @@ function loadPreviewFrame(html) {
       "happening.");
   }, PREVIEW_LOAD_TIMEOUT_MS);
 
-  frame.setAttribute("srcdoc", html);
+  setPreviewDocument(frame, html);
 }
 
 function handlePreviewFrameLoad() {
@@ -78,7 +98,7 @@ function syncPreviewToggle(on) {
 // what is in it -- and splitting them would let the two drift. A missing file names itself
 // here rather than surfacing as a blank frame, which the load event cannot tell apart from
 // an empty page.
-async function refreshPreview() {
+export async function refreshPreview() {
   if (!state.previewOpen) return;
 
   if (!previewHasBridge()) {
@@ -128,22 +148,22 @@ function openPreview() {
   refreshPreview();
 }
 
-function closePreview() {
+export function closePreview() {
   state.previewOpen = false;
   if (DOM.previewPane) DOM.previewPane.classList.remove("active");
   clearPreviewTimer();
   hidePreviewError();
   // Installing the blank document ends the rendered one, so a closed preview holds no live
   // page. setAttribute is also the only frame method the startup-contract harness provides.
-  if (DOM.previewFrame) DOM.previewFrame.setAttribute("srcdoc", PREVIEW_BLANK);
+  setPreviewDocument(DOM.previewFrame, PREVIEW_BLANK);
   syncPreviewToggle(false);
 }
 
-function togglePreview() {
+export function togglePreview() {
   if (state.previewOpen) closePreview(); else openPreview();
 }
 
-function initPreview() {
+export function initPreview() {
   // The frame starts with no document at all, so nothing renders until a preview is asked
   // for. The load listener is the timeout guard's other half.
   if (DOM.previewFrame) DOM.previewFrame.addEventListener("load", handlePreviewFrameLoad);

@@ -137,9 +137,15 @@ class NormalizeActionTests(unittest.TestCase):
 
     def setUp(self):
         self._orig_project = workspace.get_project_dir()
+        self._orig_plan_dir = workspace.get_plan_dir()
         self._tmp = tempfile.mkdtemp(prefix="normalize_gate_")
+        # Point the *plan* directory at the temp dir first: the setters load the plan, and a
+        # load while the pointer still named the developer's directory would create a state
+        # database beside their roadmap.
+        workspace.set_plan_dir(self._tmp)
         workspace.set_project_dir(self._tmp)
         self.addCleanup(workspace.set_project_dir, self._orig_project)
+        self.addCleanup(workspace.set_plan_dir, self._orig_plan_dir)
 
     def _run(self, markdown):
         events = []

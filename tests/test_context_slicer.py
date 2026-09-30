@@ -9,6 +9,8 @@ truncated), and nothing about any other task or the machine state.
     .\\venv\\Scripts\\python.exe -m unittest tests.test_context_slicer -v
 """
 
+import json
+
 import os
 import unittest
 
@@ -179,27 +181,17 @@ class TaskSliceTests(unittest.TestCase):
 
 class RealPlanSliceTests(unittest.TestCase):
     def test_the_slice_is_far_smaller_than_the_whole_plan(self):
-        # Deliberately read-only, and deliberately not through ``load_plan_state``: the plan
-        # directory holds the user's own roadmap, and loading it can hydrate plan.json on
-        # disk. A measurement is not allowed to rewrite the thing it measures, so the
-        # markdown is parsed in memory and the machine state is read as text.
+        # Read-only: the plan directory holds the user's own roadmap, and a measurement is
+        # not allowed to rewrite the thing it measures. The markdown is parsed in memory,
+        # so this never touches the state store.
         from tools.plan_parser import parse_markdown_to_plan_dict
         from tools.plan_state import read_plan_markdown
-        from tools.workspace import (
-            get_active_plan_filename,
-            get_plan_json_path,
-            get_plan_markdown_path,
-        )
+        from tools.workspace import get_active_plan_filename, get_plan_markdown_path
 
         if not os.path.isfile(get_plan_markdown_path()):
             self.skipTest("no plan markdown in the plan directory")
-        if not os.path.isfile(get_plan_json_path()):
-            self.skipTest("no plan.json beside the plan markdown")
 
         markdown = read_plan_markdown()
-        with open(get_plan_json_path(), encoding="utf-8") as f:
-            plan_json = f.read()
-
         plan = parse_markdown_to_plan_dict(markdown, get_active_plan_filename())
         steps = plan.get("steps") or []
         if not steps:
@@ -208,7 +200,8 @@ class RealPlanSliceTests(unittest.TestCase):
         task_id = steps[0].get("id") or steps[0].get("title")
         slice_text = slice_task_context(plan, task_id)
 
-        full = len(markdown) + len(plan_json)
+        # The whole-plan dump the slice replaces: the document plus its machine state.
+        full = len(markdown) + len(json.dumps(plan))
         self.assertLess(
             len(slice_text),
             full / 10,

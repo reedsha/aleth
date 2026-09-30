@@ -23,6 +23,9 @@ import os
 import subprocess
 from typing import Dict, Optional
 
+from pydantic import ValidationError
+
+from tools.payloads import validated, validated_backup_meta, validated_map
 from tools.workspace import BACKUP_SUBDIR, get_project_dir
 
 # git runs as a subprocess; a pathological repository must not hang the file listing.
@@ -113,6 +116,12 @@ def _backup_status(base_dir: str) -> Dict[str, str]:
             continue
         if not isinstance(meta, dict):
             continue
+        try:
+            validated_backup_meta(meta)
+        except ValidationError:
+            # An unknown key in a snapshot record is not this module's shape; skip it
+            # rather than badge a file from a record we cannot read.
+            continue
         for filename, info in meta.items():
             info = info if isinstance(info, dict) else {}
             action = info.get("action") or "modified"
@@ -135,5 +144,5 @@ def workspace_vcs_status(base_dir: Optional[str] = None) -> Dict[str, str]:
     base = os.path.abspath(base_dir or get_project_dir())
     git = _git_status(base)
     if git is not None:
-        return git
-    return _backup_status(base)
+        return validated_map(git)
+    return validated_map(_backup_status(base))

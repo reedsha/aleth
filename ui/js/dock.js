@@ -1,7 +1,9 @@
 // ui/js/dock.js — Bottom dock resize behaviour.
 // Self-contained on purpose: one drag gesture on one handle, and nothing else in
 // the frontend reads or writes the dock height.
-function initDockResize() {
+import { DOM } from "./store.js";
+
+export function initDockResize() {
   const dock = DOM.bottomDock;
   const handle = DOM.dockResizeHandle;
   if (!dock || !handle) return;
@@ -56,7 +58,7 @@ function initDockResize() {
 // marks the toolbar button the drawer belongs to, which is what makes the panel read as
 // an expansion of that button rather than a view that floated in from elsewhere.
 // ui/js/actions.js decides when a drawer opens; this file owns what that looks like.
-function setDockDrawerOpen(open, actionType) {
+export function setDockDrawerOpen(open, actionType) {
   const dock = DOM.bottomDock;
   if (!dock) return;
 
@@ -71,6 +73,6 @@ function setDockDrawerOpen(open, actionType) {
 
 // Read by ui/js/actions.js so a second click on the button whose form is already open
 // folds the drawer away instead of resetting the fields that were typed into it.
-function isDockDrawerOpen() {
+export function isDockDrawerOpen() {
   return !!(DOM.bottomDock && DOM.bottomDock.classList.contains("drawer-open"));
 }

@@ -1,8 +1,12 @@
-from .architect import architect_agent
-from .coders import coder_deep, coder_standard
+from .architect import ARCHITECT_ROLE
+from .coders import CODER_ROLES, build_coder_agent, coder_deep, coder_standard
+from .roles import AgentRole
 
 __all__ = [
-    "architect_agent",
+    "ARCHITECT_ROLE",
+    "CODER_ROLES",
+    "AgentRole",
+    "build_coder_agent",
     "coder_deep",
-    "coder_standard"
+    "coder_standard",
 ]

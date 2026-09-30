@@ -22,7 +22,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT_DIR = os.path.join(PROJECT_ROOT, "my_project_workspace")
 os.makedirs(PROJECT_DIR, exist_ok=True)
 
-# Where the *plan* lives: the active markdown plan and its derived ``plan.json``.
+# Where the *plan* lives: the active markdown plan and the SQLite state store beside it.
 #
 # Deliberately separate from ``PROJECT_DIR``. The roadmap is the user's own document and
 # belongs in the repository, where it is under version control; ``PROJECT_DIR`` is the
@@ -36,7 +36,6 @@ PLAN_DIR = PROJECT_ROOT
 
 # Dynamic Active Plan File
 ACTIVE_PLAN_FILE = "PLAN.md"
-PLAN_JSON_FILE = "plan.json"
 
 # Snapshot folder used to back deliverables up before a task modifies them.
 BACKUP_SUBDIR = ".deepagents_backups"
@@ -114,11 +113,6 @@ def set_active_plan_filename(filename: str) -> str:
     from tools.plan_state import load_plan_state
     load_plan_state(force_sync=True)
     return ACTIVE_PLAN_FILE
-
-
-def get_plan_json_path() -> str:
-    """Returns the absolute path to plan.json, beside the active plan file."""
-    return os.path.join(get_plan_dir(), PLAN_JSON_FILE)
 
 
 def list_plan_files() -> list[str]:

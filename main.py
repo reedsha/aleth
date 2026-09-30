@@ -6,6 +6,13 @@ from env_boot import load_environment
 for _shadowed in load_environment():
     print(f"[Config] .env overrides the exported {_shadowed}")
 
+# The bootloader runs here, before anything imports the registry or ``app`` -- both of which open
+# the SQLite store on import. The fleet is loaded, validated and *proven* first: a system that
+# boots with an endpoint it cannot reach fails later, mid-run, with half a plan on disk.
+from core.config import boot_or_exit
+
+boot_or_exit()
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--cli":
         from registry import registry

@@ -1,17 +1,21 @@
 // ui/js/workbench.js — The Plan Workbench: the active plan rendered in the centre stage.
 //
-// The plan file is not a description of the work, it *is* the work: it is what the
-// agents read and rewrite, and what plan.json is compiled from. So the centre stage
-// shows the plan's own markdown rather than a rendered summary, with the syntax marks
-// dimmed instead of hidden -- the document stays readable while remaining
-// character-for-character what a save would write.
+// The document shown is a **read-only projection** rendered from the SQLite plan state;
+// it is never parsed back to determine state. The centre stage renders the plan's own
+// markdown rather than a rendered summary, with the syntax marks dimmed instead of
+// hidden, so the roadmap stays readable.
 //
 // Read mode renders one row per source line, so the line numbers are produced by the
-// same loop that produces the text and cannot drift apart from it. Edit mode swaps in a
-// textarea with a virtual gutter (one number per newline) synced to its scroll offset.
+// same loop that produces the text and cannot drift apart from it.
 //
 // Wiring deliberately lives in initEventListeners (ui/js/wire.js) with every other
 // control, so a throw in this module cannot cost any interactivity.
+
+import { emit } from "./bus.js";
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { setHtml } from "./safe-dom.js";
+import { DOM, state } from "./store.js";
 
 let workbenchRendered = null; // the content currently on screen; null before the first load
 let workbenchSaved = "";      // the content the editor was opened with, i.e. last known disk state
@@ -85,14 +89,14 @@ function workbenchEmptyMessage() {
 
 // The single entry point for plan text. Fed from applyPlanData, the funnel every plan
 // load, switch, save and sync already flows through.
-function renderPlanDocument(content) {
+export function renderPlanDocument(content) {
   if (!DOM.planDoc) return;
   const text = typeof content === "string" ? content : "";
   if (text === workbenchRendered) return; // identical content: no DOM churn, keeps the scroll position
   workbenchRendered = text;
 
   if (!text.trim()) {
-    DOM.planDoc.innerHTML = `<div class="workbench-empty">${escapeHtml(workbenchEmptyMessage())}</div>`;
+    setHtml(DOM.planDoc, `<div class="workbench-empty">${escapeHtml(workbenchEmptyMessage())}</div>`);
     updateWorkbenchMeta();
     return;
   }
@@ -127,13 +131,13 @@ function renderPlanDocument(content) {
     );
   });
 
-  DOM.planDoc.innerHTML = rows.join("");
+  setHtml(DOM.planDoc, rows.join(""));
   DOM.planDoc.scrollTop = 0;
   updateWorkbenchMeta();
 }
 
 // --- Chrome: breadcrumb, task counter, status bar --------------------------
-function refreshWorkbenchChrome() {
+export function refreshWorkbenchChrome() {
   const dir = state.workspaceDir || "";
   const segments = dir.split(/[/\\]/).filter(Boolean);
   if (DOM.crumbWorkspace) {
@@ -144,15 +148,12 @@ function refreshWorkbenchChrome() {
   const planFile = state.activePlan || "PLAN.md";
   if (DOM.crumbPlanFile) DOM.crumbPlanFile.textContent = planFile;
 
-  // Editing needs the bridge: without one a save has nowhere to go, and pretending
-  // otherwise would be the same disguise initFallbackMode refuses to make. The bridge
-  // is injected after these modules run, so the flag is read here rather than at init.
-  const hasBridge = !!(window.pywebview && window.pywebview.api);
+  // The plan is a read-only projection of the SQLite state, so the raw editor is disabled
+  // outright -- there is no longer any path that parses edited markdown back into state.
   if (DOM.btnWorkbenchEdit) {
-    DOM.btnWorkbenchEdit.disabled = !hasBridge;
-    DOM.btnWorkbenchEdit.title = hasBridge
-      ? "Edit the plan source"
-      : "Read-only: the desktop bridge is unavailable";
+    DOM.btnWorkbenchEdit.disabled = true;
+    DOM.btnWorkbenchEdit.title =
+      "Read-only: change the plan with Execute Next Step, Update Plan or Add to Plan";
   }
   updateWorkbenchMeta();
 }
@@ -161,36 +162,49 @@ function workbenchIsEditing() {
   return !!(DOM.emptyStateContainer && DOM.emptyStateContainer.classList.contains("editing"));
 }
 
-// --- View mode: the roadmap as a tree, or the raw markdown ----------------
-// The tree is the primary view. Editing always means the source, so entering edit mode
-// switches to raw rather than leaving a textarea hidden behind the cards -- and the
+// --- View mode: the document tree, the DAG canvas, or the raw markdown ----
+// The document tree is the primary view. Editing always means the source, so entering edit
+// mode switches to raw rather than leaving a textarea hidden behind the cards -- and the
 // toggle is disabled while editing, so the two states can never fight.
-function workbenchView() {
-  if (!DOM.emptyStateContainer) return "tree";
-  return DOM.emptyStateContainer.classList.contains("raw-view") ? "raw" : "tree";
-}
-
-function setWorkbenchView(view) {
+//
+// The DAG canvas is a peer of the document, not a drawer: it is the same roadmap laid out as
+// a dependency graph and it gets the whole stage, which is why the squeezed right-rail copy
+// no longer exists. Which of the three is on screen is one class on the workbench; the CSS
+// does the showing and hiding so a view cannot be half-applied by a missed JS branch.
+export function setWorkbenchView(view) {
   if (!DOM.emptyStateContainer) return;
   const raw = view === "raw";
+  const dag = view === "dag";
   DOM.emptyStateContainer.classList.toggle("raw-view", raw);
-  if (DOM.btnWorkbenchTreeView) {
-    DOM.btnWorkbenchTreeView.classList.toggle("active", !raw);
-    DOM.btnWorkbenchTreeView.setAttribute("aria-pressed", String(!raw));
-  }
-  if (DOM.btnWorkbenchRawMd) {
-    DOM.btnWorkbenchRawMd.classList.toggle("active", raw);
-    DOM.btnWorkbenchRawMd.setAttribute("aria-pressed", String(raw));
-  }
+  DOM.emptyStateContainer.classList.toggle("dag-view", dag);
+
+  const setToggle = (button, active) => {
+    if (!button) return;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  };
+  setToggle(DOM.btnWorkbenchTreeView, !raw && !dag);
+  setToggle(DOM.btnWorkbenchDagView, dag);
+  setToggle(DOM.btnWorkbenchRawMd, raw);
+
+  // `hidden` as well as the class: the canvas must be measurable the moment it is shown, and
+  // a display rule is not something the DAG renderer can wait on.
+  if (DOM.workbenchDagView) DOM.workbenchDagView.hidden = !dag;
+
   refreshWorkbenchChrome();
   updateWorkbenchMeta();
+  if (dag) emit("dag:view-shown");
 }
 
-function handleWorkbenchShowTree() {
+export function handleWorkbenchShowTree() {
   setWorkbenchView("tree");
 }
 
-function handleWorkbenchShowRaw() {
+export function handleWorkbenchShowDag() {
+  setWorkbenchView("dag");
+}
+
+export function handleWorkbenchShowRaw() {
   setWorkbenchView("raw");
 }
 
@@ -245,32 +259,35 @@ function renderWorkbenchGutter() {
   DOM.planEditorGutter.textContent = numbers.join("\n");
 }
 
-function syncWorkbenchGutterScroll() {
+export function syncWorkbenchGutterScroll() {
   if (DOM.planEditorGutter && DOM.planEditorInput) {
     DOM.planEditorGutter.scrollTop = DOM.planEditorInput.scrollTop;
   }
 }
 
-function handleWorkbenchInput() {
+export function handleWorkbenchInput() {
   renderWorkbenchGutter();
   updateWorkbenchDirty();
   updateWorkbenchMeta();
 }
 
-function handleWorkbenchEdit() {
-  if (workbenchBusy) return;
-  if (!window.pywebview || !window.pywebview.api) {
-    showToast("Editing the plan needs the desktop app; this view is read-only.", "info");
-    return;
-  }
-  setWorkbenchEditing(true);
+// The raw-markdown editor is gone. The plan is a read-only projection of the SQLite
+// state, so a free-text edit cannot be parsed back into it -- a malformed document would
+// corrupt the DAG or silently drop dependency edges. The plan is changed through the
+// structured actions that mutate the store directly (Execute Next Step, Update Plan,
+// Add to Plan), never by hand-writing the document.
+export function handleWorkbenchEdit() {
+  showToast(
+    "The plan is read-only here. Change it with Execute Next Step, Update Plan or Add to Plan.",
+    "info"
+  );
 }
 
 // "Edit this task" is a jump into the source, not a second editor: the plan markdown is the
 // only copy the agents read, so editing means the raw view. The title is the anchor because
 // that is what the markdown carries; a miss simply opens the top of the file, which is still
 // an edit session rather than a dead click.
-function editTaskInWorkbench(step) {
+export function editTaskInWorkbench(step) {
   if (!step || !DOM.planEditorInput) return;
   // Re-anchoring while already editing must not discard the draft: setWorkbenchEditing(true)
   // rewrites the textarea from the last rendered content, so only enter edit mode if we are
@@ -301,47 +318,14 @@ function workbenchLineHeight() {
   return 23;   // 14px x 1.65: the metrics declared in ui/css/workbench.css
 }
 
-function handleWorkbenchDiscard() {
+export function handleWorkbenchDiscard() {
   if (workbenchBusy || !DOM.planEditorInput) return;
   DOM.planEditorInput.value = workbenchSaved;
   setWorkbenchEditing(false);
   showToast("Discarded unsaved plan edits", "info");
 }
 
-async function handleWorkbenchSave() {
-  if (workbenchBusy || !DOM.planEditorInput) return;
-  if (!window.pywebview || !window.pywebview.api) {
-    showToast("Saving the plan needs the desktop app; this view is read-only.", "info");
-    return;
-  }
-
-  const filename = state.activePlan || "PLAN.md";
-  const content = DOM.planEditorInput.value;
-  workbenchBusy = true;
-  if (DOM.btnWorkbenchSave) DOM.btnWorkbenchSave.disabled = true;
-
-  try {
-    const res = await window.pywebview.api.save_plan_content(filename, content);
-    if (res && res.success === false) {
-      // Stay in edit mode: the draft is the only copy of the user's work.
-      showToast(`Save failed: ${res.error || "unknown error"}`, "error");
-      return;
-    }
-    workbenchSaved = content;
-    setWorkbenchEditing(false);
-    // The backend re-parses the markdown and re-compiles plan.json, so its return value
-    // -- not the editor's text -- is the new truth for both the tree and this document.
-    applyPlanData(res);
-    showToast(`Saved ${filename} and re-synced plan.json`, "success");
-  } catch (err) {
-    showToast(`Save error: ${(err && err.message) || err}`, "error");
-  } finally {
-    workbenchBusy = false;
-    if (DOM.btnWorkbenchSave) DOM.btnWorkbenchSave.disabled = false;
-  }
-}
-
-function initWorkbench() {
+export function initWorkbench() {
   // The first plan load renders the document itself; this settles only the chrome that
   // does not depend on plan content.
   setWorkbenchView("tree");

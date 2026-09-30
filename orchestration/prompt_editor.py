@@ -104,10 +104,13 @@ def edit_coder_prompt(
             full_prompt = f"{core_val}\n\n### Custom Developer Directives:\n{new_prompt}"
             if coder_name == "coder-deep":
                 coders_mod.CODER_DEEP_SYSTEM_PROMPT = full_prompt
-                coders_mod.coder_deep["system_prompt"] = full_prompt
+                # The role descriptor, not a dict of agent state. The assignment contract is the
+                # same one the dict had -- hot-reload is a mutation, and the dataclass is mutable
+                # precisely so this line did not have to change shape.
+                coders_mod.coder_deep.system_prompt = full_prompt
             else:
                 coders_mod.CODER_STANDARD_SYSTEM_PROMPT = full_prompt
-                coders_mod.coder_standard["system_prompt"] = full_prompt
+                coders_mod.coder_standard.system_prompt = full_prompt
         else:
             const_name = f"{coder_name.upper().replace('-', '_')}_SYSTEM_PROMPT"
             pattern = rf'{const_name}\s*=\s*""".*?"""'
@@ -119,9 +122,9 @@ def edit_coder_prompt(
             # the edit would appear not to have taken effect until a restart.
             setattr(coders_mod, const_name, new_prompt)
             if coder_name == "coder-deep":
-                coders_mod.coder_deep["system_prompt"] = new_prompt
+                coders_mod.coder_deep.system_prompt = new_prompt
             else:
-                coders_mod.coder_standard["system_prompt"] = new_prompt
+                coders_mod.coder_standard.system_prompt = new_prompt
 
         with open(coder_file, "w", encoding="utf-8") as f:
             f.write(updated_content)

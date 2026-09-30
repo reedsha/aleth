@@ -3,26 +3,64 @@
 // Surfaces a startup failure that would otherwise be invisible: the packaged app
 // runs with debug=False, so an exception here leaves a fully rendered window with
 // no click handlers at all ("open, but nothing responds") and no way to tell why.
-function reportStartupFailure(message) {
-  console.error("[DeepAgents UI]", message);
-  // The document head installs a reporter before any module runs. Sharing it keeps
-  // every failure in one stack of banners instead of several overlapping at the same
-  // position, where all but the last message would be unreadable.
-  if (typeof window !== "undefined" && typeof window.__deepAgentsReport === "function") {
-    window.__deepAgentsReport(message);
-    return;
-  }
-  try {
-    const banner = document.createElement("div");
-    banner.textContent = "[DeepAgents UI] " + message;
-    banner.style.cssText = "position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;" +
-      "padding:10px 14px;background:#7f1d1d;color:#fff;font:12px/1.5 monospace;" +
-      "border-radius:8px;white-space:pre-wrap;pointer-events:none";
-    (document.body || document.documentElement).appendChild(banner);
-  } catch (_err) {
-    /* the console line above is the last resort */
-  }
-}
+import { abortRunUi, beginRunUi, closeActionDrawer, finalizeWorkflow, handleActionParamConfirm, handleStopClick, openActionDrawer } from "./actions.js";
+import { hideTaggingPanel, showTaggingPanel } from "./agent-events.js";
+import { closePromptEditor, saveCurrentSystemPrompt, updateEditorMetrics } from "./agents.js";
+import { applyAgentsData, initFallbackMode, onPyWebViewReady, updateWorkspaceUI } from "./bootstrap.js";
+import { on as onBus } from "./bus.js";
+import { initCodeSurfaces } from "./code-surface.js";
+import { initCommandPalette, openCommandPalette } from "./command-palette.js";
+import { clearConsole, detachConsole, initTerminalConsole, toggleConsole, toggleConsoleOverlay } from "./console.js";
+import { initDockResize } from "./dock.js";
+import { initDOMElements } from "./dom.js";
+import { initEnvironmentPanel } from "./env.js";
+import { reportStartupFailure, showToast } from "./notify.js";
+import { closeCreatePlanModal, closeNormalizeGateModal, closeSwitchPlanModal, handleCreatePlanSubmit, handleNormalizeGateConfirm, openCreatePlanModal, openSwitchPlanModal } from "./plan-modals.js";
+import { applyPlanData } from "./plan-tree.js";
+import { closePreview, initPreview, refreshPreview, togglePreview } from "./preview.js";
+import { closeResultView, handleResultViewClick, initResultView, openResultView } from "./result-view.js";
+import { initSettingsPanel } from "./settings.js";
+import { initSidebars, openPlansTab, renderSidebarPlans, setSidebarTab, switchActivePlan } from "./sidebar.js";
+import { DOM, setAgentCardOpen, state, unresolvedElements } from "./store.js";
+import { simulateWorkflow } from "./visuals.js";
+import { closeDagPanel, toggleDagPanel } from "./dag.js";
+import { editTaskInWorkbench, handleWorkbenchDiscard, handleWorkbenchEdit, handleWorkbenchInput, handleWorkbenchShowDag, handleWorkbenchShowRaw, handleWorkbenchShowTree, initWorkbench, refreshWorkbenchChrome, renderPlanDocument, syncWorkbenchGutterScroll } from "./workbench.js";
+import { closeAuditModal, closeRollbackModal, closeWorkspaceFilesModal, handleAuditResolution, handleConfirmRollback, openAuditModal, openPlanSummaryPanel, openRollbackModal, openWorkspaceFilesModal, renderFilteredWorkspaceFiles } from "./workspace.js";
+
+// ---------------------------------------------------------------------------
+// Bus subscriptions -- the composition layer
+// ---------------------------------------------------------------------------
+// Feature renderers that would otherwise import a *caller* publish an intent on the bus
+// instead (see ui/js/bus.js): plan-tree opens the action drawer, the console folds the
+// drawer away, plan-modals arms and unwinds the run lock, and the event handler finalizes a
+// run and applies agent/workspace payloads. Each entry below maps an intent to its real
+// implementation. The subscriptions are registered here, at module top level, so they exist
+// before any event can fire -- wire.js is imported last by main.js, after every module whose
+// functions are named here.
+//
+// This is the only place that knows the wiring; the modules on the other side of the bus do
+// not import it, or each other, for these operations.
+onBus("action:open", (payload) => {
+  const { kind, ...opts } = payload || {};
+  openActionDrawer(kind, opts);
+});
+onBus("action:close-drawer", closeActionDrawer);
+onBus("run:stop", handleStopClick);
+onBus("run:begin", beginRunUi);
+onBus("run:abort", (payload) => abortRunUi((payload && payload.message) || ""));
+onBus("run:finalize", (payload) => finalizeWorkflow(payload && payload.status));
+onBus("run:simulate", simulateWorkflow);
+onBus("agents:apply", applyAgentsData);
+onBus("workspace:update", updateWorkspaceUI);
+onBus("modal:create-plan", openCreatePlanModal);
+onBus("modal:rollback", openRollbackModal);
+onBus("sidebar:render-plans", renderSidebarPlans);
+onBus("workbench:edit-task", editTaskInWorkbench);
+onBus("workbench:refresh-chrome", refreshWorkbenchChrome);
+onBus("workbench:render-document", renderPlanDocument);
+// The DAG asks for the tree view when it takes focus (ui/js/dag.js): the review surface has
+// no business being behind the raw-markdown view.
+onBus("workbench:show-tree", handleWorkbenchShowTree);
 
 // One failing startup step must never take the remaining steps down with it. Failures
 // are normalised into one message shape, and an async step's rejection is caught too:
@@ -42,7 +80,7 @@ function runStartupStep(label, step) {
 // `DOM.x.addEventListener(...)`, so a single element that was missing or had not been
 // cached skipped every listener below it, leaving a rendered but inert window with no
 // indication of which control was responsible.
-function on(element, event, handler) {
+export function on(element, event, handler) {
   if (!element || typeof element.addEventListener !== "function") {
     reportStartupFailure(`cannot wire "${event}": element is missing`);
     return;
@@ -69,22 +107,38 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Environment panel", initEnvironmentPanel);
   runStartupStep("Settings panel", initSettingsPanel);
 
-  // PyWebView Bridge initialization
+  // Every element the app caches must have resolved. This replaces the check the document
+  // head used to make against a hand-maintained list of ~35 window globals: it asks the
+  // cache the wiring actually reads, so it cannot fall out of step with the markup, and it
+  // names the missing elements rather than only counting them.
+  const unresolved = unresolvedElements();
+  if (unresolved.length > 0) {
+    reportStartupFailure(`missing DOM elements: ${unresolved.join(", ")}`);
+  }
+
+  // PyWebView Bridge initialization. A single settle path decides, exactly once, whether
+  // the bridge is there or not. pywebview injects its bridge after this script has run, so
+  // either it announces itself with `pywebviewready`, or it does not. Whatever arrives
+  // first wins and settles the decision; the other path -- the event and the one fallback
+  // timer -- can never run its step a second time. This replaces two timers racing.
   if (window.pywebview) {
     runStartupStep("Bridge startup", onPyWebViewReady);
   } else {
-    // pywebview injects its bridge after this script has run, so the event can beat the
-    // timer. Whichever wins, the other is cancelled: a bridge that arrives promptly must
-    // not also run the fallback path, which now only reports or seeds opt-in demo data.
-    const fallbackTimer = setTimeout(() => {
-      if (!window.pywebview) {
-        runStartupStep("Bridge fallback", initFallbackMode);
-      }
-    }, 400);
+    let bridgeSettled = false;
+    const settleBridge = (label, step) => {
+      if (bridgeSettled) return;
+      bridgeSettled = true;
+      runStartupStep(label, step);
+    };
     window.addEventListener("pywebviewready", () => {
-      clearTimeout(fallbackTimer);
-      runStartupStep("Bridge startup", onPyWebViewReady);
+      settleBridge("Bridge startup", onPyWebViewReady);
     });
+    setTimeout(() => {
+      // If the event was missed but the bridge is present, treat it as ready; otherwise
+      // this is the one explicit fallback path, and it cannot double-fire.
+      if (window.pywebview) settleBridge("Bridge startup", onPyWebViewReady);
+      else settleBridge("Bridge fallback", initFallbackMode);
+    }, 400);
   }
 });
 // ============================================================================
@@ -139,7 +193,7 @@ function initEventListeners() {
           const planData = await window.pywebview.api.get_active_plan();
           applyPlanData(planData);
         }
-      } catch (err) {
+      } catch (_err) {
         showToast("Error opening workspace dialog", "error");
       }
     } else {
@@ -175,13 +229,13 @@ function initEventListeners() {
   // Card Close [X] Buttons
   on(DOM.btnCloseArchitect, "click", () => {
     DOM.cardArchitect.style.display = "none";
-    state.architectCardOpen = false;
+    setAgentCardOpen("architect", false);
     checkAllCardsClosed();
   });
 
   on(DOM.btnCloseCoder, "click", () => {
     DOM.cardCoder.style.display = "none";
-    state.coderCardOpen = false;
+    setAgentCardOpen("coder", false);
     if (state.architectCardOpen) {
       DOM.cardArchitect.style.flex = "1";
     }
@@ -318,9 +372,8 @@ function initEventListeners() {
   }
   if (DOM.btnConfirmRollbackAction) DOM.btnConfirmRollbackAction.addEventListener("click", handleConfirmRollback);
 
-  // ── Plan Workbench: the active plan as a read/write document ──
+  // ── Plan Workbench: the active plan rendered as a read-only document ──
   on(DOM.btnWorkbenchEdit, "click", handleWorkbenchEdit);
-  on(DOM.btnWorkbenchSave, "click", handleWorkbenchSave);
   on(DOM.btnWorkbenchDiscard, "click", handleWorkbenchDiscard);
   on(DOM.planEditorInput, "input", handleWorkbenchInput);
   on(DOM.planEditorInput, "scroll", syncWorkbenchGutterScroll);
@@ -336,6 +389,13 @@ function initEventListeners() {
   // Every renderer rewrites the body wholesale, so the buttons inside it (file chips,
   // "Add to Plan") are handled by delegation instead of being re-attached per render.
   on(DOM.resultBody, "click", handleResultViewClick);
+
+  // ── Plan workbench views ──
+  if (DOM.btnWorkbenchDagView) DOM.btnWorkbenchDagView.addEventListener("click", handleWorkbenchShowDag);
+
+  // ── Artifact DAG rail panel ──
+  if (DOM.btnDagPanel) DOM.btnDagPanel.addEventListener("click", toggleDagPanel);
+  if (DOM.btnCloseDagPanel) DOM.btnCloseDagPanel.addEventListener("click", closeDagPanel);
 
   // ── Dock console ──
   on(DOM.btnConsoleToggle, "click", toggleConsole);

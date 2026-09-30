@@ -2,7 +2,29 @@
 // ============================================================================
 // Action Drawer Flow (Critical Rule: All Actions Prompt for Params)
 // ============================================================================
-function openActionDrawer(actionType, extraParams = {}) {
+import { handleAgentEvent } from "./agent-events.js";
+import { emit } from "./bus.js";
+import { repaintCodeSurfaces } from "./code-surface.js";
+import { isDockDrawerOpen, setDockDrawerOpen } from "./dock.js";
+import { showToast } from "./notify.js";
+import { isUiTask, renderPlanTree, updateBentoStats, updateStrictPlanLock } from "./plan-tree.js";
+import { refreshPreview } from "./preview.js";
+import { resetResultView } from "./result-view.js";
+import { setHtml, setText } from "./safe-dom.js";
+import { DOM, state } from "./store.js";
+
+// Focusing a field the drawer just revealed cannot happen in the same task: the panel has
+// no box until layout runs, so a bare focus() is silently dropped. This used to be six
+// separate 60 ms timeouts -- a fixed guess that raced the layout. The next animation frame
+// runs after style and layout, before paint, so the field receives focus the moment it is
+// focusable. Falls back to an immediate focus where rAF does not exist.
+function focusAfterLayout(field) {
+  if (!field || typeof field.focus !== "function") return;
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => field.focus());
+  else field.focus();
+}
+
+export function openActionDrawer(actionType, extraParams = {}) {
   if (state.isExecuting) return;
   if (!DOM.actionDrawerPanel) return;
 
@@ -67,11 +89,14 @@ function openActionDrawer(actionType, extraParams = {}) {
         DOM.paramTargetTitle.textContent = state.targetTaskTitle || state.targetTaskId;
         DOM.paramTargetTaskCard.style.display = "flex";
       }
-      setTimeout(() => DOM.inputBugDescription && DOM.inputBugDescription.focus(), 60);
+      focusAfterLayout(DOM.inputBugDescription);
       break;
 
-    case "next_step":
-      DOM.paramModalIcon.textContent = "⚡";
+    // Braced on purpose: a `const` declared directly in a `case` block belongs to the
+    // whole `switch`, so `targetTask` would be in scope (and in the temporal dead zone)
+    // for every later case. A block keeps it local to this one.
+    case "next_step": {
+      DOM.paramModalIcon.textContent = "\u26A1";
       DOM.paramModalTitle.textContent = "Execute Next Step";
       DOM.paramModalSubtitle.textContent = "Milestone Task Implementation";
       DOM.paramActionTypeBadge.textContent = "Architect Gatekeeper -> Coder";
@@ -79,8 +104,8 @@ function openActionDrawer(actionType, extraParams = {}) {
       DOM.btnConfirmActionText.textContent = "Execute Step";
 
       // Find top pending task if not explicitly passed
-      const targetTask = state.targetTaskId 
-        ? state.planTree.find(t => t.id === state.targetTaskId) 
+      const targetTask = state.targetTaskId
+        ? state.planTree.find(t => t.id === state.targetTaskId)
         : state.planTree.find(t => t.status === "pending");
 
       if (targetTask) {
@@ -95,8 +120,9 @@ function openActionDrawer(actionType, extraParams = {}) {
           DOM.paramUiVisionSection.style.display = "block";
         }
       }
-      setTimeout(() => DOM.inputActionCustomInstructions && DOM.inputActionCustomInstructions.focus(), 60);
+      focusAfterLayout(DOM.inputActionCustomInstructions);
       break;
+    }
 
     case "update_plan":
       DOM.paramModalIcon.textContent = "✏️";
@@ -105,7 +131,7 @@ function openActionDrawer(actionType, extraParams = {}) {
       DOM.paramActionTypeBadge.textContent = "Administrative Bypass";
       DOM.paramPresetDescription.textContent = "Architect directly refines plan.json tasks and milestones based on your input, immediately compiling changes into PLAN.md.";
       DOM.btnConfirmActionText.textContent = "Update Plan";
-      setTimeout(() => DOM.inputActionCustomInstructions && DOM.inputActionCustomInstructions.focus(), 60);
+      focusAfterLayout(DOM.inputActionCustomInstructions);
       break;
 
     case "analyze":
@@ -115,7 +141,7 @@ function openActionDrawer(actionType, extraParams = {}) {
       DOM.paramActionTypeBadge.textContent = "Direct Architect Query";
       DOM.paramPresetDescription.textContent = "Architect inspects workspace files, checks interfaces and constraints, and produces a thorough structural report.";
       DOM.btnConfirmActionText.textContent = "Run Analysis";
-      setTimeout(() => DOM.inputActionCustomInstructions && DOM.inputActionCustomInstructions.focus(), 60);
+      focusAfterLayout(DOM.inputActionCustomInstructions);
       break;
 
     case "recommend":
@@ -125,7 +151,7 @@ function openActionDrawer(actionType, extraParams = {}) {
       DOM.paramActionTypeBadge.textContent = "Advisory Loop";
       DOM.paramPresetDescription.textContent = "Architect reviews current milestone completion in plan.json and workspace code to propose strategic next steps.";
       DOM.btnConfirmActionText.textContent = "Get Recommendations";
-      setTimeout(() => DOM.inputActionCustomInstructions && DOM.inputActionCustomInstructions.focus(), 60);
+      focusAfterLayout(DOM.inputActionCustomInstructions);
       break;
 
     case "custom":
@@ -137,7 +163,7 @@ function openActionDrawer(actionType, extraParams = {}) {
       DOM.paramPresetDescription.textContent = "Software Architect intercepts your custom instruction, determines required actions, and handles directly or delegates to Coders.";
       DOM.btnConfirmActionText.textContent = "Execute Directive";
       if (DOM.lblActionCustomInstructions) {
-        DOM.lblActionCustomInstructions.innerHTML = 'CUSTOM DIRECTIVE / INSTRUCTION <span class="required-star">*Required</span>';
+        setHtml(DOM.lblActionCustomInstructions, 'CUSTOM DIRECTIVE / INSTRUCTION <span class="required-star">*Required</span>');
       }
       if (DOM.inputActionCustomInstructions) {
         DOM.inputActionCustomInstructions.placeholder = "Enter your custom instruction, directive, or question for the software architect...";
@@ -145,7 +171,7 @@ function openActionDrawer(actionType, extraParams = {}) {
       if (DOM.btnConfirmActionParam) {
         DOM.btnConfirmActionParam.disabled = true;
       }
-      setTimeout(() => DOM.inputActionCustomInstructions && DOM.inputActionCustomInstructions.focus(), 60);
+      focusAfterLayout(DOM.inputActionCustomInstructions);
       break;
   }
 
@@ -155,7 +181,7 @@ function openActionDrawer(actionType, extraParams = {}) {
   if (typeof repaintCodeSurfaces === "function") repaintCodeSurfaces();
 }
 
-function closeActionDrawer() {
+export function closeActionDrawer() {
   setDockDrawerOpen(false);
 }
 
@@ -193,7 +219,7 @@ function readImageDataUrl(file) {
   });
 }
 
-async function handleActionParamConfirm() {
+export async function handleActionParamConfirm() {
   const actionType = state.selectedAction || "custom";
   const customInstructions = DOM.inputActionCustomInstructions ? DOM.inputActionCustomInstructions.value.trim() : "";
 
@@ -276,7 +302,7 @@ async function handleActionParamConfirm() {
 // The client-side half of the run lock: the state the UI shows while a run is live. Extracted
 // so the retry, normalize and reload-recovery paths arm the *same* state a normal launch does
 // -- each starts a real backend run, and previously showed "Idle" with no Stop (audit H5/H6/H7).
-function beginRunUi() {
+export function beginRunUi() {
   state.isExecuting = true;
   // Reveal Stop in the top bar for the duration of the run
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "inline-flex";
@@ -300,7 +326,7 @@ function beginRunUi() {
 // Undoes beginRunUi when a launch did not actually start -- the backend refused because a run
 // was already live, or the call rejected. Without it the UI kept a Stop button and a
 // "Multi-Agent Active" label for a run that never began (audit H7).
-function abortRunUi(message) {
+export function abortRunUi(message) {
   state.isExecuting = false;
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "none";
   const hasTasks = state.planTree && state.planTree.length > 0;
@@ -334,8 +360,8 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
     DOM.executionStage.style.display = "block";
   }, 200);
 
-  DOM.architectStreamContent.innerHTML = "";
-  DOM.coderStreamContent.innerHTML = "";
+  setText(DOM.architectStreamContent, "");
+  setText(DOM.coderStreamContent, "");
   DOM.architectSummary.style.display = "none";
   DOM.coderSummary.style.display = "none";
   DOM.architectErrorBadge.style.display = "none";
@@ -367,11 +393,14 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
       });
     }
   } else {
-    simulateWorkflow(text);
+    // No bridge: drive the offline simulator. Published on the bus rather than imported:
+    // visuals.js imports the event handler, so importing it here would put a back-edge in
+    // the graph. wire.js maps the intent to simulateWorkflow().
+    emit("run:simulate", text);
   }
 }
 
-async function handleStopClick() {
+export async function handleStopClick() {
   // The terminal event is the backend's to send: the runner emits `workflow_complete`
   // (status `stopped`) when the run actually unwinds, and `stop_execution` emits one if no
   // run is live. Fabricating it here flipped the UI to "Halted" while the backend kept
@@ -406,7 +435,7 @@ function setActionButtonsDisabled(disabled) {
   });
 }
 
-function finalizeWorkflow(status) {
+export function finalizeWorkflow(status) {
   state.isExecuting = false;
 
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "none";

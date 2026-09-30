@@ -4,7 +4,7 @@ Before any task modifies or creates a deliverable, a snapshot is recorded under
 ``.deepagents_backups/<task_id>/`` together with ``_meta.json`` describing whether
 the file was modified (and where its prior copy lives) or newly created.
 
-The audit compares what plan.json claims against what actually exists on disk, and
+The audit compares what the plan state claims against what actually exists on disk, and
 offers two resolutions: trust the codebase, or force the codebase back in line
 with the plan. Rollback consumes the snapshots to reverse a completed task.
 """
@@ -19,11 +19,19 @@ from typing import Any, Dict, List, Optional
 
 from tools.plan_parser import compile_plan_json_to_markdown
 from tools.plan_state import load_plan_state, save_plan_state
+from storage.db import DB_FILENAME
+from tools.payloads import (
+    AuditReport,
+    PlanMutationResult,
+    PlanPayload,
+    RollbackResult,
+    TaskDiffResult,
+    validated,
+    validated_backup_meta,
+)
 from tools.workspace import (
     BACKUP_SUBDIR,
-    PLAN_JSON_FILE,
     get_active_plan_filename,
-    get_plan_json_path,
     get_plan_markdown_path,
     get_project_dir,
     walk_workspace,
@@ -36,10 +44,12 @@ def get_backup_dir() -> str:
     return path
 
 
-# A single "before" slot for the whole plan: the plan.json + markdown exactly as they were
-# immediately before the last agent-driven revision. Distinct from the per-task deliverable
-# snapshots above -- this captures the roadmap document itself, so a revision can be undone.
+# A single "before" slot for the whole plan: the state dictionary and the markdown exactly
+# as they were immediately before the last agent-driven revision. Distinct from the
+# per-task deliverable snapshots above -- this captures the roadmap document itself, so a
+# revision can be undone.
 PLAN_REVISION_SUBDIR = "plan_revision"
+PLAN_REVISION_JSON = "plan_revision.json"
 
 
 def _plan_revision_dir() -> str:
@@ -49,46 +59,49 @@ def _plan_revision_dir() -> str:
 
 
 def snapshot_plan_revision() -> bool:
-    """Captures the plan's current files into the revision slot, before a change is written.
+    """Captures the plan's current state into the revision slot, before a change is written.
 
-    Returns ``False`` when there is no plan on disk yet (nothing to capture) -- a first-ever
-    revision has no prior state, so there is nothing to revert to. Nothing raises: a missing
-    snapshot must never be able to fail the plan edit that is about to be made.
+    Returns ``False`` when there is no plan to capture yet (nothing to revert to) -- a
+    first-ever revision has no prior state. Nothing raises: a missing snapshot must never
+    be able to fail the plan edit that is about to be made.
     """
+    plan = load_plan_state()
+    if not (plan.get("steps") or plan.get("sections")):
+        return False
     dest = _plan_revision_dir()
-    captured = False
-    for src in (get_plan_json_path(), get_plan_markdown_path()):
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(dest, os.path.basename(src)))
-            captured = True
-    return captured
+    with open(os.path.join(dest, PLAN_REVISION_JSON), "w", encoding="utf-8") as handle:
+        json.dump(plan, handle, indent=2)
+    markdown_path = get_plan_markdown_path()
+    if os.path.isfile(markdown_path):
+        shutil.copy2(markdown_path, os.path.join(dest, os.path.basename(markdown_path)))
+    return True
 
 
 def revert_plan_revision() -> Dict[str, Any]:
     """Restores the plan captured by the last :func:`snapshot_plan_revision`.
 
     The snapshot is a whole-plan "before", so this reverses the last revision rather than
-    nudging one task's status. ``save_plan_state`` is used rather than a raw file copy so the
-    restored state goes through the same canonicalisation and metric recomputation as every
-    other write, and the markdown is recompiled from it rather than trusted as-is.
+    nudging one task's status. ``save_plan_state`` is used rather than a raw store write so
+    the restored state goes through the same canonicalisation and metric recomputation as
+    every other write, and the markdown is recompiled from it rather than trusted as-is.
     """
-    snap_json = os.path.join(_plan_revision_dir(), PLAN_JSON_FILE)
-    if not os.path.isfile(snap_json):
-        return {"success": False, "error": "There is no captured plan revision to restore."}
+    snap_path = os.path.join(_plan_revision_dir(), PLAN_REVISION_JSON)
+    if not os.path.isfile(snap_path):
+        return validated(PlanMutationResult, {"success": False, "error": "There is no captured plan revision to restore."})
     try:
-        with open(snap_json, "r", encoding="utf-8") as f:
-            plan_dict = json.load(f)
-    except Exception as e:
-        return {"success": False, "error": f"Could not read the captured revision: {e}"}
+        with open(snap_path, "r", encoding="utf-8") as handle:
+            plan_dict = validated(PlanPayload, json.load(handle))
+    except Exception as error:
+        return validated(PlanMutationResult, {"success": False, "error": f"Could not read the captured revision: {error}"})
 
     saved = save_plan_state(plan_dict)
     recompiled = compile_plan_json_to_markdown(saved)
-    return {
+    return validated(PlanMutationResult, {
         "success": True,
         "plan_json": saved,
         "content": recompiled,
         "tree": saved.get("steps", []),
-    }
+    })
 
 
 # A single source file larger than this is reported by name and size instead of by
@@ -147,6 +160,7 @@ def backup_file_for_task(task_id: str, filename: str) -> Optional[str]:
     else:
         meta[filename] = {"action": "created", "backup": None, "timestamp": time.time()}
 
+    validated_backup_meta(meta)
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
     return backup_path if os.path.exists(filepath) else None
@@ -164,21 +178,21 @@ def task_diff(task_id: str) -> Dict[str, Any]:
     task_key = str(task_id or "").strip()
     empty = {"files": [], "totals": {"files": 0, "added": 0, "removed": 0}}
     if not task_key:
-        return {"success": False, "error": "No task id given.", "task_id": task_id, **empty}
+        return validated(TaskDiffResult, {"success": False, "error": "No task id given.", "task_id": task_id, **empty})
 
     base_dir = get_project_dir()
     task_backup_dir = os.path.join(get_backup_dir(), task_key)
     meta_path = os.path.join(task_backup_dir, "_meta.json")
     if not os.path.isfile(meta_path):
         # Not every task writes files (analyze / recommend / update_plan never do).
-        return {"success": True, "found": False, "task_id": task_key, **empty}
+        return validated(TaskDiffResult, {"success": True, "found": False, "task_id": task_key, **empty})
 
     try:
         with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
+            meta = validated_backup_meta(json.load(f))
     except Exception as e:
-        return {"success": False, "error": f"Could not read backup metadata: {e}",
-                "task_id": task_key, **empty}
+        return validated(TaskDiffResult, {"success": False, "error": f"Could not read backup metadata: {e}",
+                "task_id": task_key, **empty})
 
     files: List[Dict[str, Any]] = []
     total_added = 0
@@ -210,13 +224,13 @@ def task_diff(task_id: str) -> Dict[str, Any]:
         })
 
     files.sort(key=lambda item: item["filename"])
-    return {
+    return validated(TaskDiffResult, {
         "success": True,
         "found": True,
         "task_id": task_key,
         "files": files,
         "totals": {"files": len(files), "added": total_added, "removed": total_removed},
-    }
+    })
 
 
 def audit_codebase_plan_sync() -> Dict[str, Any]:
@@ -237,7 +251,7 @@ def audit_codebase_plan_sync() -> Dict[str, Any]:
     for root, _dirs, files in walk_workspace(base_dir):
         for f in files:
             if f.startswith(".tmp") or f.lower() in {
-                PLAN_JSON_FILE.lower(), get_active_plan_filename().lower(), ".ds_store", "thumbs.db"
+                DB_FILENAME.lower(), get_active_plan_filename().lower(), ".ds_store", "thumbs.db"
             }:
                 continue
             rel = os.path.relpath(os.path.join(root, f), base_dir).replace("\\", "/")
@@ -293,14 +307,14 @@ def audit_codebase_plan_sync() -> Dict[str, Any]:
     else:
         summary = f"Detected {discrepancy_count} discrepancy(ies): {len(completed_missing)} completed task(s) missing deliverables, {len(pending_existing)} pending task(s) already have deliverables."
 
-    return {
+    return validated(AuditReport, {
         "in_sync": in_sync,
         "discrepancy_count": discrepancy_count,
         "completed_missing_files": completed_missing,
         "pending_existing_files": pending_existing,
         "untracked_files": untracked,
         "summary": summary
-    }
+    })
 
 
 def resolve_sync_plan_to_codebase() -> Dict[str, Any]:
@@ -324,14 +338,14 @@ def resolve_sync_plan_to_codebase() -> Dict[str, Any]:
 
     saved = save_plan_state(plan_dict)
     recompiled = compile_plan_json_to_markdown(saved)
-    return {
+    return validated(PlanMutationResult, {
         "success": True,
         "action": "plan_to_codebase",
         "modified_tasks": modified_tasks,
         "plan_json": saved,
         "content": recompiled,
         "tree": saved.get("steps", [])
-    }
+    })
 
 
 def resolve_sync_code_to_plan() -> Dict[str, Any]:
@@ -355,14 +369,14 @@ def resolve_sync_code_to_plan() -> Dict[str, Any]:
 
     saved = save_plan_state(plan_dict)
     recompiled = compile_plan_json_to_markdown(saved)
-    return {
+    return validated(PlanMutationResult, {
         "success": True,
         "action": "code_to_plan",
         "modified_tasks": modified_tasks,
         "plan_json": saved,
         "content": recompiled,
         "tree": saved.get("steps", [])
-    }
+    })
 
 
 def rollback_task_state(task_id: str) -> Dict[str, Any]:
@@ -386,7 +400,7 @@ def rollback_task_state(task_id: str) -> Dict[str, Any]:
             break
 
     if not target_task:
-        return {"success": False, "error": f"Task '{task_id}' not found in active plan."}
+        return validated(RollbackResult, {"success": False, "error": f"Task '{task_id}' not found in active plan."})
 
     old_status = target_task.get("status")
     target_task["status"] = "pending"
@@ -401,7 +415,7 @@ def rollback_task_state(task_id: str) -> Dict[str, Any]:
     if os.path.exists(meta_path):
         try:
             with open(meta_path, "r", encoding="utf-8") as f:
-                meta = json.load(f)
+                meta = validated_backup_meta(json.load(f))
         except Exception as e:
             restore_errors.append(f"backup metadata unreadable: {e}")
             meta = {}
@@ -435,4 +449,4 @@ def rollback_task_state(task_id: str) -> Dict[str, Any]:
     }
     if restore_errors:
         result["error"] = "Rollback could not restore: " + "; ".join(restore_errors)
-    return result
+    return validated(RollbackResult, result)

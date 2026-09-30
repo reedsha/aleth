@@ -1,5 +1,7 @@
 // ui/js/dom.js — DOM element cache initialization and HTML escaping helper.
-function initDOMElements() {
+import { DOM } from "./store.js";
+
+export function initDOMElements() {
   DOM.emptyStateContainer = document.getElementById("emptyStateContainer");
   DOM.executionStage = document.getElementById("executionStage");
   DOM.cardsGrid = document.getElementById("cardsGrid");
@@ -182,6 +184,11 @@ function initDOMElements() {
   // Codebase & Plan Sync Audit Modal (Module 5)
   DOM.btnAuditPlanSync = document.getElementById("btnAuditPlanSync");
   DOM.auditModalOverlay = document.getElementById("auditModalOverlay");
+  // Artifact DAG rail panel: the review surface for planned artifacts, its own rail panel
+  // beside the audit's rather than a section inside the plan tree.
+  DOM.btnDagPanel = document.getElementById("btnDagPanel");
+  DOM.dagPanelOverlay = document.getElementById("dagPanel");
+  DOM.btnCloseDagPanel = document.getElementById("btnCloseDagPanel");
   DOM.btnCloseAuditModal = document.getElementById("btnCloseAuditModal");
   DOM.btnCloseAuditModalFooter = document.getElementById("btnCloseAuditModalFooter");
   DOM.auditHeaderTitle = document.getElementById("auditHeaderTitle");
@@ -239,10 +246,12 @@ function initDOMElements() {
   DOM.planEditorInput = document.getElementById("planEditorInput");
   DOM.txtWorkbenchMeta = document.getElementById("txtWorkbenchMeta");
 
-  // Plan workbench views: the roadmap as a tree, or the raw markdown source
+  // Plan workbench views: the roadmap as a document tree, the DAG canvas, or the raw source
   DOM.btnWorkbenchTreeView = document.getElementById("btnWorkbenchTreeView");
+  DOM.btnWorkbenchDagView = document.getElementById("btnWorkbenchDagView");
   DOM.btnWorkbenchRawMd = document.getElementById("btnWorkbenchRawMd");
   DOM.workbenchTreeView = document.getElementById("workbenchTreeView");
+  DOM.workbenchDagView = document.getElementById("workbenchDagView");
   // Reopens the last action's result view after it has been dismissed
   DOM.btnWorkbenchResult = document.getElementById("btnWorkbenchResult");
 
@@ -260,7 +269,7 @@ function initDOMElements() {
   DOM.settingsStatus = document.getElementById("settingsStatus");
 }
 
-function escapeHtml(str) {
+export function escapeHtml(str) {
   if (!str) return "";
   return String(str)
     .replace(/&/g, "&amp;")

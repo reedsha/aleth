@@ -55,6 +55,13 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
             ],
         },
         "updated_at": time.time(),
+        # Topology is declared as structure -- ``dependencies`` arrays of node ids -- and is
+        # the ONLY source of a blocker edge. It is never parsed out of the markdown: the
+        # document is a read-only projection of this, so a relationship is written here or
+        # through the explicit ``add_task_dependency`` IPC, never inferred from prose.
+        #
+        # task-4 and task-5 share a single blocker, so they are concurrent: that pair is what
+        # the DAG's layered layout stacks vertically rather than reading as a sequence.
         "sections": [
             {
                 "id": "sec-1",
@@ -69,7 +76,10 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                             f'Lead Architect: Defined scope for "{idea_clean[:80]}"',
                             f"Dynamic Plan: `{clean_name}`"
                         ],
-                        "files": []
+                        "files": [],
+                        "dependencies": [],
+                        # No tools: the specification is written into this document, not the code.
+                        "required_capabilities": []
                     },
                     {
                         "id": "task-2",
@@ -77,7 +87,11 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "title": "Project scaffolding and runtime dependencies",
                         "status": "pending",
                         "details": [],
-                        "files": []
+                        "files": [],
+                        "dependencies": ["task-1"],
+                        # Creates the project files, so it needs the filesystem; installs the
+                        # dependencies, so it needs the shell.
+                        "required_capabilities": ["fs", "exec"]
                     }
                 ]
             },
@@ -91,7 +105,11 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "title": "Build core domain models and application logic",
                         "status": "pending",
                         "details": ["Assigned: `coder-deep` (complex algorithms & backend logic)"],
-                        "files": []
+                        "files": [],
+                        "dependencies": ["task-2"],
+                        # Writes code and changes code that already exists: whole files through the
+                        # server, surgical node replacements through the orchestrator.
+                        "required_capabilities": ["fs", "ast"]
                     },
                     {
                         "id": "task-4",
@@ -99,7 +117,9 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "title": "Implement service endpoints and controllers",
                         "status": "pending",
                         "details": [],
-                        "files": []
+                        "files": [],
+                        "dependencies": ["task-3"],
+                        "required_capabilities": ["fs", "ast"]
                     },
                     {
                         "id": "task-5",
@@ -107,7 +127,9 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "title": "Implement data validation and error handling",
                         "status": "pending",
                         "details": [],
-                        "files": []
+                        "files": [],
+                        "dependencies": ["task-3"],
+                        "required_capabilities": ["fs", "ast"]
                     }
                 ]
             },
@@ -121,7 +143,10 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "title": "Construct automated test suite with pytest",
                         "status": "pending",
                         "details": ["Assigned: `coder-standard` (tests & documentation)"],
-                        "files": []
+                        "files": [],
+                        "dependencies": ["task-4", "task-5"],
+                        # Writes the tests and runs them.
+                        "required_capabilities": ["fs", "ast", "exec"]
                     },
                     {
                         "id": "task-7",
@@ -129,7 +154,10 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "title": "Verify functionality via restricted shell execution",
                         "status": "pending",
                         "details": [],
-                        "files": []
+                        "files": [],
+                        "dependencies": ["task-6"],
+                        # Verification only: the shell, and nothing that writes.
+                        "required_capabilities": ["exec"]
                     },
                     {
                         "id": "task-8",
@@ -137,7 +165,10 @@ def scaffold_plan_file(filename: str, project_idea: str) -> Dict[str, Any]:
                         "title": "Deliverable audit and deployment readiness check",
                         "status": "pending",
                         "details": [],
-                        "files": []
+                        "files": [],
+                        "dependencies": ["task-7"],
+                        # Reads the workspace and inspects it symbol by symbol.
+                        "required_capabilities": ["fs", "ast"]
                     }
                 ]
             }

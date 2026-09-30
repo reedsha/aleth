@@ -24,27 +24,33 @@ from dataclasses import dataclass
 from typing import Any, Callable, List, Mapping, Optional
 
 from agents.model_routing import coder_model
-from orchestration.workflow.context import slice_task_context
+from orchestration.workflow.context import assemble_coder_context, slice_task_context
+from tools.workspace import get_project_dir
 
 # A deliverable is written where the *task* says it belongs, not where a template happens
 # to put it. Tasks name their file in backticks -- "Upgrade AST parser
 # (`tools/plan_parser.py`)" -- which is precise, in the author's own words, and free to
-# read. Requiring the backticks keeps prose like "the ``runner.resolve_intent`` tag" from
-# being mistaken for a path.
-_TARGET_PATH_RE = re.compile(
-    r"`([\w][\w./\\-]*\.(?:py|pyi|js|mjs|cjs|jsx|ts|tsx|css|scss|html|htm|json|sql|sh"
-    r"|yml|yaml|toml|go|rs|rb|java|kt|swift|vue|svelte))`"
+# read.
+#
+# There is no regular expression here on purpose. The text is split on backticks and each
+# span is accepted only when it ends in a known source extension and carries no
+# whitespace, so a path is recognised *structurally* rather than matched by a pattern that
+# could pick a path-shaped fragment out of prose.
+_SOURCE_SUFFIXES = (
+    ".py", ".pyi", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".css", ".scss",
+    ".html", ".htm", ".json", ".sql", ".sh", ".yml", ".yaml", ".toml", ".go", ".rs",
+    ".rb", ".java", ".kt", ".swift", ".vue", ".svelte",
 )
 
 
 def task_target_path(task: Mapping[str, Any]) -> Optional[str]:
     """The workspace-relative file a task's deliverable belongs in, or ``None``.
 
-    Consulted in order of how deliberate the statement is: the backticked path in the
-    title, then one in the task's notes, then a declared deliverable. The title wins
-    because ``files`` is also what the workflow *records* once a task has run -- so a task
-    executed before carries the path that run wrote, wrong or not. The author's title is
-    the intent; the record is a consequence.
+    Consulted in order of how deliberate the statement is: a backticked path in the title,
+    then one in the task's notes, then a declared deliverable. The title wins because
+    ``files`` is also what the workflow *records* once a task has run -- so a task executed
+    before carries the path that run wrote, wrong or not. The author's title is the intent;
+    the record is a consequence.
 
     ``None`` means the task does not name a file, and the caller should keep whatever the
     template chose.
@@ -62,10 +68,16 @@ def path_in_text(text: str) -> Optional[str]:
     """The first backticked source path in ``text``, normalised, or ``None``.
 
     Shared by the plan-task target and by the two free-form paths -- a bug report and a
-    custom directive -- which have no task to read a title from.
+    custom directive -- which have no task to read a title from. Backtick-delimited spans
+    are checked against the known source extensions; nothing is matched by a pattern.
     """
-    match = _TARGET_PATH_RE.search(str(text or ""))
-    return match.group(1).replace("\\", "/").strip("/") if match else None
+    for span in str(text or "").split("`")[1::2]:
+        candidate = span.strip().replace("\\", "/").strip("/")
+        if not candidate or any(character.isspace() for character in candidate):
+            continue
+        if candidate.lower().endswith(_SOURCE_SUFFIXES):
+            return candidate
+    return None
 
 
 def paired_test_path(path: str) -> str:
@@ -184,7 +196,7 @@ def build_system_prompt(coder_id: str, plan_file: str) -> str:
     from orchestration.agent_catalog import resolve_prompt_variables
 
     spec = coders.coder_deep if coder_id == "coder-deep" else coders.coder_standard
-    return resolve_prompt_variables(spec["system_prompt"], plan_file) + _DIRECT_MODE_DIRECTIVE
+    return resolve_prompt_variables(spec.system_prompt, plan_file) + _DIRECT_MODE_DIRECTIVE
 
 
 def generate_code(
@@ -278,18 +290,28 @@ def generate_deliverable(
     on_request: Optional[Callable[[str, int], None]] = None,
     image_data_urls: Optional[List[str]] = None,
 ) -> GeneratedFile:
-    """A roadmap task's deliverable: the plan slice, handed to :func:`generate_code`.
+    """A roadmap task's deliverable: the plan slice plus the exact AST nodes it concerns.
 
     ``deliverable`` is the ``templates`` NamedTuple whose source is the fallback;
     ``filename`` is where the deliverable is actually written (``task_target_path``),
     which can differ from the template's own name.
+
+    The AST context is assembled only when a real call is going to be made: the offline
+    path stays byte-identical to what the templates produced, and no index is built for a
+    request that will not happen.
     """
+    from orchestration import system2
+
     task_title = str(task.get("title") or "")
     task_key = str(task.get("id") or task_title)
+    if system2.is_enabled():
+        context_text = assemble_coder_context(plan, task_key, workspace_dir=get_project_dir())
+    else:
+        context_text = slice_task_context(plan, task_key)
     return generate_code(
         coder_id=coder_id,
         filename=filename or deliverable.filename,
-        context_text=slice_task_context(plan, task_key),
+        context_text=context_text,
         task_title=task_title,
         plan_file=plan_file,
         fallback_code=deliverable.code,

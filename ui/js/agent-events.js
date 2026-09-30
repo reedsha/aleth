@@ -1,8 +1,18 @@
-// ui/js/agent-events.js — Inbound agent event stream renderer (assigned to window.onAgentEvent).
+// ui/js/agent-events.js — Inbound agent event stream renderer.
 // ============================================================================
-// Two-Way Event Handler (window.onAgentEvent)
+// Inbound Event Handler (invoked by ui/js/bridge-bus.js, the strict bus sink)
 // ============================================================================
-function handleAgentEvent(event) {
+import { emit } from "./bus.js";
+import { echoAgentEvent, hideConsole, revealConsoleForAttention, showConsole } from "./console.js";
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { applyPlanData, updateBentoStats } from "./plan-tree.js";
+import { mountResultView } from "./result-view.js";
+import { setHtml } from "./safe-dom.js";
+import { refreshSidebarWorkspaceTree } from "./sidebar.js";
+import { DOM, capturePlanTreeBeforeUpdate, markRunRefused, setAgentCardOpen, setConsolePinned, setRunSummary, state } from "./store.js";
+
+export function handleAgentEvent(event) {
   if (!event || !event.type) return;
 
   // Every inbound event also lands in the dock console, which keeps a plain transcript
@@ -14,7 +24,7 @@ function handleAgentEvent(event) {
       // A fresh run clears the previous run's pin -- the transcript that was kept up because
       // that run failed has been superseded -- and opens the console for the duration of this
       // run. A run that ends cleanly folds it away again (see workflow_complete).
-      state.consolePinned = false;
+      setConsolePinned(false);
       showConsole();
       break;
 
@@ -22,8 +32,8 @@ function handleAgentEvent(event) {
       DOM.cardArchitect.style.display = "flex";
       DOM.cardArchitect.style.flex = "1";
       DOM.cardCoder.style.display = "none";
-      state.architectCardOpen = true;
-      state.coderCardOpen = false;
+      setAgentCardOpen("architect", true);
+      setAgentCardOpen("coder", false);
       DOM.architectStatusBadge.textContent = "Planning";
       DOM.architectStatusBadge.className = "status-badge";
       DOM.btnCloseArchitect.disabled = true;
@@ -79,13 +89,13 @@ function handleAgentEvent(event) {
       // The terminal workflow_complete event carries no summary, so the result view's
       // renderers read it from here (analyze's findings and file list, recommend's
       // proposals, fix_bug's root cause).
-      state.lastSummary = event.summary || null;
+      setRunSummary(event.summary);
       // Two summaries are refusals rather than completions: the fix_bug sufficiency gate (an
       // empty report) and the plan Normalization Gate (a document it could not read). Both end
       // the run a moment later, and the reason lives only in the transcript, so the console is
       // revealed and pinned rather than folding away when the run finishes.
       if (isRefusalSummary(event.summary)) {
-        state.lastRunRefused = true;
+        markRunRefused();
         revealConsoleForAttention();
       } else if (isFailureSummary(event.summary)) {
         // A failed verification is not a refusal -- the run finished -- but the reason it failed
@@ -104,7 +114,7 @@ function handleAgentEvent(event) {
       // The result view's roadmap diff needs the tree as it was *before* this event;
       // applyPlanData() overwrites state.planTree on the next line, so it has to be
       // captured here rather than reconstructed afterwards.
-      state.planTreeBeforeUpdate = (state.planTree || []).slice();
+      capturePlanTreeBeforeUpdate();
       applyPlanData(event);
       break;
 
@@ -149,12 +159,12 @@ function handleAgentEvent(event) {
       // A halt is a human decision, so the transcript stays up to show how far the run got.
       revealConsoleForAttention();
       clearAllAgentThinking();
-      finalizeWorkflow(event.status);
+      emit("run:finalize", { status: event.status });
       break;
 
     case "workflow_complete":
       clearAllAgentThinking();
-      finalizeWorkflow(event.status);
+      emit("run:finalize", { status: event.status });
       // The backend reports a user halt as workflow_complete(status="stopped") as well, and
       // that is the same keep-it-up case; a run that was not pinned by an error folds the
       // console back to the idle dock.
@@ -172,13 +182,30 @@ function handleAgentEvent(event) {
       break;
 
     case "workspace_changed":
-      updateWorkspaceUI(event.workspace_dir);
+      emit("workspace:update", event.workspace_dir);
       // The workspace itself changed, so the file listing behind the tree is stale.
       refreshSidebarWorkspaceTree();
       break;
 
     case "agents_updated":
-      applyAgentsData(event.agents);
+      emit("agents:apply", event.agents);
+      break;
+
+    // The Artifact Gate's events. They carry no rendering of their own -- the DAG
+    // (ui/js/dag.js) is the surface for them -- so they are republished on the internal bus
+    // rather than handled here. `artifact_planned` carries the whole artifact, so the diff
+    // surface needs no second fetch; `task_state_updated` is what recolours a node, which
+    // is why a state change is never assumed from an approval.
+    case "artifact_planned":
+      emit("dag:artifact-planned", event.artifact);
+      break;
+
+    case "artifact_approved":
+      emit("dag:artifact-approved", event);
+      break;
+
+    case "task_state_updated":
+      emit("dag:task-state", event);
       break;
   }
 }
@@ -238,7 +265,7 @@ function appendToolCall(agentId, toolName, args, description) {
     else if (args.command) argDetail = ` > ${args.command}`;
     else if (args.plan_file) argDetail = ` [${args.plan_file}]`;
   }
-  toolDiv.innerHTML = `<strong>TOOL:</strong> ${escapeHtml(toolName)}${escapeHtml(argDetail)} — <em>${escapeHtml(description || "Executing")}</em>`;
+  setHtml(toolDiv, `<strong>TOOL:</strong> ${escapeHtml(toolName)}${escapeHtml(argDetail)} — <em>${escapeHtml(description || "Executing")}</em>`);
   targetContent.appendChild(toolDiv);
 
   if (isArchitect ? state.autoScrollArchitect : state.autoScrollCoder) {
@@ -302,7 +329,7 @@ function spawnCoderCard(coderId, coderName, coderModel) {
   DOM.cardArchitect.style.flex = "1";
   DOM.cardCoder.style.display = "flex";
   DOM.cardCoder.style.flex = "1";
-  state.coderCardOpen = true;
+  setAgentCardOpen("coder", true);
 
   DOM.coderCardName.textContent = coderName || "Coder Sub-Agent";
   DOM.coderCardModel.textContent = coderModel || "Full Shell Access";
@@ -328,7 +355,7 @@ function renderCardSummary(container, summary, includeProposals = false) {
     `;
   }
 
-  container.innerHTML = `
+  setHtml(container, `
     <div class="summary-title">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
         <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
@@ -340,7 +367,7 @@ function renderCardSummary(container, summary, includeProposals = false) {
       ${(summary.deliverables || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
     </ul>
     ${proposalsHtml}
-  `;
+  `);
   container.style.display = "block";
 }
 
@@ -361,7 +388,7 @@ function renderErrorBadge(agentId, errorMsg) {
 // The re-tagging panel is a passive read-out of the backend's progress stream. Every
 // entry point resets it from the same blank state, so a second run never inherits the
 // previous run's count, title or bar width.
-function showTaggingPanel() {
+export function showTaggingPanel() {
   if (!DOM.taggingOverlay) return;
   DOM.taggingTitle.textContent = "Tagging plan tasks";
   DOM.taggingCount.textContent = "0 / 0";
@@ -370,7 +397,7 @@ function showTaggingPanel() {
   DOM.taggingOverlay.style.display = "flex";
 }
 
-function hideTaggingPanel() {
+export function hideTaggingPanel() {
   if (!DOM.taggingOverlay) return;
   DOM.taggingOverlay.style.display = "none";
 }

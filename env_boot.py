@@ -12,7 +12,7 @@ makes ``.env`` this app's single source of truth, and the names that were replac
 returned so the launcher can say so out loud.
 
 The path is resolved against this file rather than the process working directory, matching
-``tools.file_ops.read_environment_variables`` so the sidebar panel and the running app can
+``tools.workspace_io.read_environment_variables`` so the sidebar panel and the running app can
 never disagree about which ``.env`` is in force.
 """
 

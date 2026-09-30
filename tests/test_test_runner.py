@@ -5,17 +5,26 @@ test file, but nothing ran it, so the strip could only say "not run". These test
 runner to the two things that make it trustworthy -- it finds the right test file, and it
 classifies what happened without ever turning "could not run" into a pass.
 
-The execution tests spawn a real pytest against a throwaway workspace, so they exercise the
-same path the bridge does, including the read-only guarantee.
+The execution tests run a real pytest, but **inside the container perimeter** the runner now
+uses: pytest imports and executes the workspace's own code, so it must not run on the host.
+With no Docker daemon in this environment the runtime at the far end is the in-repo double
+(``tests/fake_docker.py``), which runs the payload in the bind mount's source directory and
+hands back its streams and status -- so the finding, the classification and the read-only
+guarantee are all exercised for real.
 """
 
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from tools import test_runner
+
+FAKE_DOCKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_docker.py")
+FAKE_DOCKER_ENV = {"DEEPAGENTS_DOCKER_BIN": f"{sys.executable} {FAKE_DOCKER}"}
 
 
 PASSING_TEST = "def test_ok():\n    assert 1 + 1 == 2\n"
@@ -68,6 +77,11 @@ class WorkspaceTests(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="deepagents_testrunner_")
         self._real = test_runner.get_project_dir
         test_runner.get_project_dir = lambda: self.tmp
+        # pytest runs in a container now; point the runtime at the double so the path is real
+        # without needing a daemon.
+        env_patcher = mock.patch.dict(os.environ, FAKE_DOCKER_ENV)
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
 
     def tearDown(self):
         test_runner.get_project_dir = self._real
@@ -121,6 +135,18 @@ class WorkspaceTests(unittest.TestCase):
         test_runner.run_task_tests("task-1")
         self.assertFalse(os.path.exists(os.path.join(self.tmp, ".pytest_cache")))
         self.assertFalse(os.path.isdir(os.path.join(self.tmp, "__pycache__")))
+
+    def test_a_refused_container_is_reported_unavailable_not_run_on_the_host(self):
+        """A machine without a reachable runtime gets 'unavailable', never a host pytest."""
+        _write_meta(self.tmp, "task-1", {"test_main.py": {"action": "created"}})
+        _write_file(self.tmp, "test_main.py", PASSING_TEST)
+        with mock.patch.dict(
+            os.environ, {**FAKE_DOCKER_ENV, "FAKE_DOCKER_DAEMON_DOWN": "1"}
+        ):
+            res = test_runner.run_task_tests("task-1")
+        self.assertEqual(res["verdict"], "unavailable")
+        self.assertFalse(res["ran"])
+        self.assertIn("Could not start the test runner", res["tests"][0]["error"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,689 @@
+/* ==========================================================================
+   Artifact DAG and diff surface (Phase 8)
+   ==========================================================================
+   The two-phase lifecycle's review surface: every milestone is a node coloured
+   strictly by state, a PLANNED node carries the Approve control, and selecting a
+   node shows the artifact's own AST targets against the bytes they would replace.
+
+   Colour is reserved for state, as everywhere else in this app: the five node
+   tints below are the only colour here, and each one means exactly one status.
+   PENDING is neutral grey, PLANNED amber (waiting on a human), IN_PROGRESS blue
+   (live), COMPLETED green, FAILED red. The status is also written as text on the
+   node, so the surface never depends on colour alone. */
+
+:root {
+  --dag-pending: #6b7280;
+  --dag-planned: #f59e0b;
+  --dag-in-progress: #3b82f6;
+  --dag-completed: #22c55e;
+  --dag-failed: #ef4444;
+  --dag-edge: #3a3d45;
+  --dag-node-width: 168px;
+  --dag-node-height: 76px;
+}
+
+/* ==========================================================================
+   CENTRE-STAGE DAG CANVAS
+   ==========================================================================
+   The graph is a peer of the document, so it gets the whole stage: the document view is
+   hidden while it is up, and the canvas scrolls in both axes on its own. */
+.workbench-dag-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workbench-dag-view[hidden] {
+  display: none;
+}
+
+.dag-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 28px;
+}
+
+/* The document tree and the raw source are hidden while the canvas is up. */
+.plan-workbench.dag-view .workbench-tree-view,
+.plan-workbench.dag-view .workbench-doc,
+.plan-workbench.dag-view .workbench-gutter {
+  display: none;
+}
+
+/* ==========================================================================
+   NODE INSPECTOR (the right rail)
+   ========================================================================== */
+.inspector-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inspector-metric-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.inspector-metric-label {
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.inspector-metric-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.inspector-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
+
+/* One node's payload. No list, no repeated cards: the rail answers for a single entity. */
+.inspector-node {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.inspector-node[hidden] {
+  display: none;
+}
+
+.inspector-node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inspector-node-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+
+.inspector-node-state {
+  flex: none;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}
+
+.inspector-state--completed { background: rgba(34, 197, 94, 0.18); color: var(--dag-completed); }
+.inspector-state--in_progress { background: rgba(59, 130, 246, 0.18); color: var(--dag-in-progress); }
+.inspector-state--planned { background: rgba(245, 158, 11, 0.18); color: var(--dag-planned); }
+.inspector-state--failed { background: rgba(239, 68, 68, 0.18); color: var(--dag-failed); }
+
+.inspector-node-meta {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.inspector-artifact {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.inspector-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* On the rail the actions stack: the critique field is wide, and the two buttons sit under it. */
+.side-panel#dagPanel .inspector-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* A rejection requires a critique, so the field is prominent and the button cannot be pressed
+   until it holds one. The disabled state is the affordance -- a click that the backend then
+   refuses would waste the reviewer's time. */
+.reject-feedback {
+  width: 100%;
+  min-height: 48px;
+  resize: vertical;
+  padding: 6px 8px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--text-main);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-sm);
+}
+
+.dag-reject-btn {
+  align-self: flex-start;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--dag-failed);
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.dag-reject-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ==========================================================================
+   INLINE STATUS (document view)
+   ==========================================================================
+   State must be readable without selecting anything, so a phase header carries a compact
+   badge per state present and a planned step gets its own ring colour. */
+.phase-state-badges {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 6px;
+}
+
+.phase-state-badge {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-muted);
+}
+
+.phase-state-badge.step-completed { color: var(--dag-completed); }
+.phase-state-badge.step-in_progress { color: var(--dag-in-progress); }
+.phase-state-badge.step-planned { color: var(--dag-planned); }
+.phase-state-badge.step-failed { color: var(--dag-failed); }
+
+.step-status-icon.planned {
+  color: var(--dag-planned);
+  border-color: var(--dag-planned);
+}
+
+.plan-tree-item.step-planned {
+  border-left-color: var(--dag-planned);
+}
+
+.plan-tree-item.node-selected {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.dag-panel {
+  margin-top: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+
+/* On the right rail the panel *is* the frame: .side-panel supplies the chrome, so the
+   section's own box is flattened away rather than nesting a second border. The background
+   is NOT flattened, though -- it must stay opaque, or the stage underneath shows through
+   the panel and the two surfaces read as one unreadable smear. */
+.side-panel#dagPanel {
+  /* Docked, not floating: `.side-panel` positions itself absolutely over the right edge,
+     which covered the workbench header's view toggle. As a flex item of the workbench body
+     it takes its own column and the stage yields the space. */
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  flex: 0 0 360px;
+  width: 360px;
+  margin: 0;
+  border: none;
+  border-left: 1px solid var(--border-subtle);
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+  background: var(--bg-secondary);
+}
+
+/* Every level of the height chain must be allowed to shrink, or `flex: 1` on the body cannot
+   produce a scroll viewport -- the card would just grow with its content. */
+.side-panel#dagPanel .audit-dialog-card {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ONE scroll container: the panel body scrolls both axes.
+
+   The canvas wrapper used to scroll horizontally, and CSS forces *any* horizontal scroller to
+   clip vertically -- so a layer column taller than the rail was cut off with no way to reach
+   it, which is exactly the "cannot scroll" this replaces. The wrapper no longer scrolls at
+   all: the body does, so the canvas may be wider than the rail and taller than the window and
+   there is still a single pair of scrollbars governing the whole panel. */
+.side-panel#dagPanel .modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.side-panel#dagPanel .dag-flow-scroll {
+  overflow: visible;
+  padding: 12px 0;
+}
+
+/* The artifact cards tile two to a row and the surface scrolls, so a plan with many targets
+   stays readable instead of becoming one very long column. */
+.side-panel#dagPanel .dag-diff-surface {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* A tile is its own card: no fixed body height, so the grid row sizes to the content and the
+   panel -- not a nested pane -- is what scrolls. */
+.side-panel#dagPanel .diff-target {
+  min-width: 0;
+}
+
+.side-panel#dagPanel .diff-body {
+  max-height: 200px;
+}
+
+/* The rail is narrow, so the flow scrolls horizontally and the diff keeps its own scroll. */
+.side-panel#dagPanel .dag-node {
+  width: 148px;
+}
+
+.dag-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.dag-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.dag-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dag-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.dag-legend-item::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--dag-pending);
+}
+
+.dag-legend--planned::before { background: var(--dag-planned); }
+.dag-legend--in_progress::before { background: var(--dag-in-progress); }
+.dag-legend--completed::before { background: var(--dag-completed); }
+.dag-legend--failed::before { background: var(--dag-failed); }
+
+/* The flow scrolls horizontally: a roadmap is a chain, and a chain longer than the
+   pane must not wrap and lose its edges. */
+.dag-flow-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 16px 14px;
+}
+
+.dag-flow {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 64px;
+  min-height: var(--dag-node-height);
+  /* Room below the row for a dependency edge that skips a layer: those are drawn bowing
+     downward so they route around the milestones between them, and the scroll container
+     clips vertically -- so the space they need has to be part of the flow. */
+  padding-bottom: 96px;
+  width: max-content;
+}
+
+/* One column per topological layer. Concurrent milestones stack vertically in their layer,
+   which is what makes parallelism readable rather than looking like a sequence. */
+.dag-layer {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.dag-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.dag-edge {
+  fill: none;
+  stroke-width: 1.6;
+}
+
+.dag-node {
+  position: relative;
+  width: var(--dag-node-width);
+  min-height: var(--dag-node-height);
+  padding: 10px 12px;
+  border: 1px solid var(--border-glass);
+  border-left: 3px solid var(--dag-pending);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.dag-node:hover {
+  background: var(--bg-glass-hover);
+}
+
+.dag-node-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.dag-node-meta {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.dag-node-tag {
+  align-self: flex-start;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}
+
+/* Strict status colouring. The left border is the state accent; the title keeps the
+   node readable whatever the status is. */
+.dag-node--pending { border-left-color: var(--dag-pending); }
+.dag-node--planned { border-left-color: var(--dag-planned); background: rgba(245, 158, 11, 0.08); }
+.dag-node--in_progress { border-left-color: var(--dag-in-progress); background: rgba(59, 130, 246, 0.08); }
+.dag-node--completed { border-left-color: var(--dag-completed); background: rgba(34, 197, 94, 0.07); }
+.dag-node--failed { border-left-color: var(--dag-failed); background: rgba(239, 68, 68, 0.08); }
+
+.dag-node--planned .dag-node-meta { color: var(--dag-planned); }
+.dag-node--in_progress .dag-node-meta { color: var(--dag-in-progress); }
+.dag-node--completed .dag-node-meta { color: var(--dag-completed); }
+.dag-node--failed .dag-node-meta { color: var(--dag-failed); }
+
+.dag-node--selected {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.dag-approve-btn {
+  margin-top: 4px;
+  align-self: flex-start;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #1a1c23;
+  background: var(--dag-planned);
+  border: none;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+  transition: filter var(--transition-fast);
+}
+
+.dag-approve-btn:hover:not(:disabled) { filter: brightness(1.12); }
+.dag-approve-btn:disabled { opacity: 0.6; cursor: progress; }
+
+.dag-empty {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* Shown when a plan declares no dependencies: the graph is a set of unconnected milestones,
+   and saying so is honest -- drawing an inferred chain would not be. */
+.dag-edge-note {
+  padding: 0 14px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.diff-edit-btn {
+  padding: 2px 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.diff-edit-btn:hover { background: var(--bg-glass-hover); }
+
+.diff-editor-wrap {
+  border-top: 1px solid var(--border-subtle);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diff-editor {
+  width: 100%;
+  min-height: 140px;
+  resize: vertical;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-main);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-sm);
+}
+
+.diff-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.diff-save-btn,
+.diff-cancel-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-glass);
+  cursor: pointer;
+}
+
+.diff-save-btn {
+  color: #0f1115;
+  background: var(--accent-blue);
+  border-color: transparent;
+}
+
+.diff-save-btn:disabled { opacity: 0.6; cursor: progress; }
+
+.diff-cancel-btn {
+  color: var(--text-muted);
+  background: transparent;
+}
+
+/* --------------------------------------------------------------------------
+   Diff surface: one card per AST target, the proposed content against the
+   current bytes at the recorded span. No whole-file diff is rendered here.
+   -------------------------------------------------------------------------- */
+.dag-diff-surface {
+  border-top: 1px solid var(--border-subtle);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dag-diff-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.diff-summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.diff-summary strong { color: var(--text-main); }
+
+.diff-target {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  overflow: hidden;
+}
+
+.diff-target-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-op {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  color: #0f1115;
+}
+
+.diff-op--insert { background: var(--dag-completed); }
+.diff-op--replace { background: var(--dag-planned); }
+.diff-op--delete { background: var(--dag-failed); }
+
+.diff-file {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-main);
+}
+
+.diff-symbol {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent-cyan);
+}
+
+.diff-span {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.diff-note {
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.diff-body {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.diff-line {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px;
+  white-space: pre;
+}
+
+.diff-line-mark {
+  width: 12px;
+  flex: none;
+  text-align: center;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.diff-line--add { background: rgba(34, 197, 94, 0.12); }
+.diff-line--add .diff-line-mark { color: var(--dag-completed); }
+
+.diff-line--del { background: rgba(239, 68, 68, 0.12); }
+.diff-line--del .diff-line-mark { color: var(--dag-failed); }
+
+.diff-line--same { color: var(--text-muted); }
+
+.diff-loading {
+  padding: 10px 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+}

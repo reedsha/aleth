@@ -127,6 +127,21 @@
   flex: 1;
   min-height: 0;
   display: flex;
+  /* The stage and the inspector are columns of one row, so opening the inspector reflows the
+     stage instead of covering it. */
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* The main stage holds the document tree, the DAG canvas, or the raw source. `min-width: 0`
+   is load-bearing: a flex item defaults to `min-width: auto` and refuses to shrink below its
+   content, so without it the stage would push the inspector off the row instead of yielding. */
+.workbench-stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
   overflow: hidden;
 }
 

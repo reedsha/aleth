@@ -2,7 +2,13 @@
 // ============================================================================
 // Dynamic Plan Tree Tracker (Rendered Exclusively from plan.json)
 // ============================================================================
-function applyPlanData(planData) {
+import { emit, on } from "./bus.js";
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { setHtml, setText } from "./safe-dom.js";
+import { DOM, setAvailablePlans, state } from "./store.js";
+
+export function applyPlanData(planData) {
   if (!planData) return;
   state.activePlan = planData.filename || "PLAN.md";
   // Only a payload that actually states the set of plan files may replace it. A
@@ -12,9 +18,11 @@ function applyPlanData(planData) {
   // previously loaded list when the field is absent; seed it from the active plan only
   // when nothing is known yet.
   if (Array.isArray(planData.plans)) {
-    state.availablePlans = planData.plans;
-  } else if (!Array.isArray(state.availablePlans) || state.availablePlans.length === 0) {
-    state.availablePlans = state.activePlan ? [state.activePlan] : [];
+    setAvailablePlans(planData.plans);
+  } else if (state.availablePlans.length === 0) {
+    // The store's mutator only ever stores an array, so the "not an array" guard this
+    // used to need is gone with the direct write.
+    setAvailablePlans(state.activePlan ? [state.activePlan] : []);
   }
   state.planJson = planData.plan_json || null;
   state.planTree = (state.planJson && state.planJson.steps) ? state.planJson.steps : (planData.tree || []);
@@ -32,16 +40,23 @@ function applyPlanData(planData) {
 
   renderPlanTree();
   // The sidebar's Plans tab draws the same list this funnel just refreshed, so it is redrawn
-  // here rather than only when its tab is opened. Guarded: plan-tree.js loads before sidebar.js.
-  if (typeof renderSidebarPlans === "function") renderSidebarPlans();
+  // here rather than only when its tab is opened. Published on the bus rather than called
+  // through an import: sidebar.js is a same-layer renderer and importing it would put a
+  // back-edge in the graph. wire.js maps the intent to renderSidebarPlans().
+  emit("sidebar:render-plans");
 
   // The workbench renders the plan's own markdown, so it is fed from this same funnel:
   // every plan load, switch, save and sync arrives here.
-  refreshWorkbenchChrome();
-  renderPlanDocument(planData.content);
+  emit("workbench:refresh-chrome");
+  emit("workbench:render-document", planData.content);
+  // The Artifact DAG draws the same milestones this funnel just applied, so it is fed from
+  // here too: every plan load, switch, save and sync reaches this point, which is what keeps
+  // the DAG in step with the tree beside it. Published on the bus rather than imported (see
+  // ui/js/bus.js) so the dependency points down.
+  emit("dag:plan-applied", planData);
 }
 
-function updateStrictPlanLock(isLocked) {
+export function updateStrictPlanLock(isLocked) {
   if (DOM.actionPanelLockOverlay) {
     DOM.actionPanelLockOverlay.style.display = isLocked ? "flex" : "none";
   }
@@ -84,10 +99,12 @@ function planInlineMarkup(escapedText) {
   return paired.replace(/\*\*/g, "").replace(/`/g, "");
 }
 
-// The four states the plan format defines. Anything else behaves as pending, which is
-// what the previous renderer did too, so an unknown status cannot change behaviour.
+// The five states the plan format defines, including ``planned`` -- the Artifact Gate's halted
+// state. It used to fall through to ``pending``, so a milestone waiting on an approval looked
+// identical to one nobody had started: the tree was lying about the lifecycle.
 function planStepState(step) {
-  return (step.status === "completed" || step.status === "in_progress" || step.status === "failed")
+  return (step.status === "completed" || step.status === "in_progress" ||
+          step.status === "failed" || step.status === "planned")
     ? step.status
     : "pending";
 }
@@ -97,8 +114,35 @@ function planStatusIcon(stepState) {
   if (stepState === "in_progress") return '<div class="step-status-icon in_progress">●</div>';
   // A failed task needs attention, so its ring carries a cross rather than a tick.
   if (stepState === "failed") return '<div class="step-status-icon failed">✕</div>';
+  // Planned is halted awaiting approval: a filled amber ring, distinct from the empty pending
+  // ring, so "waiting on you" is visible without opening anything.
+  if (stepState === "planned") return '<div class="step-status-icon planned">◉</div>';
   // A pending task is the absence of a state, so the ring is left empty.
   return '<div class="step-status-icon pending"></div>';
+}
+
+// The compact badges a phase header carries: one per state present, in lifecycle order. This
+// is what makes completion visible without selecting a node.
+const PHASE_BADGE_STATES = [
+  ["completed", "✓", "COMPLETED"],
+  ["in_progress", "●", "IN PROGRESS"],
+  ["planned", "◉", "PLANNED"],
+  ["failed", "✕", "FAILED"],
+  ["pending", "○", "PENDING"],
+];
+
+function planPhaseStateBadges(tasks) {
+  const counts = {};
+  for (const task of tasks) {
+    const state = planStepState(task);
+    counts[state] = (counts[state] || 0) + 1;
+  }
+  return PHASE_BADGE_STATES
+    .filter(([state]) => counts[state])
+    .map(([state, glyph, label]) =>
+      `<span class="phase-state-badge step-${state}" title="${counts[state]} ${label}">`
+      + `${glyph}${counts[state]}</span>`)
+    .join("");
 }
 
 // The plan's UI tag, from the vocabulary in tools/task_tags.py. UI-ness is the tag and
@@ -106,7 +150,7 @@ function planStatusIcon(stepState) {
 // and the delegation path read the same field and cannot disagree.
 const UI_TAG = "FE";
 
-function isUiTask(step) {
+export function isUiTask(step) {
   return !!step && step.tag === UI_TAG;
 }
 
@@ -200,7 +244,7 @@ function planSubStepsHtml(subSteps) {
 // `state_summary` rather than becoming a task-less section. It is the standing context
 // every milestone slice is anchored on, so it is surfaced at the top of the tree too --
 // not only in the workbench document.
-function planStateSummaryHtml(planJson) {
+export function planStateSummaryHtml(planJson) {
   const summary = planJson && planJson.state_summary;
   if (!summary) return "";
 
@@ -238,7 +282,7 @@ function updateBentoSummary(planJson) {
 // Live system stats, drawn only from what the frontend actually tracks: the run state, the
 // agents generating work right now, and the registry sizes. No token or cost figure reaches
 // the event stream, so the tile does not invent one.
-function updateBentoStats() {
+export function updateBentoStats() {
   if (!DOM.bentoStatsChips) return;
   const chips = [];
   const running = !!state.isExecuting;
@@ -257,7 +301,7 @@ function updateBentoStats() {
   const tasks = state.planTree ? state.planTree.length : 0;
   chips.push(`<span class="bento-chip">${tasks} task${tasks === 1 ? "" : "s"}</span>`);
 
-  DOM.bentoStatsChips.innerHTML = chips.join("");
+  setHtml(DOM.bentoStatsChips, chips.join(""));
 }
 
 // The progress tile's status badge: one chip naming the plan's state, derived from the same
@@ -315,8 +359,8 @@ function planInlineActions(step, stepState) {
   return primary + edit;
 }
 
-function renderPlanTree() {
-  DOM.planTreeContainer.innerHTML = "";
+export function renderPlanTree() {
+  setText(DOM.planTreeContainer, "");
 
   const sections = (state.planJson && state.planJson.sections && state.planJson.sections.length > 0)
     ? state.planJson.sections
@@ -339,7 +383,7 @@ function renderPlanTree() {
   if (!state.planTree || state.planTree.length === 0) {
     const hasSelectedFile = Boolean(state.activePlan && state.activePlan.trim());
     if (hasSelectedFile) {
-      DOM.planTreeContainer.innerHTML = `
+      setHtml(DOM.planTreeContainer, `
         <div class="empty-plan-tree-card">
           <div class="empty-tree-icon">📄</div>
           <div class="empty-tree-title">No plan steps detected</div>
@@ -351,13 +395,13 @@ function renderPlanTree() {
             <span>Extract Steps from ${escapeHtml(state.activePlan)}</span>
           </button>
         </div>
-      `;
+      `);
       const btnExtract = document.getElementById("btnTreeExtract");
       if (btnExtract) {
         btnExtract.addEventListener("click", () => handleExtractPlanSteps(state.activePlan));
       }
     } else {
-      DOM.planTreeContainer.innerHTML = `
+      setHtml(DOM.planTreeContainer, `
         <div class="empty-plan-tree-card">
           <div class="empty-tree-icon">📋</div>
           <div class="empty-tree-title">No plan file selected</div>
@@ -370,9 +414,9 @@ function renderPlanTree() {
             <span>Create New Plan</span>
           </button>
         </div>
-      `;
+      `);
       const btnEmpty = document.getElementById("btnTreeEmptyCreate");
-      if (btnEmpty) btnEmpty.addEventListener("click", openCreatePlanModal);
+      if (btnEmpty) btnEmpty.addEventListener("click", () => emit("modal:create-plan"));
     }
     return;
   }
@@ -413,12 +457,13 @@ function renderPlanTree() {
     headerEl.className = "plan-phase-header";
     headerEl.setAttribute("aria-expanded", String(!sectionEl.classList.contains("collapsed")));
     // Uppercase the raw text first: uppercasing an escaped "&amp;" would break the entity.
-    headerEl.innerHTML = `
+    setHtml(headerEl, `
       <span class="phase-chevron" aria-hidden="true">▼</span>
       <span class="phase-title">${planInlineMarkup(escapeHtml(String(section.title).toUpperCase()))}</span>
       ${planSectionPills(tasks)}
       <span class="phase-count">${secDone}/${tasks.length}</span>
-    `;
+      <span class="phase-state-badges">${planPhaseStateBadges(tasks)}</span>
+    `);
     headerEl.addEventListener("click", () => togglePlanPhase(sectionEl));
     sectionEl.appendChild(headerEl);
 
@@ -430,8 +475,9 @@ function renderPlanTree() {
     tasks.forEach(step => {
       const stepState = planStepState(step);
       const itemEl = document.createElement("div");
-      // `plan-tree-item` is the cross-module contract (see the startup harness);
-      // `plan-step-card` names this as level 2 of the accordion tree.
+      // `plan-tree-item` is the cross-module contract (asserted by
+      // tests/ui/structural.spec.mjs); `plan-step-card` names this as level 2 of the
+      // accordion tree.
       itemEl.className = `plan-tree-item plan-step-card step-${stepState}`;
       itemEl.id = `tree_${step.id}`;
       itemEl.dataset.taskId = step.id;
@@ -460,7 +506,7 @@ function renderPlanTree() {
         </div>
       ` : "";
 
-      itemEl.innerHTML = `
+      setHtml(itemEl, `
         <div class="plan-tree-item-row">
           ${planStatusIcon(stepState)}
           <div class="step-title${stepState === "completed" ? " completed" : (stepState === "failed" ? " failed" : "")}">${planInlineMarkup(escapeHtml(step.title))}</div>
@@ -471,7 +517,7 @@ function renderPlanTree() {
         </div>
         ${metaHtml}
         ${drawerHtml}
-      `;
+      `);
 
       // Accordion toggle on row click (excluding clicks on inline action buttons). The open
       // state is written through to `state` so a refresh cannot silently fold the card.
@@ -481,6 +527,9 @@ function renderPlanTree() {
             e.target.closest(".btn-inline-stop") ||
             e.target.closest(".btn-inline-fix") ||
             e.target.closest(".btn-inline-edit")) return;
+        // Clicking a milestone selects it as well as folding it open: the same entity is
+        // highlighted in the DAG canvas and drives the inspector, from either view.
+        selectNode(step.id);
         togglePlanStepCard(itemEl);
       });
 
@@ -491,7 +540,8 @@ function renderPlanTree() {
       if (execBtn) {
         execBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          openActionDrawer("next_step", {
+          emit("action:open", {
+            kind: "next_step",
             targetTaskId: step.id,
             targetTaskTitle: step.title
           });
@@ -503,7 +553,7 @@ function renderPlanTree() {
       if (rollbackBtn) {
         rollbackBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          openRollbackModal(step);
+          emit("modal:rollback", step);
         });
       }
 
@@ -517,7 +567,8 @@ function renderPlanTree() {
           const failure = (step.details || []).find(
             (d) => typeof d === "string" && d.startsWith("Verification failed:")
           );
-          openActionDrawer("fix_bug", {
+          emit("action:open", {
+            kind: "fix_bug",
             targetTaskId: step.id,
             targetTaskTitle: step.title,
             bugPrefill: failure
@@ -533,7 +584,7 @@ function renderPlanTree() {
       if (stopBtn) {
         stopBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          handleStopClick();
+          emit("run:stop");
         });
       }
 
@@ -543,12 +594,13 @@ function renderPlanTree() {
       if (editBtn) {
         editBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          editTaskInWorkbench(step);
+          emit("workbench:edit-task", step);
         });
       }
 
       bodyEl.appendChild(itemEl);
     });
+    applyNodeSelection();
 
     DOM.planTreeContainer.appendChild(sectionEl);
   });
@@ -567,6 +619,39 @@ function togglePlanPhase(sectionEl) {
   const header = sectionEl.querySelector(".plan-phase-header");
   if (header) header.setAttribute("aria-expanded", String(!collapsed));
 }
+
+// The milestone the two views share. Kept here rather than only on a card, because
+// renderPlanTree() rebuilds the whole tree on every plan load, save and sync -- a class set
+// directly on a node would be lost the moment anything refreshed the plan.
+let selectedNodeId = null;
+
+/** Selects a milestone and publishes it, so the DAG canvas highlights the same entity. */
+function selectNode(taskId) {
+  if (!taskId || taskId === selectedNodeId) return;
+  selectedNodeId = taskId;
+  applyNodeSelection();
+  emit("node:selected", { taskId });
+}
+
+function applyNodeSelection() {
+  const container = DOM.planTreeContainer;
+  if (!container) return;
+  container.querySelectorAll(".plan-tree-item.node-selected")
+    .forEach((element) => element.classList.remove("node-selected"));
+  if (!selectedNodeId) return;
+  const card = container.querySelector(`.plan-tree-item[data-task-id="${selectedNodeId}"]`);
+  if (card) card.classList.add("node-selected");
+}
+
+// The other view announces its own selections; the guard is the id comparison, so an echo
+// between the two listeners cannot loop.
+on("node:selected", (payload) => {
+  const taskId = payload && payload.taskId;
+  if (taskId && taskId !== selectedNodeId) {
+    selectedNodeId = taskId;
+    applyNodeSelection();
+  }
+});
 
 function togglePlanStepCard(itemEl) {
   const open = itemEl.classList.toggle("expanded");
@@ -636,7 +721,7 @@ async function handleExtractPlanSteps(planName) {
         showToast(`✓ Extracted ${res.steps_count} plan step(s) from ${targetFile}`, "success");
       } else {
         showToast(`No tasks found in ${targetFile}. You can generate structured milestones.`, "info");
-        openCreatePlanModal();
+        emit("modal:create-plan");
       }
     } catch (err) {
       showToast(`Extraction notice: ${err.message}`, "error");

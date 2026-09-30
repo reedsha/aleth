@@ -9,6 +9,13 @@
 // The transcript is bounded: one node per echoed block would otherwise accumulate for the
 // life of the window. Once the cap is reached the oldest lines are dropped from the top.
 
+import { emit } from "./bus.js";
+import { isDockDrawerOpen } from "./dock.js";
+import { escapeHtml } from "./dom.js";
+import { showToast } from "./notify.js";
+import { setHtml, setText } from "./safe-dom.js";
+import { DOM, setConsolePinned, state } from "./store.js";
+
 const CONSOLE_MAX_LINES = 400;
 
 let consoleLineCount = 0;
@@ -35,8 +42,8 @@ function appendConsoleLine(kind, text) {
   const content = String(text);
   const line = document.createElement("div");
   line.className = `console-line console-${kind}`;
-  line.innerHTML = `<span class="console-time">${consoleClock()}</span>` +
-    `<span class="console-text">${escapeHtml(content)}</span>`;
+  setHtml(line, `<span class="console-time">${consoleClock()}</span>` +
+    `<span class="console-text">${escapeHtml(content)}</span>`);
   stream.appendChild(line);
   consoleLines.push({ kind, text: content });
 
@@ -54,8 +61,8 @@ function appendConsoleLine(kind, text) {
   pushDetachedConsoleLine(kind, content);
 }
 
-function clearConsole() {
-  if (DOM.consoleStream) DOM.consoleStream.innerHTML = "";
+export function clearConsole() {
+  if (DOM.consoleStream) setText(DOM.consoleStream, "");
   consoleLines.length = 0;
   consoleLineCount = 0;
 }
@@ -77,7 +84,7 @@ function consoleToolText(event) {
 
 // One line per event, chosen so the transcript reads like a shell session: commands that
 // started a phase, output the agents produced, and the exit line that closed it.
-function echoAgentEvent(event) {
+export function echoAgentEvent(event) {
   if (!event || !event.type) return;
 
   switch (event.type) {
@@ -136,7 +143,7 @@ function echoAgentEvent(event) {
   }
 }
 
-function initTerminalConsole() {
+export function initTerminalConsole() {
   clearConsole();
   appendConsoleLine("state", "console ready");
   // The console starts collapsed (see the visibility section below), so the class is applied
@@ -190,19 +197,19 @@ function syncConsoleVisibility() {
   syncConsoleToggle();
 }
 
-function showConsole() {
+export function showConsole() {
   if (state.consoleVisible) return;
   state.consoleVisible = true;
   syncConsoleVisibility();
 }
 
-function hideConsole() {
+export function hideConsole() {
   if (!state.consoleVisible) return;
   state.consoleVisible = false;
   syncConsoleVisibility();
 }
 
-function toggleConsole() {
+export function toggleConsole() {
   if (state.consoleVisible) hideConsole(); else showConsole();
 }
 
@@ -218,8 +225,8 @@ function flagConsoleAttention() {
 // An error or a refusal is the one case that has to outlive the run that produced it: the run
 // ends a moment later, and the transcript is the diagnosis. Pinned, so the clean-completion
 // path leaves it up, and the next run clears the pin.
-function revealConsoleForAttention() {
-  state.consolePinned = true;
+export function revealConsoleForAttention() {
+  setConsolePinned(true);
   showConsole();
   flagConsoleAttention();
 }
@@ -247,7 +254,7 @@ function pushDetachedConsoleLine(kind, text) {
 // The console's slide-up overlay: expanded, the transcript leaves the dock's flow and
 // covers the workbench (see .bottom-dock.console-overlay), so a long run can be read
 // without first dragging the dock tall. Restoring drops it back into the dock pane.
-function toggleConsoleOverlay() {
+export function toggleConsoleOverlay() {
   const dock = DOM.bottomDock;
   if (!dock) return;
   const expanded = !dock.classList.contains("console-overlay");
@@ -259,7 +266,7 @@ function toggleConsoleOverlay() {
   // The command drawer opens into the dock below the toolbar, so leaving one open under
   // the overlay would stack two unrelated panes on the same edge. Expanding folds it away.
   if (expanded && typeof isDockDrawerOpen === "function" && isDockDrawerOpen()) {
-    closeActionDrawer();
+    emit("action:close-drawer");
   }
   const button = DOM.btnConsoleOverlay;
   if (button) {
@@ -277,7 +284,7 @@ function toggleConsoleOverlay() {
 // Opens the transcript in a real second native window (pywebview.create_window), for
 // tracking a run on another monitor. The backend answers with a console_detached or
 // console_detach_failed event, so the mirror is only claimed once a window exists.
-function detachConsole() {
+export function detachConsole() {
   if (!(window.pywebview && window.pywebview.api && window.pywebview.api.open_console_window)) {
     showToast("Console detaching is available in the desktop app window", "info");
     return;

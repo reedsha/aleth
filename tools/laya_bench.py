@@ -31,6 +31,10 @@ import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import ValidationError
+
+from tools.payloads import LayaClassifierPayload, validated
+
 # (directive, expected intent, expected tag) -- hand-labelled, so accuracy means something.
 # Tags come from the project's own vocabulary (``tools/task_tags``): the UI rows are the
 # ones the four-word heuristic vocabulary drops, and the last row is a task with no
@@ -154,7 +158,8 @@ class LlmEngine:
             self.completion_tokens += usage.completion_tokens or 0
         try:
             payload = json.loads(response.choices[0].message.content or "")
-        except (ValueError, TypeError):
+            validated(LayaClassifierPayload, payload)
+        except (ValueError, TypeError, ValidationError):
             return None
         return (
             str(payload.get("intent", "")).lower(),

@@ -85,6 +85,20 @@ _LABEL_BY_TAG: Dict[str, str] = {tag.upper(): label for tag, label, _ in ENTRIES
 
 UI_TAG: str = "FE"
 
+# The UI keyword pattern: what counts as UI work by *wording* alone, for a task that
+# carries no explicit tag. Authored here -- in the plan parser's own vocabulary module --
+# rather than in ``orchestration.workflow.templates``, because the parser builds its tag
+# vocabulary on every cold start and importing the orchestration package for this single
+# pattern drags in the agent catalogue and its whole SDK stack (seconds of latency to
+# parse a zero-token markdown file). ``templates`` re-exports this exact object, so the
+# plan tree and the template selector still cannot disagree about what counts as UI work.
+#
+# Matched on word boundaries. A bare substring test sent any task whose title merely
+# *contained* those letters to the HTML template: "Build a weather API" became a
+# dashboard because of the "ui" in "build", and "Code review" because of the "view" in
+# "review". The optional trailing "s" keeps the common plurals matching.
+UI_KEYWORD_RE = re.compile(r"\b(?:ui|frontend|interface|view)s?\b")
+
 # The explicit "no tag" answer. A classifier must be able to say *nothing fits*: without
 # this option a choice over the vocabulary has to pick one, manufacturing a domain for work
 # that has none -- and a wrong tag is worse than an absent one, because the tree renders it
