@@ -106,6 +106,10 @@ jobs:
         # that before it ran the boot as an ordinary user. GitHub's runner user is already
         # unprivileged, so the ``root`` branch below only ever fires in local emulation, which is
         # the point: it makes the emulated runner behave like the real one.
+        #
+        # ``shell: bash`` is load-bearing on Windows: the body is POSIX shell, and the default
+        # shell there is PowerShell, which cannot parse it at all.
+        shell: bash
         run: |
           set -e
           if [ "$(id -u)" -eq 0 ]; then
