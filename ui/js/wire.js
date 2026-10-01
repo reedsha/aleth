@@ -108,7 +108,8 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Environment panel", initEnvironmentPanel);
   runStartupStep("Settings panel", initSettingsPanel);
   // The engine event stream. It is the only delivery path an event has, which is why it is
-  // started here rather than after anything else settles.
+  // started here rather than after anything else settles -- and why its health is what decides
+  // whether the UI will accept new work (see ui/js/connection.js).
   runStartupStep("Event stream", startEventStream);
 
   // Every element the app caches must have resolved. This replaces the check the document
@@ -171,7 +172,6 @@ function initEventListeners() {
   on(DOM.btnSelectWorkspace, "click", async () => {
     try {
       const res = await api.select_workspace();
-      if (res && res.success === false) throw new Error(res.error || "the dialog failed");
       if (res && res.workspace_dir && !res.cancelled) {
         updateWorkspaceUI(res.workspace_dir);
         showToast(`Workspace set to: ${DOM.txtWorkspacePath.textContent}`, "success");
@@ -238,8 +238,7 @@ function initEventListeners() {
       btn.disabled = true;
       beginRunUi();
       try {
-        const res = await api.retry_execution(agentId, state.pendingPrompt);
-        if (res && res.success === false) abortRunUi(res.error || "A run is already in progress.");
+        await api.retry_execution(agentId, state.pendingPrompt);
       } catch (err) {
         abortRunUi(`Retry failed: ${(err && err.message) || err}`);
       } finally {
@@ -397,19 +396,15 @@ function checkAllCardsClosed() {
 
 // Fire-and-forget re-tagging of the plan's [UI] tags. The call returns at once and the pass
 // streams its progress back as laya_tagging_* events, so the panel opens before the request is
-// even made. The client resolves rather than rejects on a failure, so the refusal is read off
-// the answer -- a rejected promise would never arrive here.
+// even made. A refused or unreachable call re-enables the button rather than leaving a permanent
+// spinner (audit M10/B1.2).
 function handleRetagUiClick() {
   showTaggingPanel();
-  // The button is disabled until the done event so a second click cannot start a second pass,
-  // and a refused call re-enables it rather than leaving a permanent spinner (audit M10/B1.2).
   if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = true;
-  api.retag_plan_with_laya().then((res) => {
-    if (res && res.success === false) {
-      if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = false;
-      hideTaggingPanel();
-      showToast(`Re-tagging failed: ${res.error || "unknown error"}`, "error");
-    }
+  api.retag_plan_with_laya().catch((err) => {
+    if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = false;
+    hideTaggingPanel();
+    showToast(`Re-tagging failed: ${(err && err.message) || err}`, "error");
   });
 }
 

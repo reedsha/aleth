@@ -140,16 +140,10 @@ export async function saveCurrentSystemPrompt() {
   const btn = DOM.btnSavePrompt;
   if (btn) btn.disabled = true;
   try {
-    let res;
     // Tiered editing: only save custom directives, never overwrite core rules
-    res = await api.save_system_prompt(agentId, newPrompt, true);
-
-    if (res.success) {
-      state.activeAgentForEditor.custom_instructions = newPrompt;
-      showToast("✓ Custom directives saved! Core architecture rules remain protected.", "success");
-    } else {
-      showToast(`Error: ${res.error || "Failed to save"}`, "error");
-    }
+    await api.save_system_prompt(agentId, newPrompt, true);
+    state.activeAgentForEditor.custom_instructions = newPrompt;
+    showToast("✓ Custom directives saved! Core architecture rules remain protected.", "success");
   } catch (err) {
     showToast(`Error saving prompt: ${err.message}`, "error");
   } finally {

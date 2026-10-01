@@ -94,8 +94,7 @@ export async function handleNormalizeGateConfirm() {
   showToast("Formatting plan via Architect...", "info");
   emit("run:begin");
   try {
-    const res = await api.normalize_plan();
-    if (res && res.success === false) emit("run:abort", { message: res.error || "A run is already in progress." });
+    await api.normalize_plan();
   } catch (err) {
     emit("run:abort", { message: `Could not format the plan: ${(err && err.message) || err}` });
   }

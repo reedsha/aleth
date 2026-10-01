@@ -9,9 +9,10 @@
 //   * the mapping is the client half of `api/operations.py`. The server refuses anything not in
 //     its table; this refuses anything not in this one, so a typo fails at the call site.
 //
-// The envelope is uniform: `{ok, data, error}`. On success `data` is returned unchanged — the
-// same dictionaries the pywebview bridge used to hand back, so a migrated call site keeps its
-// own logic (`res.success === false`, `res.variables`, …) and only the transport changes.
+// The envelope is uniform: `{ok, data, error}`, and this module unwraps it. **A failure throws**
+// (`ApiError`) -- a transport failure and an operation refusal alike -- so standard `try`/`catch`
+// is the only way to observe one and a call site that forgets cannot silently read fields off a
+// payload that reports its own failure.
 //
 // Nothing here touches `window` at module scope: the Playwright harness imports this table into
 // Node to route its fetch mock, and a module that reads the DOM on import could not be imported
@@ -63,23 +64,34 @@ export const OPERATIONS = {
 
 export const EVENTS_PATH = "/api/events";
 
-/** The transport failure shape, matching what the pywebview bridge's callers already handle. */
-function transportFailure(message) {
-  return { success: false, error: String(message || "the request failed") };
+/**
+ * A failed API call. Thrown, never returned.
+ *
+ * Two things count as a failure and both throw: a **transport** failure (the gateway is down,
+ * the path is unknown, the answer is not JSON) and a **refusal** (the operation answered
+ * `{success: false, error}`). A refusal is the engine saying the thing did not happen, so a
+ * caller that carried on would be reading fields from a payload that reports its own failure.
+ * Making both an exception means `try`/`catch` -- the control flow async/await already has --
+ * is the only way to observe a failure, and a call site that forgets cannot silently proceed.
+ */
+export class ApiError extends Error {
+  constructor(message, { status = 0, operation = "" } = {}) {
+    super(String(message || "the request failed"));
+    this.name = "ApiError";
+    this.status = Number(status) || 0;
+    this.operation = String(operation || "");
+  }
 }
 
 /**
- * Calls one operation and returns its `data`, or a `{success:false, error}` on any failure.
+ * Calls one operation and returns its `data`.
  *
- * Returning a value rather than throwing is deliberate: every migrated call site already reads
- * `res.success === false` for a refusal, and a rejected promise would change the shape of the
- * contract the UI was written against. A genuine transport failure (server down, gateway
- * stopped) is reported the same way, because "the backend said no" and "the backend did not
- * answer" are both "no" to a caller that cannot act on the difference.
+ * **Throws :class:`ApiError` on any failure** -- see the class. There is no failure-shaped return
+ * value to check, because a return value a caller can ignore is a failure a caller will ignore.
  */
 export async function callOperation(name, args = []) {
   const operation = OPERATIONS[name];
-  if (!operation) return transportFailure(`unknown operation ${name}`);
+  if (!operation) throw new ApiError(`unknown operation ${name}`, { operation: name });
   const payload = {};
   operation.args.forEach((key, index) => {
     if (index < args.length && args[index] !== undefined) payload[key] = args[index];
@@ -102,19 +114,36 @@ export async function callOperation(name, args = []) {
       });
     }
   } catch (err) {
-    return transportFailure((err && err.message) || err);
+    // The engine is unreachable, not refusing: a caller may want to say so differently.
+    throw new ApiError(`the engine is unreachable: ${(err && err.message) || err}`, {
+      operation: name,
+    });
   }
 
   let envelope;
   try {
     envelope = await response.json();
   } catch (_err) {
-    return transportFailure(`the gateway answered with non-JSON (${response.status})`);
+    throw new ApiError(`the gateway answered with non-JSON (HTTP ${response.status})`, {
+      status: response.status,
+      operation: name,
+    });
   }
   if (!envelope || envelope.ok !== true) {
-    return transportFailure((envelope && (envelope.detail || envelope.error)) || `HTTP ${response.status}`);
+    throw new ApiError(
+      (envelope && (envelope.detail || envelope.error)) || `HTTP ${response.status}`,
+      { status: response.status, operation: name }
+    );
   }
-  return envelope.data;
+
+  const data = envelope.data;
+  if (data && typeof data === "object" && data.success === false) {
+    throw new ApiError(data.error || `${name} was refused`, {
+      status: response.status,
+      operation: name,
+    });
+  }
+  return data;
 }
 
 /**

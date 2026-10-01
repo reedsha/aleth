@@ -5,6 +5,7 @@
 import { handleAgentEvent } from "./agent-events.js";
 import { api } from "./api-client.js";
 import { repaintCodeSurfaces } from "./code-surface.js";
+import { engineAvailable } from "./connection.js";
 import { isDockDrawerOpen, setDockDrawerOpen } from "./dock.js";
 import { showToast } from "./notify.js";
 import { isUiTask, renderPlanTree, updateBentoStats, updateStrictPlanLock } from "./plan-tree.js";
@@ -348,6 +349,14 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
   const text = promptText || state.pendingPrompt;
   if (!text) return;
 
+  // The last line of defence before a run starts. The confirm button is disabled while the
+  // engine is unreachable (ui/js/connection.js), but a keyboard path or a stale click can still
+  // arrive here, and an intent submitted into a dead engine is a run the user believes started.
+  if (!engineAvailable()) {
+    showToast("The engine is unreachable. Reconnect before starting a run.", "error");
+    return;
+  }
+
   state.pendingPrompt = text;
   beginRunUi();
 
@@ -376,12 +385,7 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
   DOM.systemStatusLabel.textContent = "Multi-Agent Active";
 
   try {
-    const res = await api.start_execution(text, actionType, actionParams);
-    // The backend refuses a second run while one is live; undo the optimistic lock so the
-    // UI does not claim a run it never started (audit H7).
-    if (res && res.success === false) {
-      abortRunUi(res.error || "A run is already in progress.");
-    }
+    await api.start_execution(text, actionType, actionParams);
   } catch (err) {
     console.error("[Execution] Start failed:", err);
     // A launch that rejected never produced a terminal event, so the lock has to be undone

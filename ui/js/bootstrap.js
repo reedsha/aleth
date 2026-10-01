@@ -5,29 +5,29 @@
 import { api, connectEventStream } from "./api-client.js";
 import { beginRunUi } from "./actions.js";
 import { installBus } from "./bridge-bus.js";
+import {
+  CONNECTED,
+  LOST,
+  RECONNECTING,
+  initConnectionIndicator,
+  setConnectionState,
+} from "./connection.js";
+import { clearFatalError, showFatalError } from "./fatal.js";
 import { renderSidebarAgents } from "./agents.js";
-import { reportStartupFailure, showToast } from "./notify.js";
+import { showToast } from "./notify.js";
 import { openCreatePlanModal } from "./plan-modals.js";
 import { applyPlanData } from "./plan-tree.js";
 import { renderSidebarWorkspaceTree } from "./sidebar.js";
 import { DOM, state } from "./store.js";
 import { refreshWorkbenchChrome } from "./workbench.js";
 
-// The gateway answers `{success:false, error}` for a transport failure rather than throwing, so
-// a caller that wants the failure path has to ask for it. Without this, an unreachable gateway
-// would render an empty sidebar and an empty plan tree -- indistinguishable from a workspace
-// that genuinely has neither.
-function unwrap(res, what) {
-  if (res && res.success === false) throw new Error(res.error || `${what} failed`);
-  return res;
-}
-
 export async function initFromGateway() {
   try {
-    const agentsData = unwrap(await api.get_agents(), "the agent registry");
+    clearFatalError();
+    const agentsData = await api.get_agents();
     applyAgentsData(agentsData);
 
-    const wsInfo = unwrap(await api.get_workspace_info(), "the workspace listing");
+    const wsInfo = await api.get_workspace_info();
     if (wsInfo && wsInfo.workspace_dir) {
       updateWorkspaceUI(wsInfo.workspace_dir);
     }
@@ -36,7 +36,7 @@ export async function initFromGateway() {
     renderSidebarWorkspaceTree((wsInfo && wsInfo.files) || []);
 
     // Load active plan with plan.json machine state
-    const planData = unwrap(await api.get_active_plan(), "the active plan");
+    const planData = await api.get_active_plan();
     applyPlanData(planData);
     reportPlanDiagnostics(planData);
 
@@ -52,44 +52,58 @@ export async function initFromGateway() {
     // A reload mid-run leaves the backend thread alive while `state.isExecuting` resets, so
     // Stop stays hidden and a second run is launchable. Ask the backend and re-arm the lock
     // (audit H6).
-    const runState = unwrap(await api.get_run_state(), "the run state");
+    const runState = await api.get_run_state();
     if (runState && runState.running && typeof beginRunUi === "function") {
       beginRunUi();
     }
   } catch (err) {
-    // A failure here used to be silent: the window stayed fully rendered but with no agents
-    // and no plan, which looks identical to a working app. The packaged window runs with
-    // debug=False, where console output is invisible, so it is surfaced instead.
-    notifyInitFailure(err);
-    initFallbackMode();
+    // The client throws on every failure, so this is the one place a failed boot is caught -- and
+    // it must not be swallowed: the window would stay fully rendered but empty, which looks
+    // identical to a working app with no project. A browser opened with `?demo=1` still gets its
+    // layout preview; everywhere else this is the blocking screen, because there is nothing real
+    // to show and no way for the user to tell.
+    const detail = (err && err.message) || String(err);
+    console.error("[Aleth UI] the gateway handshake failed:", detail);
+    if (isDemoModeRequested()) {
+      renderFallbackDemoData();
+      return;
+    }
+    showFatalError({
+      title: "The engine is unreachable",
+      detail,
+      onRetry: () => initFromGateway(),
+    });
   }
 }
 
-// Starts the engine event stream. The gateway is a plain HTTP server, so this works in the
-// desktop window and in a browser alike -- there is no desktop-only path left.
+// Starts the engine event stream, and reflects its health in the UI. The gateway is a plain HTTP
+// server, so this works in the desktop window and in a browser alike -- there is no desktop-only
+// path left.
 //
 // The sink is installed first. A frame that arrives before the sink exists is dropped, and the
 // sink is the same strict parser the pywebview push used -- so an event from the stream is
 // validated exactly as an injected one was, and a malformed payload is rejected either way.
 export function startEventStream() {
   installBus();
+  initConnectionIndicator();
   return connectEventStream({
     onMessage: (raw) => {
       const sink = window.__deepAgentsBus;
       if (sink && typeof sink.receive === "function") sink.receive(raw);
     },
+    onStatus: (status) => {
+      if (!status) return;
+      if (status.unsupported) {
+        // No EventSource at all: the UI has no way to be told anything, so it must not pretend
+        // it can act.
+        setConnectionState(LOST);
+        return;
+      }
+      setConnectionState(status.connected ? CONNECTED : RECONNECTING);
+    },
   });
 }
 
-function notifyInitFailure(err) {
-  if (typeof showToast !== "function") return;
-  const detail = (err && err.message) ? err.message : String(err);
-  showToast(`Could not load workspace data: ${detail}`, "error");
-}
-
-// Explains an empty plan tree instead of leaving the action panel locked with no
-// visible reason. A locked panel plus a blank tree is the exact signature of the
-// app resolving to the wrong (empty) workspace directory.
 function reportPlanDiagnostics(planData) {
   if (!planData || typeof showToast !== "function") return;
 
@@ -129,17 +143,6 @@ function isDemoModeRequested() {
   } catch (_err) {
     return false;
   }
-}
-
-export function initFallbackMode() {
-  if (!isDemoModeRequested()) {
-    const message = "The local gateway is unreachable: the workspace could not be loaded. " +
-      "Restart the app. (For a layout-only preview in a browser, open this page with ?demo=1.)";
-    if (typeof reportStartupFailure === "function") reportStartupFailure(message);
-    else console.error("[Aleth UI]", message);
-    return;
-  }
-  renderFallbackDemoData();
 }
 
 function renderFallbackDemoData() {

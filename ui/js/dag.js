@@ -27,6 +27,7 @@
 // renders its AST targets against the bytes they would replace.
 import { api } from "./api-client.js";
 import { emit, on } from "./bus.js";
+import { engineAvailable } from "./connection.js";
 import { renderDiffPlaceholder, renderDiffSurface } from "./diff-surface.js";
 import { showToast } from "./notify.js";
 import { DOM, state } from "./store.js";
@@ -410,23 +411,22 @@ function renderInspector() {
 async function rejectArtifact(taskId, feedback, button) {
   const note = String((feedback && feedback.value) || "").trim();
   if (!note) return;  // the control is disabled for this; belt and braces
+  if (!engineAvailable()) {
+    showToast("The engine is unreachable. Reconnect before rejecting an artifact.", "error");
+    return;
+  }
 
   if (button) button.disabled = true;
   try {
-    const res = await api.reject_artifact(taskId, note, planIdForActivePlan());
-    if (res && res.success) {
-      showToast("Artifact rejected; the milestone is back in the queue.", "success");
-      if (feedback) feedback.value = "";
-      selectedTaskId = null;
-      closeDagPanel();
-      // Reflect the demotion locally so the canvas does not sit on a stale PLANNED node while the
-      // backend's task_state_updated travels.
-      statusOverrides.set(String(taskId), "pending");
-      render();
-    } else {
-      showToast((res && res.error) || "The rejection was refused.", "error");
-      if (button) button.disabled = false;
-    }
+    await api.reject_artifact(taskId, note, planIdForActivePlan());
+    showToast("Artifact rejected; the milestone is back in the queue.", "success");
+    if (feedback) feedback.value = "";
+    selectedTaskId = null;
+    closeDagPanel();
+    // Reflect the demotion locally so the canvas does not sit on a stale PLANNED node while the
+    // backend's task_state_updated travels.
+    statusOverrides.set(String(taskId), "pending");
+    render();
   } catch (err) {
     showToast(`Rejection failed: ${(err && err.message) || err}`, "error");
     if (button) button.disabled = false;
@@ -442,25 +442,23 @@ async function approveArtifact(taskId, button) {
   const artifact = artifacts.get(taskId);
   const planId = (artifact && artifact.plan_id) || planIdForActivePlan();
 
+  // Approval releases the execution pass, so it is an execution trigger like any other.
+  if (!engineAvailable()) {
+    showToast("The engine is unreachable. Reconnect before approving an artifact.", "error");
+    return;
+  }
+
   if (button) {
     button.disabled = true;
     button.textContent = "Approving\u2026";
   }
   try {
     const res = await api.approve_artifact(taskId, planId);
-    if (res && res.success) {
-      showToast("Artifact approved; execution released.", "success");
-      // Approval dispatches the execution pass, so the UI re-arms the same run lock a
-      // normal launch arms.
-      if (res.dispatched) emit("run:begin");
-      else if (res.note) showToast(res.note, "info");
-    } else {
-      showToast((res && res.error) || "Approval refused.", "error");
-      if (button) {
-        button.disabled = false;
-        button.textContent = "Approve";
-      }
-    }
+    showToast("Artifact approved; execution released.", "success");
+    // Approval dispatches the execution pass, so the UI re-arms the same run lock a
+    // normal launch arms.
+    if (res.dispatched) emit("run:begin");
+    else if (res.note) showToast(res.note, "info");
   } catch (err) {
     showToast(`Approval failed: ${(err && err.message) || err}`, "error");
     if (button) {

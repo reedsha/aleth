@@ -642,13 +642,8 @@ async function addRecommendationToPlan(directive, button) {
   if (button) button.disabled = true;
   try {
     const res = await api.add_plan_task(directive);
-    if (res && res.success) {
-      if (button) button.textContent = "Added";
-      showToast(`Added to ${res.filename || "the plan"} as a pending task.`, "success");
-    } else {
-      if (button) button.disabled = false;
-      showToast((res && res.error) || "Could not add the task.", "error");
-    }
+    if (button) button.textContent = "Added";
+    showToast(`Added to ${res.filename || "the plan"} as a pending task.`, "success");
   } catch (err) {
     if (button) button.disabled = false;
     showToast(`Could not add the task: ${err}`, "error");
@@ -662,14 +657,9 @@ async function addRecommendationToPlan(directive, button) {
 async function revertPlanUpdate(button) {
   if (button) button.disabled = true;
   try {
-    const res = await api.revert_plan_update();
-    if (res && res.success) {
-      if (button) button.textContent = "Reverted";
-      showToast("Roadmap restored to its previous revision.", "success");
-    } else {
-      if (button) button.disabled = false;
-      showToast((res && res.error) || "Could not revert the revision.", "error");
-    }
+    await api.revert_plan_update();
+    if (button) button.textContent = "Reverted";
+    showToast("Roadmap restored to its previous revision.", "success");
   } catch (err) {
     if (button) button.disabled = false;
     showToast(`Could not revert the revision: ${err}`, "error");

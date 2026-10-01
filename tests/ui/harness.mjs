@@ -146,7 +146,12 @@ export const PLAN = {
  * The values are serialised into the page, so they must be plain data, not functions.
  */
 export async function openApp(page, options = {}) {
-  const { waitForTree = true, api: apiOverrides = {}, ...overrides } = options;
+  const {
+    waitForTree = true,
+    api: apiOverrides = {},
+    gatewayDown = false,
+    ...overrides
+  } = options;
   // The three fixtures the app cannot start without are served by default, over whichever
   // transport asks for them. A test's own `agents`/`workspace`/`plan` override wins, and
   // `options.api` then overrides or adds individual operations.
@@ -166,6 +171,7 @@ export async function openApp(page, options = {}) {
     plan,
     ...overrides,
     apiReturns,
+    gatewayDown: !!gatewayDown,
     operationPaths: OPERATION_PATHS,
   };
 
@@ -181,14 +187,15 @@ export async function openApp(page, options = {}) {
     // -- the gateway -----------------------------------------------------------
     // One fixture, one transport: a name in `apiReturns` is what the gateway answers with. The
     // path comes from the client's own table, so a route the client can address is a route this
-    // mock answers.
-
+    // mock answers. `gatewayDown` makes every request reject, which is what an engine that is not
+    // running looks like to `fetch`.
     window.fetch = async (input) => {
       const url = typeof input === "string" ? input : (input && input.url) || "";
       const path = url.split("?")[0];
       // Every request is recorded, so a test can assert *which transport* a module used rather
       // than inferring it from what rendered.
       window.__alethFetchLog.push(path);
+      if (data.gatewayDown) throw new TypeError("Failed to fetch");
       const name = Object.keys(data.operationPaths).find(
         (key) => data.operationPaths[key] === path
       );
@@ -197,8 +204,11 @@ export async function openApp(page, options = {}) {
     };
     window.__alethFetchLog = [];
 
-    // The stream. Tests push frames with `window.__alethEmit(rawJson)`, which is exactly the
-    // string the backend sends, so the strict parse/validate path is exercised.
+    // The stream. Tests drive it with `window.__alethStream`: `drop()` models the backend dying
+    // (every attempt fails, as it would against a dead port) and `open()` models it coming back.
+    // `__alethEmit(rawJson)` pushes a frame, which is exactly the string the backend sends, so
+    // the strict parse/validate path is exercised.
+    let down = false;
     const streams = [];
     window.__alethStreams = streams;
     window.EventSource = class {
@@ -207,7 +217,12 @@ export async function openApp(page, options = {}) {
         this.closed = false;
         streams.push(this);
         setTimeout(() => {
-          if (!this.closed && this.onopen) this.onopen({});
+          if (this.closed) return;
+          if (down) {
+            if (this.onerror) this.onerror({});
+          } else if (this.onopen) {
+            this.onopen({});
+          }
         }, 0);
       }
 
@@ -220,13 +235,29 @@ export async function openApp(page, options = {}) {
         if (!stream.closed && stream.onmessage) stream.onmessage({ data: raw });
       });
     };
+    // Drives the stream's own lifecycle, so a test can simulate the backend dying and coming
+    // back the way `EventSource` reports it: an error, then a successful reopen.
+    window.__alethStream = {
+      drop: () => {
+        down = true;
+        streams.forEach((stream) => {
+          if (!stream.closed && stream.onerror) stream.onerror({});
+        });
+      },
+      open: () => {
+        down = false;
+        streams.forEach((stream) => {
+          if (stream.onopen) stream.onopen({});
+        });
+      },
+    };
   }, payload);
 
   await page.goto("/index.html");
+  // `waitForTree: false` means the caller is asserting something else (a fatal screen, an empty
+  // plan) and will do its own waiting -- this must not fail the boot on its behalf.
   if (waitForTree) {
     await expect(page.locator("#planTreeContainer .plan-tree-section").first()).toBeVisible();
-  } else {
-    await expect(page.locator("#planTreeContainer")).not.toBeEmpty();
   }
 }
 

@@ -109,11 +109,6 @@ export async function refreshPreview() {
   }
   if (!state.previewOpen) return;
 
-  if (!result || result.success === false) {
-    showPreviewError(`Could not read ${PREVIEW_FILENAME}: ` +
-      `${(result && result.error) || "unknown error"}`);
-    return;
-  }
   if (!result.found) {
     showPreviewError(
       `No ${PREVIEW_FILENAME} in this workspace yet. Run a task that builds the interface, ` +

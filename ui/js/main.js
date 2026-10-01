@@ -65,6 +65,7 @@ import "./dag.js";
 // module above it.
 import "./wire.js";
 
+import { connectionState, engineAvailable } from "./connection.js";
 import { unresolvedElements } from "./store.js";
 
 // The one thing this bundle publishes to the page. The document's head watchdog is a
@@ -73,8 +74,13 @@ import { unresolvedElements } from "./store.js";
 // that, and is not the same thing as the ~35 loose functions the old build exposed.
 //
 // `diagnostics` is the app's own health report, used by the wiring as well (see wire.js),
-// so it is not a test-only hook.
+// so it is not a test-only hook. The engine connection belongs in it for the same reason: it is
+// the one fact that decides whether the UI will accept new work.
 window.Aleth = {
   bootedAt: Date.now(),
-  diagnostics: () => ({ unresolvedElements: unresolvedElements() }),
+  diagnostics: () => ({
+    unresolvedElements: unresolvedElements(),
+    connection: connectionState(),
+    engineAvailable: engineAvailable(),
+  }),
 };

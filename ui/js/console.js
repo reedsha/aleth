@@ -240,14 +240,13 @@ function consoleBacklog() {
   return consoleLines.slice();
 }
 
-// Mirrors one line into the detached window. Fire-and-forget: the backend refuses the push when
-// no window is open, and the mirror then stops rather than emitting into nothing for the life of
-// the session. The line travels as a `console_line` event, so the second window renders it from
-// the same stream every other client reads.
+// Mirrors one line into the detached window. Fire-and-forget: a refused push means no window is
+// open (or it just closed), so the mirror stops rather than emitting into nothing for the rest of
+// the session. The refusal is deliberately not reported -- it is a normal end, not a fault.
 function pushDetachedConsoleLine(kind, text) {
   if (!consoleDetached) return;
-  api.push_console_line(kind, text).then((res) => {
-    if (res && res.success === false) consoleDetached = false;
+  api.push_console_line(kind, text).catch(() => {
+    consoleDetached = false;
   });
 }
 

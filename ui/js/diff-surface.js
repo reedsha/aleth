@@ -115,9 +115,6 @@ function diffLine(entry) {
 async function fetchSpan(filePath, start, end) {
   try {
     const res = await api.get_source_span(filePath, start, end);
-    if (res && res.success === false) {
-      return { text: "", missing: true, error: res.error || "" };
-    }
     return {
       text: String((res && res.text) || ""),
       missing: !(res && res.found),
@@ -191,20 +188,14 @@ function attachEditor(head, card, target, artifact, index) {
       save.disabled = true;
       save.textContent = "Saving\u2026";
       try {
-        const res = await api.update_artifact_target(
+        await api.update_artifact_target(
           String(artifact.task_id || ""),
           index,
           editor.value,
           String(artifact.plan_id || ""),
         );
-        if (res && res.success) {
-          showToast("Artifact target updated.", "success");
-          wrap.remove();
-        } else {
-          showToast((res && res.error) || "The edit was refused.", "error");
-          save.disabled = false;
-          save.textContent = "Save edit";
-        }
+        showToast("Artifact target updated.", "success");
+        wrap.remove();
       } catch (err) {
         showToast(`Could not save the edit: ${(err && err.message) || err}`, "error");
         save.disabled = false;

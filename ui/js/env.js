@@ -89,14 +89,13 @@ export async function refreshEnvironmentVariables() {
 
   try {
     const res = await api.get_environment_variables();
-    if (res && res.success === false) {
-      throw new Error(res.error || "the gateway refused the read");
-    }
     renderEnvironmentVariables((res && res.variables) || []);
   } catch (err) {
     // A read failure must not render as the empty state -- "No environment variables are
     // configured." is indistinguishable from a real failure with no signal (audit H9).
-    renderEnvironmentVariables([]);
+    if (DOM.countEnvVars) DOM.countEnvVars.textContent = "0";
+    setHtml(DOM.sidebarEnvList,
+      '<div class="env-empty">Could not read environment variables from the engine.</div>');
     showToast(`Could not read environment variables: ${(err && err.message) || err}`, "error");
   }
 }

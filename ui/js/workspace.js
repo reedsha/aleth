@@ -215,17 +215,11 @@ export async function handleAuditResolution(resolutionType) {
   showToast(`${label}...`, "info");
 
   try {
-    const res = await api.resolve_sync(resolutionType);
+    await api.resolve_sync(resolutionType);
 
-    if (res.success !== false) {
-      showToast(`✓ ${label} completed successfully!`, "success");
-      // Plan data will be refreshed via plan_updated event from backend
-      closeAuditModal();
-    } else {
-      showToast(`Resolution failed: ${res.error || "Unknown error"}`, "error");
-      if (DOM.btnSyncPlanToCode) DOM.btnSyncPlanToCode.disabled = false;
-      if (DOM.btnForceCodeToPlan) DOM.btnForceCodeToPlan.disabled = false;
-    }
+    showToast(`✓ ${label} completed successfully!`, "success");
+    // Plan data will be refreshed via plan_updated event from backend
+    closeAuditModal();
   } catch (err) {
     showToast(`Resolution error: ${err.message}`, "error");
     if (DOM.btnSyncPlanToCode) DOM.btnSyncPlanToCode.disabled = false;
@@ -296,17 +290,12 @@ export async function handleConfirmRollback() {
   try {
     const res = await api.rollback_task(taskId);
 
-    if (res.success) {
-      const restoredMsg = (res.restored_files && res.restored_files.length > 0)
-        ? ` Restored ${res.restored_files.length} file(s).`
-        : "";
-      showToast(`✓ "${taskTitle}" rolled back to Pending.${restoredMsg}`, "success");
-      closeRollbackModal();
-      // Plan will be refreshed via plan_updated event from backend
-    } else {
-      showToast(`Rollback failed: ${res.error || "Unknown error"}`, "error");
-      if (DOM.btnConfirmRollbackAction) DOM.btnConfirmRollbackAction.disabled = false;
-    }
+    const restoredMsg = (res.restored_files && res.restored_files.length > 0)
+      ? ` Restored ${res.restored_files.length} file(s).`
+      : "";
+    showToast(`✓ "${taskTitle}" rolled back to Pending.${restoredMsg}`, "success");
+    closeRollbackModal();
+    // Plan will be refreshed via plan_updated event from backend
   } catch (err) {
     showToast(`Rollback error: ${err.message}`, "error");
     if (DOM.btnConfirmRollbackAction) DOM.btnConfirmRollbackAction.disabled = false;

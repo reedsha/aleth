@@ -103,12 +103,8 @@ async function saveSettingsFromForm() {
   try {
     const res = await api.save_settings(collectSettingsValues());
     renderSettings(res);
-    if (res && res.success) {
-      setSettingsStatus("Saved. Applies to the next run \u2014 no restart needed.", "success");
-      if (typeof refreshEnvironmentVariables === "function") refreshEnvironmentVariables();
-    } else {
-      setSettingsStatus((res && res.error) || "The settings could not be saved.", "error");
-    }
+    setSettingsStatus("Saved. Applies to the next run \u2014 no restart needed.", "success");
+    if (typeof refreshEnvironmentVariables === "function") refreshEnvironmentVariables();
   } catch (_err) {
     setSettingsStatus("The settings could not be saved.", "error");
   } finally {
