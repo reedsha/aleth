@@ -2,7 +2,6 @@ import os
 import sys
 import threading
 import traceback
-import html as html_module
 import webview
 
 from env_boot import load_environment
@@ -12,7 +11,7 @@ from env_boot import load_environment
 for _shadowed in load_environment():
     print(f"[Config] .env overrides the exported {_shadowed}")
 
-from bridge_bus import BridgeBus, WebviewTransport
+import bridge_bus
 from orchestration.plan_tagging import retag_plan
 from registry import registry
 from tools.file_tools import (
@@ -43,58 +42,6 @@ from tools.task_tags import UI_TAG
 from tools.test_runner import run_task_tests as run_task_test_suite
 
 
-# The style of the detached console window. It is a separate document from the main
-# window's (ui/index.html, built by Vite into dist/ as one JS asset and one stylesheet) and
-# is handed to pywebview as inline html, so it needs no subresource fetch of its own.
-_CONSOLE_WINDOW_STYLE = """
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: #0a0c10; color: #cbd5e1;
-         font: 12px/1.6 "JetBrains Mono", Consolas, monospace; }
-  header { position: sticky; top: 0; display: flex; align-items: center;
-           justify-content: space-between; gap: 10px; padding: 8px 12px;
-           background: #15181d; border-bottom: 1px solid #2a2d32;
-           font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
-           color: #94a3b8; }
-  #stream { padding: 8px 12px 14px 12px; }
-  .ln { display: flex; gap: 10px; white-space: pre-wrap; overflow-wrap: break-word; }
-  .cmd .t, .tool .t { color: #7dd3fc; }
-  .ok .t { color: #34d399; }
-  .error .t { color: #f87171; }
-  .agent .t, .decision .t { color: #fbbf24; }
-  .state .t { color: #64748b; }
-  .delegate .t, .summary .t { color: #e2e8f0; }
-"""
-
-_CONSOLE_WINDOW_APPEND_JS = (
-    "window.appendLine = function (kind, text) {"
-    "  var stream = document.getElementById('stream');"
-    "  if (!stream) return;"
-    "  var row = document.createElement('div');"
-    "  row.className = 'ln ' + String(kind || 'log').replace(/[^a-z0-9_-]/gi, '');"
-    "  var span = document.createElement('span');"
-    "  span.className = 't';"
-    "  span.textContent = String(text);"
-    "  row.appendChild(span);"
-    "  stream.appendChild(row);"
-    "  window.scrollTo(0, document.body.scrollHeight);"
-    "};"
-    "window.__deepAgentsBus = {"
-    "  receive: function (raw) {"
-    "    var event;"
-    "    try { event = JSON.parse(raw); } catch (err) { return; }"
-    "    if (!event || event.type !== 'console_line') return;"
-    "    var keys = Object.keys(event);"
-    "    for (var i = 0; i < keys.length; i++) {"
-    "      if (keys[i] !== 'type' && keys[i] !== 'kind' && keys[i] !== 'text') return;"
-    "    }"
-    "    if (typeof event.kind !== 'string' || typeof event.text !== 'string') return;"
-    "    window.appendLine(event.kind, event.text);"
-    "  }"
-    "};"
-)
-
-
 # --- Frontend delivery -------------------------------------------------------
 #
 # The frontend is built by Vite into ``dist/`` and served by the API gateway itself, so the
@@ -113,61 +60,20 @@ def frontend_root() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
 
 
-def _console_kind(kind) -> str:
-    """The transcript line's class suffix, restricted to what belongs in a class name."""
-    cleaned = "".join(ch for ch in str(kind or "log").lower() if ch.isalnum() or ch in "_-")
-    return cleaned or "log"
-
-
-def _console_window_html(backlog) -> str:
-    """The detached console's initial document, seeded with the transcript shown so far."""
-    rows = []
-    for item in backlog or []:
-        if not isinstance(item, dict):
-            continue
-        kind = _console_kind(item.get("kind"))
-        text = html_module.escape(str(item.get("text", "")))
-        rows.append(f'<div class="ln {kind}"><span class="t">{text}</span></div>')
-    return (
-        '<!doctype html><html><head><meta charset="utf-8">'
-        "<title>Aleth \u2022 Console</title>"
-        f"<style>{_CONSOLE_WINDOW_STYLE}</style></head>"
-        '<body><header><span>Aleth \u2022 Console</span>'
-        '<span>detached</span></header>'
-        f'<div id="stream">{"".join(rows)}</div>'
-        f"<script>{_CONSOLE_WINDOW_APPEND_JS}</script></body></html>"
-    )
-
-
-def _push_console_line_to(window, kind, text) -> None:
-    """Pushes one transcript line into the detached window through the bus sink.
-
-    The line travels as a ``console_line`` event validated against the same strict
-    contract as every other bus payload, so the second window cannot be handed a shape
-    the contract does not describe.
-    """
-    BridgeBus(WebviewTransport(lambda: window)).dispatch(
-        {"type": "console_line", "kind": str(kind), "text": str(text)}
-    )
-
-
 class EngineService:
-    """The engine-facing operations.
+    """The engine-facing operations, reached over HTTP and never bound into the page.
 
-    **Still bound as pywebview's ``js_api`` during the cutover.** The HTTP gateway
-    (``api.operations``) can already serve every one of these operations over the loopback
-    socket, but the frontend is being migrated one module at a time, so both paths exist until
-    the last call site moves and the binding is deleted (Phase 15, step 4).
+    This used to be ``BridgeAPI``: a pywebview ``js_api`` object, which made every method here
+    callable from JavaScript -- including the ones that execute. The API gateway
+    (``api.operations``) is now its only caller, and pywebview never sees it: the window is a
+    browser, and the page's only door to the engine is the loopback socket.
     """
     def __init__(self):
         self._window = None
-        # The typed channel to the desktop window. Built here so it exists before the window
-        # is bound; ``WebviewTransport`` no-ops until ``set_window`` supplies one.
-        self._bus = BridgeBus(WebviewTransport(lambda: self._window))
         self._execution_thread = None
         self._tagging_thread = None
-        # The local API gateway (Phase 14). Built on demand by ``start_api`` -- the test suite
-        # constructs this service constantly and must not bind a socket doing it.
+        # The local API gateway. Built on demand by ``start_api`` -- the test suite constructs
+        # this service constantly and must not bind a socket doing it.
         self._api = None
         # The swarm, built on first use -- never in ``__init__``. Constructing the bridge must not
         # spawn a process pool or dispatch a node: the test suite builds one constantly, and a cold
@@ -177,15 +83,15 @@ class EngineService:
         # arrived before it finished loading. Touched from the workflow thread, the spawn
         # thread and pywebview's loaded/closed callbacks, so every access takes the lock.
         self._console_window = None
-        self._console_buffer = []
+        self._console_backlog = []
         self._console_lock = threading.Lock()
 
     def set_window(self, window):
-        """Bind the webview window: the event transport, the native dialogs, the console."""
+        """Bind the webview window, for the native dialogs and the detached console."""
         self._window = window
 
     def emit_event(self, event_data: dict):
-        """Pushes a structured real-time event to the clients through the bus.
+        """Announces a structured event on the bus, which streams it to every client.
 
         The bus validates ``event_data`` against the strict event union before it is
         serialised, so a drifted payload is reported here rather than delivered. The
@@ -194,10 +100,10 @@ class EngineService:
         workflow thread (audit M8).
         """
         try:
-            self._bus.dispatch(event_data)
+            bridge_bus.emit(event_data)
         except Exception as e:
             traceback.print_exc()
-            print(f"[EngineService] Error pushing event: {e}", file=sys.stderr)
+            print(f"[EngineService] Error emitting event: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------
     # Dynamic Agent Registry Methods
@@ -1092,20 +998,29 @@ class EngineService:
     # Detached console (hybrid console: inline drawer + second window)
     # -------------------------------------------------------------
     def open_console_window(self, backlog=None):
-        """Opens the transcript in a real second native window (`webview.create_window`).
+        """Opens the transcript in a real second native window, pointed at ``/console.html``.
 
-        This runs on the webview's JS-API thread, which is precisely the thread pywebview
-        expects for a window created after `start` -- it creates such a window immediately
-        rather than deferring it to the main loop. Spawning is still handed to its own
-        daemon thread and the bridge returns at once, so window creation can never hold the
-        caller; success or failure arrives as a `console_detached` / `console_detach_failed`
-        event instead of a return value.
+        The window is a **browser on the gateway**, not an inline ``html=`` string. That is what
+        gives it an origin: an inline document is opaque, so it can neither fetch the backlog nor
+        open an ``EventSource``, and its lines had to be injected with ``evaluate_js``. Served by
+        the gateway, it shares the app's origin and reads the same stream every other client
+        reads.
+
+        Spawning is handed to its own daemon thread so window creation can never hold the caller;
+        success or failure arrives as a ``console_detached`` / ``console_detach_failed`` event
+        rather than a return value.
         """
+        seeded = [
+            {"kind": str(item.get("kind", "log")), "text": str(item.get("text", ""))}
+            for item in (backlog or [])
+            if isinstance(item, dict)
+        ]
+
         def _spawn():
             try:
                 window = webview.create_window(
                     title="Aleth \u2022 Console",
-                    html=_console_window_html(backlog),
+                    url=f"{self._console_url()}",
                     width=760,
                     height=440,
                     background_color="#0a0c10",
@@ -1119,71 +1034,54 @@ class EngineService:
                 return
             with self._console_lock:
                 self._console_window = window
-                self._console_buffer = []
-            # Lines pushed before the document finishes loading are buffered; this flushes
-            # them once it has, so the second window catches up instead of missing them.
-            window.events.loaded += self._flush_console_buffer
+                self._console_backlog = seeded
             window.events.closed += self._forget_console_window
             self.emit_event({"type": "console_detached"})
 
         threading.Thread(target=_spawn, daemon=True).start()
         return {"success": True, "pending": True}
 
+    def _console_url(self) -> str:
+        """The console page on the gateway, or a file path when the gateway is not running.
+
+        The fallback keeps the call honest rather than opening a blank window: without a gateway
+        there is no origin to serve from, and the page would have nothing to read.
+        """
+        if self._api is not None:
+            return f"{self._api.base_url}/console.html"
+        return os.path.join(frontend_root(), "console.html")
+
+    def get_console_backlog(self):
+        """The transcript the dock had when it detached.
+
+        The second window cannot read the first window's memory, so the history travels through
+        the backend. This is the one thing the console page fetches before it starts reading the
+        stream.
+        """
+        with self._console_lock:
+            return {"lines": list(self._console_backlog)}
+
     def _forget_console_window(self):
         """Drops the reference once the user closes the detached window."""
         with self._console_lock:
             self._console_window = None
-            self._console_buffer = []
-
-    def _flush_console_buffer(self):
-        """Replays transcript lines that arrived before the detached window loaded."""
-        with self._console_lock:
-            window = self._console_window
-            if not window:
-                return
-            pending, self._console_buffer = self._console_buffer, []
-        for kind, text in pending:
-            try:
-                _push_console_line_to(window, kind, text)
-            except Exception as e:
-                print(f"[EngineService] Detached console push failed: {e}", file=sys.stderr)
-                with self._console_lock:
-                    self._console_window = None
-                return
+            self._console_backlog = []
 
     def push_console_line(self, kind, text):
-        """Mirrors one transcript line into the detached window, if one is open."""
+        """Mirrors one transcript line onto the bus, for the detached window to render.
+
+        The line travels as a ``console_line`` event, so it reaches the console page the same way
+        every other event does -- through the stream. The dock ignores this event type, so
+        echoing it back does not duplicate the line it came from.
+
+        A refusal when no window is open is deliberate and is what the dock reads: it stops
+        mirroring rather than emitting into nothing for the rest of the session.
+        """
         with self._console_lock:
-            window = self._console_window
-            if not window:
+            if self._console_window is None:
                 return {"success": False, "error": "console window is not open"}
-            try:
-                if not window.events.loaded.is_set():
-                    self._console_buffer.append((kind, text))
-                    return {"success": True, "buffered": True}
-                if self._console_buffer:
-                    pending, self._console_buffer = self._console_buffer, []
-                else:
-                    pending = []
-            except Exception as e:
-                # A closed window raises here; dropping the reference stops the mirror rather
-                # than retrying against a window that no longer exists.
-                self._console_window = None
-                return {"success": False, "error": str(e)}
-        # Pushes happen outside the lock so a slow webview cannot stall the workflow
-        # thread that is emitting into it.
-        for pending_kind, pending_text in pending:
-            try:
-                _push_console_line_to(window, pending_kind, pending_text)
-            except Exception as e:
-                self._console_window = None
-                return {"success": False, "error": str(e)}
-        try:
-            _push_console_line_to(window, kind, text)
-            return {"success": True}
-        except Exception as e:
-            self._console_window = None
-            return {"success": False, "error": str(e)}
+        self.emit_event({"type": "console_line", "kind": str(kind), "text": str(text)})
+        return {"success": True}
 
 
 def main(argv=None):
@@ -1227,7 +1125,8 @@ def main(argv=None):
     window = webview.create_window(
         title="Aleth • Plan Orchestrator Studio",
         url=ui_url,
-        js_api=api,
+        # No ``js_api``: the window is a browser. Everything it needs is a typed HTTP call to the
+        # loopback gateway, and nothing in the page can reach a backend method that executes.
         width=1340,
         height=860,
         min_size=(1040, 700),

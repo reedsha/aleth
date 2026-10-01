@@ -10,6 +10,7 @@
 // into folders needs no second bridge method and no guessing about which names are
 // directories -- a name only ever appears as a folder if some path has a segment below it.
 
+import { api } from "./api-client.js";
 import { escapeHtml } from "./dom.js";
 import { showToast } from "./notify.js";
 import { checkPlanStructureGate } from "./plan-modals.js";
@@ -162,14 +163,11 @@ export function renderSidebarPlans() {
 // The set of plan files is a backend fact, not something to remember across events: a
 // `plan_updated` carries the plan's content but no file list. Ask fresh when the tab opens.
 async function refreshSidebarPlans() {
-  const api = window.pywebview && window.pywebview.api;
-  if (api && typeof api.get_plan_files === "function") {
-    try {
-      const plans = await api.get_plan_files();
-      setAvailablePlans(plans);
-    } catch (_err) {
-      /* offline / no bridge: fall back to the list already in state */
-    }
+  try {
+    const plans = await api.get_plan_files();
+    setAvailablePlans(plans);
+  } catch (_err) {
+    /* offline / no bridge: fall back to the list already in state */
   }
   renderSidebarPlans();
 }
@@ -181,11 +179,6 @@ export async function switchActivePlan(planName) {
   if (planName === state.activePlan) {
     // A silent no-op reads as a broken click; say the plan is already active (audit L9).
     showToast("Already the active plan.", "info");
-    return;
-  }
-  const api = window.pywebview && window.pywebview.api;
-  if (!api) {
-    showToast("Switching plans needs the desktop app; this view is read-only.", "info");
     return;
   }
   if (state.isExecuting) {
@@ -335,10 +328,9 @@ export function renderSidebarWorkspaceTree(files) {
 // the workspace info it already fetched; only a later change needs a fresh call.
 export async function refreshSidebarWorkspaceTree() {
   if (!DOM.sidebarTree) return;
-  if (!(window.pywebview && window.pywebview.api && window.pywebview.api.get_workspace_info)) return;
 
   try {
-    const info = await window.pywebview.api.get_workspace_info();
+    const info = await api.get_workspace_info();
     renderSidebarWorkspaceTree((info && info.files) || []);
   } catch (_err) {
     // The tree keeps its last listing; the workspace card still reports the new path.

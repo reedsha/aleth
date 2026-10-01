@@ -9,6 +9,7 @@
 // the frontend is inlined in the first place, and it means the frame is never loaded at
 // startup: it has no src and no srcdoc until a preview is asked for.
 
+import { api } from "./api-client.js";
 import { showToast } from "./notify.js";
 import { sanitizePreviewHtml } from "./safe-dom.js";
 import { DOM, state } from "./store.js";
@@ -32,11 +33,6 @@ const PREVIEW_BLANK = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head
 const PREVIEW_LOAD_TIMEOUT_MS = 4000;
 
 let previewLoadTimer = null;
-
-function previewHasBridge() {
-  return !!(window.pywebview && window.pywebview.api &&
-    typeof window.pywebview.api.get_preview_source === "function");
-}
 
 function clearPreviewTimer() {
   if (previewLoadTimer) {
@@ -101,18 +97,11 @@ function syncPreviewToggle(on) {
 export async function refreshPreview() {
   if (!state.previewOpen) return;
 
-  if (!previewHasBridge()) {
-    showPreviewError(
-      "The live preview needs the desktop app; the browser layout preview cannot read " +
-      "workspace files.");
-    return;
-  }
-
   if (DOM.previewPath) DOM.previewPath.textContent = PREVIEW_FILENAME;
 
   let result;
   try {
-    result = await window.pywebview.api.get_preview_source();
+    result = await api.get_preview_source();
   } catch (err) {
     if (!state.previewOpen) return;
     showPreviewError(`Could not read ${PREVIEW_FILENAME}: ${(err && err.message) || err}`);

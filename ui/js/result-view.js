@@ -29,6 +29,7 @@
 //   recommend   -> summary.proposals                      (one card per proposal)
 //   custom      -> nothing; the plain stream is the answer
 
+import { api } from "./api-client.js";
 import { escapeHtml } from "./dom.js";
 import { showToast } from "./notify.js";
 import { openFilesTab } from "./sidebar.js";
@@ -59,16 +60,6 @@ function resultBackupKey(kind) {
 }
 
 // --- Mount / dismiss --------------------------------------------------------
-
-function resultHasBridge() {
-  return !!(window.pywebview && window.pywebview.api &&
-    typeof window.pywebview.api.get_task_diff === "function");
-}
-
-function resultTestBridge() {
-  return !!(window.pywebview && window.pywebview.api &&
-    typeof window.pywebview.api.run_task_tests === "function");
-}
 
 // Called on the terminal event. A refusal is not a result -- it is a request for input,
 // and the transcript the console is already holding is the answer to it.
@@ -147,10 +138,9 @@ const RESULT_RENDERERS = {
 
 async function loadTaskDiff(key) {
   const empty = { files: [], totals: { files: 0, added: 0, removed: 0 } };
-  if (!resultHasBridge()) return Object.assign({ unavailable: true }, empty);
   if (!key) return Object.assign({ found: false }, empty);
   try {
-    const res = await window.pywebview.api.get_task_diff(key);
+    const res = await api.get_task_diff(key);
     return res && typeof res === "object" ? res : Object.assign({ found: false }, empty);
   } catch (err) {
     return Object.assign({ error: (err && err.message) || String(err) }, empty);
@@ -165,10 +155,9 @@ function resultFiles(res) {
 // the same staleness guard. Opening the result view is the only thing that runs a test.
 async function loadTaskTests(key) {
   const none = { ran: false, found: false, verdict: "none" };
-  if (!resultTestBridge()) return Object.assign({ unavailable: true }, none);
   if (!key) return none;
   try {
-    const res = await window.pywebview.api.run_task_tests(key);
+    const res = await api.run_task_tests(key);
     return res && typeof res === "object" ? res : none;
   } catch (err) {
     return Object.assign({ error: (err && err.message) || String(err) }, none);
@@ -234,9 +223,6 @@ function resultDiffBlockHtml(file) {
 }
 
 function resultNoDiffHtml(res) {
-  if (res && res.unavailable) {
-    return '<div class="result-note">The file diff needs the desktop app; the browser layout preview cannot read the workspace snapshots.</div>';
-  }
   if (res && res.error) {
     return `<div class="result-note">Could not read the diff: ${escapeHtml(res.error)}</div>`;
   }
@@ -253,7 +239,7 @@ function resultTestPill(tests, files) {
   const named = written.length ? written.join(", ") : "the test file";
   const notRun = () => (written.length ? resultPill(`Test written: ${named} \u00B7 not run`, "warn") : "");
 
-  if (!tests || tests.unavailable) return notRun();
+  if (!tests) return notRun();
   if (!tests.ran) {
     if (tests.found) return resultPill("Tests: could not run", "warn");
     return notRun();
@@ -653,11 +639,6 @@ export function handleResultViewClick(event) {
 // button disables while the write is in flight, then reads "Added" rather than inviting a
 // second click that would add the same task twice.
 async function addRecommendationToPlan(directive, button) {
-  const api = window.pywebview && window.pywebview.api;
-  if (!api || typeof api.add_plan_task !== "function") {
-    showToast("Adding to the plan needs the desktop app; this view is read-only.", "info");
-    return;
-  }
   if (button) button.disabled = true;
   try {
     const res = await api.add_plan_task(directive);
@@ -679,11 +660,6 @@ async function addRecommendationToPlan(directive, button) {
 // before that write. The button disables while the round-trip is in flight, then reads
 // "Reverted" rather than inviting a second click that would roll the plan back twice.
 async function revertPlanUpdate(button) {
-  const api = window.pywebview && window.pywebview.api;
-  if (!api || typeof api.revert_plan_update !== "function") {
-    showToast("Reverting needs the desktop app; this view is read-only.", "info");
-    return;
-  }
   if (button) button.disabled = true;
   try {
     const res = await api.revert_plan_update();

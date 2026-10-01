@@ -21,6 +21,15 @@ export default defineConfig({
     // `dist/` lives outside `root`, so it has to be emptied explicitly. It is rebuilt from
     // scratch on every build and is gitignored; nothing in it is ever edited by hand.
     emptyOutDir: true,
+    // Two documents, not one: the app's, and the detached console's. The console is a real page
+    // served by the gateway rather than an inline `html=` string, which is what gives it an
+    // origin it can open an EventSource from.
+    rollupOptions: {
+      input: {
+        index: fileURLToPath(new URL("./ui/index.html", import.meta.url)),
+        console: fileURLToPath(new URL("./ui/console.html", import.meta.url)),
+      },
+    },
     // Minified, with source maps. The app is local so the bytes do not matter, but the
     // packaged window runs with `debug=False`, where a stack trace is the difference
     // between "it threw" and "line 1, column 48211". `app.py --debug` opens DevTools

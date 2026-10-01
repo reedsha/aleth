@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Aleth &bull; Console</title>
+    <!--
+      The detached console is served by the API gateway like every other page, so it shares the
+      main window's origin and can open an EventSource on /api/events. It used to be handed to
+      pywebview as an inline html string, which gave it an opaque origin: no fetch, no stream,
+      and its lines had to be injected with `evaluate_js`.
+    -->
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #0a0c10; color: #cbd5e1;
+             font: 12px/1.6 "JetBrains Mono", Consolas, monospace; }
+      header { position: sticky; top: 0; display: flex; align-items: center;
+               justify-content: space-between; gap: 10px; padding: 8px 12px;
+               background: #15181d; border-bottom: 1px solid #2a2d32;
+               font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+               color: #94a3b8; }
+      #stream { padding: 8px 12px 14px 12px; }
+      .ln { display: flex; gap: 10px; white-space: pre-wrap; overflow-wrap: break-word; }
+      .cmd .t, .tool .t { color: #7dd3fc; }
+      .ok .t { color: #34d399; }
+      .error .t { color: #f87171; }
+      .agent .t, .decision .t { color: #fbbf24; }
+      .state .t { color: #64748b; }
+      .delegate .t, .summary .t { color: #e2e8f0; }
+    </style>
+  </head>
+  <body>
+    <header><span>Aleth &bull; Console</span><span id="status">connecting</span></header>
+    <div id="stream"></div>
+    <script type="module" src="/js/console-window.js"></script>
+  </body>
+</html>

@@ -5,10 +5,9 @@
 // what is safe to show -- whether the variable resolves, and how long its value is -- which
 // is enough to tell a set-but-empty variable from a populated one.
 //
-// **First module migrated to the HTTP client (Phase 15, strangler step).** It reads through
-// `api.get_environment_variables()` instead of `window.pywebview.api`, so the same panel works
-// in a plain browser as in the desktop window; the two transports coexist while the rest of the
-// frontend is moved over.
+// **Read through the HTTP client.** The panel asks the gateway with
+// `api.get_environment_variables()`, so it works in a plain browser as in the desktop window:
+// there is no bridge and no desktop-only path.
 
 import { api } from "./api-client.js";
 import { escapeHtml } from "./dom.js";

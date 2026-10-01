@@ -220,64 +220,29 @@ class RunnerDispatchTests(unittest.TestCase):
         self.assertIn("workflow_started", [e.get("type") for e in events])
 
 
-class DetachedConsoleHtmlTests(unittest.TestCase):
-    """The second window's document is built here, so its escaping is pinned."""
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            import app
-        except Exception as exc:  # pragma: no cover - only when credentials are absent
-            raise unittest.SkipTest(f"app needs credentials: {exc}")
-        cls.app = app
-
-    def test_a_line_is_escaped_into_the_backlog(self):
-        html = self.app._console_window_html(
-            [{"kind": "cmd", "text": "<script>alert(1)</script>"}]
-        )
-        self.assertNotIn("<script>alert(1)</script>", html)
-        self.assertIn("&lt;script&gt;", html)
-
-    def test_the_kind_is_restricted_to_a_class_name(self):
-        self.assertEqual(self.app._console_kind("tool"), "tool")
-        self.assertEqual(self.app._console_kind('x" onload="y'), "xonloady")
-        self.assertEqual(self.app._console_kind(None), "log")
-
-    def test_non_dict_backlog_entries_are_ignored(self):
-        html = self.app._console_window_html(["nonsense", None, 7])
-        self.assertIn('id="stream"', html)
-
-
 class _FakeConsoleEvents:
-    """The two window events the bridge uses: ``loaded`` and ``closed``."""
-
-    def __init__(self):
-        self._loaded = threading.Event()
-
-    def is_set(self):
-        return self._loaded.is_set()
+    """The one window event the service still subscribes to: ``closed``."""
 
     def __iadd__(self, handler):
-        # Registering the loaded handler stands in for the document having loaded, which
-        # is what the real event means; the bridge then flushes and pushes directly.
-        self._loaded.set()
         self.handler = handler
         return self
 
 
 class _FakeConsoleWindow:
+    """A window that is created with a URL, not fed markup."""
+
     def __init__(self):
         self.events = mock.Mock()
-        self.events.loaded = _FakeConsoleEvents()
         self.events.closed = _FakeConsoleEvents()
-        self.calls = []
-
-    def evaluate_js(self, code):
-        self.calls.append(code)
 
 
 class DetachedConsoleBridgeTests(unittest.TestCase):
-    """The second-window plumbing, with pywebview's window creation stubbed out."""
+    """The second window is a browser on the gateway, not an inline document.
+
+    It used to be handed an ``html=`` string, which gave it an opaque origin: it could neither
+    fetch the backlog nor open an ``EventSource``, so its lines had to be injected with
+    ``evaluate_js``. It is now pointed at a page the gateway serves, and it reads the stream.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -291,33 +256,61 @@ class DetachedConsoleBridgeTests(unittest.TestCase):
         api = self.app.EngineService()
         api._events = []
         api.emit_event = api._events.append
+        api._api = mock.Mock(base_url="http://127.0.0.1:8765")
         return api
 
-    def test_a_push_with_no_window_is_refused_not_raised(self):
-        result = self._api().push_console_line("log", "anything")
-        self.assertFalse(result["success"])
-
-    def test_opening_seeds_the_backlog_and_mirrors_later_lines(self):
-        api = self._api()
+    def _open(self, api, backlog):
         window = _FakeConsoleWindow()
         created = threading.Event()
         seen = {}
 
         def fake_create(**kwargs):
-            seen["html"] = kwargs.get("html", "")
+            seen.update(kwargs)
             created.set()
             return window
 
         with mock.patch.object(self.app.webview, "create_window", side_effect=fake_create):
-            result = api.open_console_window([{"kind": "cmd", "text": "hello world"}])
+            result = api.open_console_window(backlog)
             self.assertTrue(result["success"])
-            self.assertTrue(created.wait(2))
+            self.assertTrue(created.wait(2), "the window was never created")
+        return seen
 
-        self.assertIn("hello world", seen["html"])
+    def test_a_push_with_no_window_is_refused_not_raised(self):
+        result = self._api().push_console_line("log", "anything")
+        self.assertFalse(result["success"])
+
+    def test_opening_points_the_window_at_the_console_page(self):
+        api = self._api()
+        seen = self._open(api, [{"kind": "cmd", "text": "hello world"}])
+
+        # A URL on the gateway -- so the page has an origin it can stream from -- and not `html=`.
+        self.assertEqual(seen.get("url"), "http://127.0.0.1:8765/console.html")
+        self.assertNotIn("html", seen)
         self.assertEqual(api._events[-1]["type"], "console_detached")
 
-        api.push_console_line("tool", "later line")
-        self.assertTrue(any("later line" in call for call in window.calls))
+        # The history travels through the backend, because the second window cannot read the
+        # first window's memory.
+        self.assertEqual(
+            api.get_console_backlog()["lines"], [{"kind": "cmd", "text": "hello world"}]
+        )
+
+    def test_a_pushed_line_is_announced_on_the_bus(self):
+        """The mirror is the stream now: one event, and the console page renders it."""
+        api = self._api()
+        self._open(api, [])
+
+        self.assertEqual(api.push_console_line("tool", "later line")["success"], True)
+        self.assertEqual(
+            api._events[-1], {"type": "console_line", "kind": "tool", "text": "later line"}
+        )
+
+    def test_the_backlog_is_dropped_when_the_window_closes(self):
+        api = self._api()
+        self._open(api, [{"kind": "log", "text": "gone soon"}])
+        api._forget_console_window()
+
+        self.assertEqual(api.get_console_backlog()["lines"], [])
+        self.assertFalse(api.push_console_line("log", "after close")["success"])
 
     def test_a_failed_open_is_announced_rather_than_raised(self):
         api = self._api()

@@ -6,7 +6,8 @@
 import { abortRunUi, beginRunUi, closeActionDrawer, finalizeWorkflow, handleActionParamConfirm, handleStopClick, openActionDrawer } from "./actions.js";
 import { hideTaggingPanel, showTaggingPanel } from "./agent-events.js";
 import { closePromptEditor, saveCurrentSystemPrompt, updateEditorMetrics } from "./agents.js";
-import { applyAgentsData, initFallbackMode, onPyWebViewReady, startEventStream, updateWorkspaceUI } from "./bootstrap.js";
+import { api } from "./api-client.js";
+import { applyAgentsData, initFromGateway, startEventStream, updateWorkspaceUI } from "./bootstrap.js";
 import { on as onBus } from "./bus.js";
 import { initCodeSurfaces } from "./code-surface.js";
 import { initCommandPalette, openCommandPalette } from "./command-palette.js";
@@ -106,9 +107,8 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Sidebar panels", initSidebars);
   runStartupStep("Environment panel", initEnvironmentPanel);
   runStartupStep("Settings panel", initSettingsPanel);
-  // The engine event stream, over HTTP. Started before the bridge settles because it does not
-  // depend on it: the gateway is an ordinary server, and this is the path every event takes
-  // once the pywebview push is gone.
+  // The engine event stream. It is the only delivery path an event has, which is why it is
+  // started here rather than after anything else settles.
   runStartupStep("Event stream", startEventStream);
 
   // Every element the app caches must have resolved. This replaces the check the document
@@ -120,30 +120,11 @@ document.addEventListener("DOMContentLoaded", () => {
     reportStartupFailure(`missing DOM elements: ${unresolved.join(", ")}`);
   }
 
-  // PyWebView Bridge initialization. A single settle path decides, exactly once, whether
-  // the bridge is there or not. pywebview injects its bridge after this script has run, so
-  // either it announces itself with `pywebviewready`, or it does not. Whatever arrives
-  // first wins and settles the decision; the other path -- the event and the one fallback
-  // timer -- can never run its step a second time. This replaces two timers racing.
-  if (window.pywebview) {
-    runStartupStep("Bridge startup", onPyWebViewReady);
-  } else {
-    let bridgeSettled = false;
-    const settleBridge = (label, step) => {
-      if (bridgeSettled) return;
-      bridgeSettled = true;
-      runStartupStep(label, step);
-    };
-    window.addEventListener("pywebviewready", () => {
-      settleBridge("Bridge startup", onPyWebViewReady);
-    });
-    setTimeout(() => {
-      // If the event was missed but the bridge is present, treat it as ready; otherwise
-      // this is the one explicit fallback path, and it cannot double-fire.
-      if (window.pywebview) settleBridge("Bridge startup", onPyWebViewReady);
-      else settleBridge("Bridge fallback", initFallbackMode);
-    }, 400);
-  }
+  // Gateway startup. There is no bridge to wait for any more: the page is served by the same
+  // socket that answers `/api`, so the API is reachable the moment the document is -- no
+  // `pywebviewready`, no injected object, and no timer racing to decide whether it arrived.
+  // `initFromGateway` reports an unreachable gateway and falls back on its own.
+  runStartupStep("Gateway startup", initFromGateway);
 });
 // ============================================================================
 // Event Listeners
@@ -188,20 +169,16 @@ function initEventListeners() {
 
   // Workspace folder button (Bug-free dialog closes on first click)
   on(DOM.btnSelectWorkspace, "click", async () => {
-    if (window.pywebview && window.pywebview.api) {
-      try {
-        const res = await window.pywebview.api.select_workspace();
-        if (res && res.workspace_dir && !res.cancelled) {
-          updateWorkspaceUI(res.workspace_dir);
-          showToast(`Workspace set to: ${DOM.txtWorkspacePath.textContent}`, "success");
-          const planData = await window.pywebview.api.get_active_plan();
-          applyPlanData(planData);
-        }
-      } catch (_err) {
-        showToast("Error opening workspace dialog", "error");
+    try {
+      const res = await api.select_workspace();
+      if (res && res.success === false) throw new Error(res.error || "the dialog failed");
+      if (res && res.workspace_dir && !res.cancelled) {
+        updateWorkspaceUI(res.workspace_dir);
+        showToast(`Workspace set to: ${DOM.txtWorkspacePath.textContent}`, "success");
+        applyPlanData(await api.get_active_plan());
       }
-    } else {
-      showToast("Workspace selector available in desktop app window", "info");
+    } catch (_err) {
+      showToast("Error opening workspace dialog", "error");
     }
   });
 
@@ -254,10 +231,6 @@ function initEventListeners() {
   const wireRetry = (btn, badge, agentId) => {
     on(btn, "click", async () => {
       if (badge) badge.style.display = "none";
-      if (!(window.pywebview && window.pywebview.api)) {
-        showToast("Retry is available in the desktop app window", "info");
-        return;
-      }
       if (state.isExecuting) {
         showToast("A run is already in progress.", "info");
         return;
@@ -265,7 +238,7 @@ function initEventListeners() {
       btn.disabled = true;
       beginRunUi();
       try {
-        const res = await window.pywebview.api.retry_execution(agentId, state.pendingPrompt);
+        const res = await api.retry_execution(agentId, state.pendingPrompt);
         if (res && res.success === false) abortRunUi(res.error || "A run is already in progress.");
       } catch (err) {
         abortRunUi(`Retry failed: ${(err && err.message) || err}`);
@@ -422,24 +395,22 @@ function checkAllCardsClosed() {
   }
 }
 
-// Fire-and-forget re-tagging of the plan's [UI] tags. The bridge method returns at once
-// and the pass streams its progress back as laya_tagging_* events, so the panel opens
-// before the call is even made and there is nothing here to await or catch.
+// Fire-and-forget re-tagging of the plan's [UI] tags. The call returns at once and the pass
+// streams its progress back as laya_tagging_* events, so the panel opens before the request is
+// even made. The client resolves rather than rejects on a failure, so the refusal is read off
+// the answer -- a rejected promise would never arrive here.
 function handleRetagUiClick() {
   showTaggingPanel();
-  if (window.pywebview && window.pywebview.api) {
-    // The pass returns at once and streams laya_tagging_* events; the button is disabled
-    // until the done event so a second click cannot start a second pass, and a rejected
-    // call re-enables it rather than leaving a permanent spinner (audit M10/B1.2).
-    if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = true;
-    window.pywebview.api.retag_plan_with_laya().catch((err) => {
+  // The button is disabled until the done event so a second click cannot start a second pass,
+  // and a refused call re-enables it rather than leaving a permanent spinner (audit M10/B1.2).
+  if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = true;
+  api.retag_plan_with_laya().then((res) => {
+    if (res && res.success === false) {
       if (DOM.btnRetagUi) DOM.btnRetagUi.disabled = false;
       hideTaggingPanel();
-      showToast(`Re-tagging failed: ${(err && err.message) || err}`, "error");
-    });
-  } else {
-    showToast("Re-tagging is available in the desktop app window", "info");
-  }
+      showToast(`Re-tagging failed: ${res.error || "unknown error"}`, "error");
+    }
+  });
 }
 
 function initAutoScrollListeners() {

@@ -1,14 +1,14 @@
-"""The typed IPC bus: validation at the boundary and two delivery paths.
+"""The typed IPC bus: validation at the boundary and one delivery path.
 
-Three properties are pinned here:
+Two properties are pinned here:
 
 * :meth:`bridge_bus.BridgeBus.dispatch` validates the payload against the strict event
   union *before* it is delivered -- an unknown type or an undocumented key raises, and
-  nothing reaches the transport or a listener; and
-* the window sink call is one static expression whose only variable part is a JSON *string*
-  literal, so a hostile payload stays data and cannot break out of the call; and
-* the stream transport frames the same event as one ``data:`` line, and a payload cannot forge
-  a frame boundary because JSON escapes the newlines it would need.
+  nothing reaches the transport; and
+* the transport is the API gateway's SSE hub, so a payload is delivered as one ``data:``
+  frame carrying compact JSON. Hostile text stays *data*: the client parses the frame with
+  ``JSON.parse``, and the frame itself cannot be terminated by a payload, because JSON
+  serialisation escapes the newlines a frame delimiter would need.
 
     .\\venv\\Scripts\\python.exe -m pytest tests/test_bridge_bus.py -n0 -q
 """
@@ -18,11 +18,8 @@ import unittest
 
 from pydantic import ValidationError
 
-import bridge_bus
-from bridge_bus import BridgeBus, NullTransport, WebviewTransport
+from bridge_bus import BridgeBus, NullTransport
 from api.events import EventHub, HubTransport
-
-_SINK_PREFIX = "window.__deepAgentsBus && window.__deepAgentsBus.receive("
 
 
 class _Recorder:
@@ -68,27 +65,19 @@ class DispatchTests(unittest.TestCase):
 
 
 class StreamTransportTests(unittest.TestCase):
-    """A listener (the SSE hub) receives the same validated event the transport carries."""
+    """The bus's one transport is the stream: an event arrives as a ``data:`` frame."""
 
     def test_an_event_reaches_a_subscriber_as_one_data_frame(self):
-        hub = EventHub()
-        subscriber = hub.subscribe()
-        bus = BridgeBus(NullTransport())
-        bus.add_listener(hub.publish)
-        bus.dispatch({"type": "log", "agent": "a", "log_type": "thinking", "text": "hi"})
-        frame = subscriber.next_frame(timeout=0.5)
-        self.assertIsNotNone(frame)
-        self.assertTrue(frame.startswith("data: "))
-        self.assertTrue(frame.endswith("\n\n"))
-        self.assertEqual(json.loads(frame[len("data: "):-2])["type"], "log")
-
-    def test_the_hub_transport_delivers_without_a_listener(self):
         hub = EventHub()
         subscriber = hub.subscribe()
         BridgeBus(HubTransport(hub)).dispatch(
             {"type": "log", "agent": "a", "log_type": "thinking", "text": "hi"}
         )
-        self.assertIsNotNone(subscriber.next_frame(timeout=0.5))
+        frame = subscriber.next_frame(timeout=0.5)
+        self.assertIsNotNone(frame)
+        self.assertTrue(frame.startswith("data: "))
+        self.assertTrue(frame.endswith("\n\n"))
+        self.assertEqual(json.loads(frame[len("data: "):-2])["type"], "log")
 
     def test_a_hostile_payload_stays_inside_one_frame(self):
         """A payload cannot forge a frame boundary: JSON escapes the newlines it would need."""
@@ -100,9 +89,7 @@ class StreamTransportTests(unittest.TestCase):
         }
         hub = EventHub()
         subscriber = hub.subscribe()
-        bus = BridgeBus(NullTransport())
-        bus.add_listener(hub.publish)
-        bus.dispatch(hostile)
+        BridgeBus(HubTransport(hub)).dispatch(hostile)
         frame = subscriber.next_frame(timeout=0.5)
 
         # Exactly one frame, and exactly one blank-line terminator: the injected blank line and
@@ -117,57 +104,9 @@ class StreamTransportTests(unittest.TestCase):
         subscriber = hub.subscribe()
         hub.unsubscribe(subscriber)
         # The emitter is the workflow thread; a dead subscriber must never reach it.
-        bus = BridgeBus(NullTransport())
-        bus.add_listener(hub.publish)
-        bus.dispatch({"type": "log", "agent": "a", "log_type": "x", "text": ""})
-
-
-class SinkScriptTests(unittest.TestCase):
-    def test_the_sink_is_one_static_call_with_a_string_literal_argument(self):
-        script = bridge_bus.sink_script('{"type":"log"}')
-        self.assertTrue(script.startswith(_SINK_PREFIX))
-        self.assertTrue(script.endswith(");"))
-        argument = script[len(_SINK_PREFIX):-2]
-        # A JS *string* literal, not an object literal: it opens with a quote, and parsing
-        # it yields the JSON text back.
-        self.assertTrue(argument.startswith('"') and argument.endswith('"'))
-        self.assertEqual(json.loads(argument), '{"type":"log"}')
-
-    def test_a_hostile_payload_cannot_break_out_of_the_call(self):
-        hostile = {
-            "type": "log",
-            "agent": "a",
-            "log_type": "x",
-            "text": '"); window.__pwned = 1; ("',
-        }
-        recorder = _Recorder()
-        BridgeBus(recorder).dispatch(hostile)
-        script = bridge_bus.sink_script(recorder.sent[0])
-
-        # The hostile text stays inside one quoted literal, and there is exactly one sink
-        # call in the statement -- so the payload can never terminate it and run code.
-        self.assertEqual(script.count("window.__pwned"), 1)
-        self.assertEqual(script.count("__deepAgentsBus.receive("), 1)
-        self.assertTrue(script.endswith(");"))
-
-        argument = script[len(_SINK_PREFIX):-2]
-        self.assertEqual(json.loads(json.loads(argument))["text"], hostile["text"])
-
-
-class WebviewTransportTests(unittest.TestCase):
-    def test_a_missing_window_makes_delivery_a_no_op(self):
-        WebviewTransport(lambda: None).send("{}")  # must not raise
-
-    def test_a_present_window_receives_the_static_sink_call(self):
-        calls = []
-
-        class _Window:
-            def evaluate_js(self, code):
-                calls.append(code)
-
-        WebviewTransport(lambda: _Window()).send('{"type":"log"}')
-        self.assertEqual(len(calls), 1)
-        self.assertTrue(calls[0].startswith(_SINK_PREFIX))
+        BridgeBus(HubTransport(hub)).dispatch(
+            {"type": "log", "agent": "a", "log_type": "x", "text": ""}
+        )
 
 
 if __name__ == "__main__":

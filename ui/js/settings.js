@@ -9,15 +9,11 @@
 //    A route with no value is a legitimate way to reset it, and the default is shown next
 //    to the field so the result is visible before saving.
 
+import { api } from "./api-client.js";
 import { escapeHtml } from "./dom.js";
 import { refreshEnvironmentVariables } from "./env.js";
 import { setHtml } from "./safe-dom.js";
 import { DOM } from "./store.js";
-
-function settingsHasBridge() {
-  return !!(window.pywebview && window.pywebview.api &&
-    typeof window.pywebview.api.get_settings === "function");
-}
 
 function settingsMask(length) {
   return "\u2022".repeat(8) + (length ? ` set (${length} characters) \u2014 type to replace` : "");
@@ -71,13 +67,8 @@ async function openSettingsModal() {
   DOM.settingsModalOverlay.style.display = "flex";
   setSettingsStatus("");
 
-  if (!settingsHasBridge()) {
-    renderSettings(null);
-    setSettingsStatus("The desktop app is needed to change settings.", "error");
-    return;
-  }
   try {
-    renderSettings(await window.pywebview.api.get_settings());
+    renderSettings(await api.get_settings());
   } catch (_err) {
     setSettingsStatus("Could not read the current settings.", "error");
   }
@@ -105,16 +96,12 @@ function collectSettingsValues() {
 }
 
 async function saveSettingsFromForm() {
-  if (!settingsHasBridge()) {
-    setSettingsStatus("The desktop app is needed to change settings.", "error");
-    return;
-  }
   setSettingsStatus("Saving\u2026");
   // Disable while in flight so a double-click cannot issue two saves (audit M10).
   const btn = DOM.btnSaveSettings;
   if (btn) btn.disabled = true;
   try {
-    const res = await window.pywebview.api.save_settings(collectSettingsValues());
+    const res = await api.save_settings(collectSettingsValues());
     renderSettings(res);
     if (res && res.success) {
       setSettingsStatus("Saved. Applies to the next run \u2014 no restart needed.", "success");

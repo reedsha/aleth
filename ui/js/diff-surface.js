@@ -16,6 +16,7 @@
 // The proposed content is editable: a plan is a proposal, so a hallucinated character should
 // cost one edit rather than a rejected run and a re-plan. An edit is written back with
 // `update_artifact_target`, which re-validates and re-stores the artifact and republishes it.
+import { api } from "./api-client.js";
 import { showToast } from "./notify.js";
 
 // A diff larger than this is shown as a plain before/after rather than aligned: the LCS
@@ -107,27 +108,22 @@ function diffLine(entry) {
 
 /** The current bytes at one target's span, through the bridge.
  *
- * Returns `{available, text, missing}`: `available: false` means the bridge or method is
- * absent (the browser preview), which is reported rather than rendered as an empty diff --
- * an empty diff would read as "this replaces nothing".
+ * Returns `{text, missing}`: a read that failed or was refused is reported as `missing`
+ * rather than rendered as an empty diff -- an empty diff would read as "this replaces
+ * nothing".
  */
 async function fetchSpan(filePath, start, end) {
-  const api = window.pywebview && window.pywebview.api;
-  if (!api || typeof api.get_source_span !== "function") {
-    return { available: false, text: "", missing: false };
-  }
   try {
     const res = await api.get_source_span(filePath, start, end);
     if (res && res.success === false) {
-      return { available: true, text: "", missing: true, error: res.error || "" };
+      return { text: "", missing: true, error: res.error || "" };
     }
     return {
-      available: true,
       text: String((res && res.text) || ""),
       missing: !(res && res.found),
     };
   } catch (err) {
-    return { available: true, text: "", missing: true, error: String((err && err.message) || err) };
+    return { text: "", missing: true, error: String((err && err.message) || err) };
   }
 }
 
@@ -135,10 +131,6 @@ function renderBody(body, target, current) {
   body.textContent = "";
   const op = operationOf(target);
 
-  if (!current.available) {
-    body.appendChild(el("div", "diff-loading", "Current bytes are not readable outside the desktop app window."));
-    return;
-  }
   if (current.missing) {
     body.appendChild(el(
       "div",
@@ -169,9 +161,6 @@ function renderBody(body, target, current) {
  * is offered at all rather than an editor that cannot save.
  */
 function attachEditor(head, card, target, artifact, index) {
-  const api = window.pywebview && window.pywebview.api;
-  if (!api || typeof api.update_artifact_target !== "function") return;
-
   const editBtn = el("button", "diff-edit-btn", "Edit");
   editBtn.type = "button";
   head.appendChild(editBtn);

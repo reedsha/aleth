@@ -2,6 +2,7 @@
 // ============================================================================
 // Left Sidebar Dynamic Agent Navigation
 // ============================================================================
+import { api } from "./api-client.js";
 import { escapeHtml } from "./dom.js";
 import { showToast } from "./notify.js";
 import { setHtml, setText } from "./safe-dom.js";
@@ -140,12 +141,8 @@ export async function saveCurrentSystemPrompt() {
   if (btn) btn.disabled = true;
   try {
     let res;
-    if (window.pywebview && window.pywebview.api) {
-      // Tiered editing: only save custom directives, never overwrite core rules
-      res = await window.pywebview.api.save_system_prompt(agentId, newPrompt, true);
-    } else {
-      res = { success: true, message: "Saved in preview mode" };
-    }
+    // Tiered editing: only save custom directives, never overwrite core rules
+    res = await api.save_system_prompt(agentId, newPrompt, true);
 
     if (res.success) {
       state.activeAgentForEditor.custom_instructions = newPrompt;

@@ -1,20 +1,16 @@
 // Shared harness for the frontend's Playwright suite.
 //
-// Both spec files drive the *built* app through the same mocked backend. There are two
-// transports while the frontend is strangled onto HTTP, and the harness models both from one
-// fixture:
+// Both spec files drive the *built* app against a mocked **API gateway**. There is no pywebview
+// bridge any more: the page is served by the gateway, so it reaches the backend with plain
+// same-origin `fetch` and `EventSource`, and those are the only two things this harness stands
+// in for.
 //
-//   * `window.pywebview.api` -- the pywebview bridge, for the modules that have not migrated
-//     yet. It mirrors the real handshake: pywebview defines the object and then fires
-//     `pywebviewready` after the document loads, which is when the app's bootstrap listens.
-//   * `fetch` and `EventSource` -- the HTTP gateway, for the modules that have. The paths are
-//     taken from `ui/js/api-client.js` itself, so the mock cannot drift from the client's own
-//     table: an operation the client can call is an operation this harness answers.
+// The paths are taken from `ui/js/api-client.js` itself, so the mock cannot drift from the
+// client's own table: an operation the client can call is an operation this harness answers.
 //
-// A fixture is therefore written once (`options.api`, keyed by operation name) and served over
-// whichever transport the module under test uses. Unknown calls answer with an empty object
-// rather than throwing, so a test never fails because the frontend asked for something this
-// fixture does not model.
+// A fixture is written once (`options.api`, keyed by operation name) and served over HTTP.
+// Unknown operations answer with an empty object rather than throwing, so a test never fails
+// because the frontend asked for something this fixture does not model.
 
 import { expect } from "@playwright/test";
 
@@ -144,51 +140,36 @@ export const PLAN = {
  * of the three fixture payloads; `waitForTree: false` skips the plan-tree readiness gate
  * for a test that deliberately loads an empty plan.
  *
- * `options.api` adds bridge methods beyond the four the fixture models: each entry is a
- * method name mapped to the (serialisable) value its `async` stub resolves to, e.g.
+ * `options.api` adds operations beyond the ones the fixture models: each entry is an operation
+ * name mapped to the (serialisable) value the gateway answers with, e.g.
  * `{ api: { get_preview_source: { success: true, found: true, content: "<html>…" } } }`.
  * The values are serialised into the page, so they must be plain data, not functions.
- *
- * `options.bridge` does the same for the *bridge only*, which is how a test proves a migrated
- * module is no longer reading it.
  */
 export async function openApp(page, options = {}) {
-  const { waitForTree = true, api: apiReturns = {}, bridge: bridgeReturns = {}, ...overrides } = options;
+  const { waitForTree = true, api: apiOverrides = {}, ...overrides } = options;
+  // The three fixtures the app cannot start without are served by default, over whichever
+  // transport asks for them. A test's own `agents`/`workspace`/`plan` override wins, and
+  // `options.api` then overrides or adds individual operations.
+  const agents = overrides.agents === undefined ? AGENTS : overrides.agents;
+  const workspace = overrides.workspace === undefined ? WORKSPACE : overrides.workspace;
+  const plan = overrides.plan === undefined ? PLAN : overrides.plan;
+  const apiReturns = {
+    get_agents: agents,
+    get_workspace_info: workspace,
+    get_active_plan: plan,
+    get_run_state: { running: false },
+    ...apiOverrides,
+  };
   const payload = {
-    agents: AGENTS,
-    workspace: WORKSPACE,
-    plan: PLAN,
+    agents,
+    workspace,
+    plan,
     ...overrides,
     apiReturns,
-    bridgeReturns,
     operationPaths: OPERATION_PATHS,
   };
 
   await page.addInitScript((data) => {
-    const api = {
-      get_agents: async () => data.agents,
-      get_workspace_info: async () => data.workspace,
-      get_active_plan: async () => data.plan,
-      get_run_state: async () => ({ running: false }),
-    };
-    Object.keys(data.apiReturns).forEach((name) => {
-      api[name] = async () => data.apiReturns[name];
-    });
-    // Methods that answer *only* on the bridge. A test uses one to prove a migrated module does
-    // not consult it: if the rendered result is the bridge's answer, the module read the bridge.
-    Object.keys(data.bridgeReturns).forEach((name) => {
-      api[name] = async () => data.bridgeReturns[name];
-    });
-    window.pywebview = {
-      api: new Proxy(api, {
-        get: (target, name) => (name in target ? target[name] : async () => ({})),
-      }),
-    };
-
-    // -- the HTTP gateway ------------------------------------------------------
-    // One fixture, two transports: a name in `apiReturns` is served over the bridge above and
-    // over this fetch. The path comes from the client's own table, so a route the client can
-    // address is a route this mock answers.
     const jsonResponse = (body, status = 200) => ({
       ok: status >= 200 && status < 300,
       status,
@@ -196,6 +177,11 @@ export async function openApp(page, options = {}) {
       json: async () => body,
       text: async () => JSON.stringify(body),
     });
+
+    // -- the gateway -----------------------------------------------------------
+    // One fixture, one transport: a name in `apiReturns` is what the gateway answers with. The
+    // path comes from the client's own table, so a route the client can address is a route this
+    // mock answers.
 
     window.fetch = async (input) => {
       const url = typeof input === "string" ? input : (input && input.url) || "";
@@ -237,7 +223,6 @@ export async function openApp(page, options = {}) {
   }, payload);
 
   await page.goto("/index.html");
-  await page.evaluate(() => window.dispatchEvent(new CustomEvent("pywebviewready")));
   if (waitForTree) {
     await expect(page.locator("#planTreeContainer .plan-tree-section").first()).toBeVisible();
   } else {

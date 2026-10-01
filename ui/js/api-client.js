@@ -54,6 +54,7 @@ export const OPERATIONS = {
   update_artifact_target: { verb: "POST", path: "/api/artifact/target", args: ["task_id", "index", "content", "plan_id"] },
   open_console_window: { verb: "POST", path: "/api/console/open", args: ["backlog"] },
   push_console_line: { verb: "POST", path: "/api/console/line", args: ["kind", "text"] },
+  get_console_backlog: { verb: "GET", path: "/api/console/backlog", args: [] },
   ui_ready: { verb: "POST", path: "/api/ui/ready", args: [] },
   // The one intent. It is not an operation in `api/operations.py` because it is queued rather
   // than executed: the orchestrator drains it, and the run's progress arrives on the stream.

@@ -2,6 +2,7 @@
 // ============================================================================
 // Dynamic Plan Tree Tracker (Rendered Exclusively from plan.json)
 // ============================================================================
+import { api } from "./api-client.js";
 import { emit, on } from "./bus.js";
 import { escapeHtml } from "./dom.js";
 import { showToast } from "./notify.js";
@@ -714,19 +715,15 @@ function updateProgressMeter(completed, total, inProgress = 0, failed = 0) {
 async function handleExtractPlanSteps(planName) {
   const targetFile = planName || state.activePlan || "PLAN.md";
   showToast(`Extracting plan steps from ${targetFile}...`, "info");
-  if (window.pywebview && window.pywebview.api) {
-    try {
-      const res = await window.pywebview.api.extract_plan_steps(targetFile);
-      if (res && res.steps_count > 0) {
-        showToast(`✓ Extracted ${res.steps_count} plan step(s) from ${targetFile}`, "success");
-      } else {
-        showToast(`No tasks found in ${targetFile}. You can generate structured milestones.`, "info");
-        emit("modal:create-plan");
-      }
-    } catch (err) {
-      showToast(`Extraction notice: ${err.message}`, "error");
+  try {
+    const res = await api.extract_plan_steps(targetFile);
+    if (res && res.steps_count > 0) {
+      showToast(`✓ Extracted ${res.steps_count} plan step(s) from ${targetFile}`, "success");
+    } else {
+      showToast(`No tasks found in ${targetFile}. You can generate structured milestones.`, "info");
+      emit("modal:create-plan");
     }
-  } else {
-    showToast(`Extracted steps from ${targetFile} (preview mode)`, "success");
+  } catch (err) {
+    showToast(`Extraction notice: ${err.message}`, "error");
   }
 }

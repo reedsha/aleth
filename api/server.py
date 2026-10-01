@@ -341,26 +341,27 @@ class ApiServer:
 
     # -- lifecycle ------------------------------------------------------------
     def attach_bus(self) -> None:
-        """Observe the bus, so every event it carries is broadcast to the stream's clients.
+        """Make this hub the bus's **transport**, so every event streams to the clients.
 
-        A **listener**, not the transport: the bus's transport is still the pywebview window
-        while the frontend is strangled onto HTTP, and the hub must receive the identical
-        validated event rather than a parallel notification that could drift from it.
+        There is one delivery path now. The bus used to push into the pywebview window with
+        ``evaluate_js``; pointing its transport at the hub means the desktop window and a browser
+        client receive the identical validated event, because they are reading the same stream.
         """
         if self._bus_attached:
             return
         import bridge_bus
+        from api.events import HubTransport
 
-        bridge_bus.add_listener(self.gateway.hub.publish)
+        bridge_bus.set_transport(HubTransport(self.gateway.hub))
         self._bus_attached = True
 
     def detach_bus(self) -> None:
-        """Stop observing, so a stopped server stops receiving events. Idempotent."""
+        """Restore the inert transport, so a stopped server stops receiving events."""
         if not self._bus_attached:
             return
         import bridge_bus
 
-        bridge_bus.remove_listener(self.gateway.hub.publish)
+        bridge_bus.set_transport(bridge_bus.NullTransport())
         self._bus_attached = False
 
     def start_intent_worker(self, handler) -> None:

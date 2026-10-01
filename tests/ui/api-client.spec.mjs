@@ -1,12 +1,8 @@
 // The HTTP client's first migrated consumer, proven end to end.
 //
-// The env panel is the strangler's first module: it reads through `ui/js/api-client.js` instead
-// of `window.pywebview.api`, while every other module still uses the bridge. These tests assert
-// the *transport*, not just the rendered result -- a panel that rendered the right rows via the
-// bridge would be a migration that did not happen.
-//
-// The harness serves one fixture over both transports, and `options.bridge` answers on the
-// bridge alone, so the two are distinguishable by which answer the panel renders.
+// The env panel reads through `ui/js/api-client.js`. These tests assert the *transport*, not
+// just the rendered result -- a panel that rendered the right rows without asking the gateway
+// would be a migration that did not happen.
 
 import { test, expect } from "@playwright/test";
 
@@ -20,12 +16,7 @@ const ENV_ROWS = {
   ],
 };
 
-const BRIDGE_ONLY = {
-  success: true,
-  variables: [{ name: "BRIDGE_ONLY_VARIABLE", set: true, length: 1 }],
-};
-
-test("the migrated env panel reads over HTTP", async ({ page }) => {
+test("the env panel reads over HTTP", async ({ page }) => {
   await openApp(page, { api: { get_environment_variables: ENV_ROWS } });
 
   await expect(page.locator("#sidebarEnvList")).toContainText("OPENAI_API_KEY");
@@ -37,16 +28,15 @@ test("the migrated env panel reads over HTTP", async ({ page }) => {
   expect(fetched).toContain("/api/env");
 });
 
-test("the migrated env panel does not consult the bridge", async ({ page }) => {
-  // Both transports are live and they answer differently. The panel renders the HTTP answer, so
-  // it read the gateway; the bridge answer appearing at all would be a failed migration.
-  await openApp(page, {
-    api: { get_environment_variables: ENV_ROWS },
-    bridge: { get_environment_variables: BRIDGE_ONLY },
-  });
+test("the env panel does not consult a bridge", async ({ page }) => {
+  // There is no pywebview bridge in the bundle at all any more -- the app is served by the
+  // gateway and reaches it with `fetch`. This pins that: the page starts, renders from the
+  // gateway, and nothing on `window` is a second way in.
+  await openApp(page, { api: { get_environment_variables: ENV_ROWS } });
 
   await expect(page.locator("#sidebarEnvList")).toContainText("OPENAI_API_KEY");
-  await expect(page.locator("#sidebarEnvList")).not.toContainText("BRIDGE_ONLY_VARIABLE");
+  expect(await page.evaluate(() => typeof window.pywebview)).toBe("undefined");
+  expect(await page.evaluate(() => typeof window.Aleth)).toBe("object");
 });
 
 test("the stream client opens on the events endpoint", async ({ page }) => {

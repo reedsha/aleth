@@ -1,7 +1,7 @@
 // ui/js/visuals.js — The offline workflow simulator.
 //
 // The one visual concern left here is the simulator that drives a demo run in a plain
-// browser (there is no pywebview bridge). It feeds the same inbound event funnel the real
+// browser (there is no desktop bridge). It feeds the same inbound event funnel the real
 // backend does, so the demo exercises the real render path rather than a parallel one.
 // `showToast` used to live here too; it moved to ui/js/notify.js so that showing a toast no
 // longer means importing this module -- which imports the event handler -- and closing the

@@ -62,7 +62,7 @@ test("startup raises no uncaught exception and no failure banner", async ({ page
   expect(errors).toEqual([]);
 });
 
-test("the bridge handshake populates the agent lists", async ({ page }) => {
+test("the gateway handshake populates the agent lists", async ({ page }) => {
   await openApp(page);
 
   await expect(page.locator("#sidebarMainAgentsList")).toContainText("Lead Software Architect");

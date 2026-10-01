@@ -197,6 +197,7 @@ OPERATIONS: tuple = (
     Operation("open_console_window", "POST", "/api/console/open", ConsoleOpenRequest, _invoke("open_console_window")),
     Operation("push_console_line", "POST", "/api/console/line", ConsoleLineRequest, _invoke("push_console_line")),
     Operation("ui_ready", "POST", "/api/ui/ready", _Empty, _invoke("ui_ready")),
+    Operation("get_console_backlog", "GET", "/api/console/backlog", _Empty, _invoke("get_console_backlog")),
 )
 
 

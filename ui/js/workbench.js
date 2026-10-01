@@ -214,7 +214,7 @@ function updateWorkbenchMeta() {
     ? DOM.planEditorInput.value
     : (workbenchRendered || "");
   const lines = source ? source.split("\n").length : 0;
-  const mode = (window.pywebview && window.pywebview.api) ? "editable" : "read-only preview";
+  const mode = "editable";
   DOM.txtWorkbenchMeta.textContent = `${lines} line${lines === 1 ? "" : "s"} · ${mode}`;
 }
 

@@ -1,8 +1,8 @@
-// ui/js/bootstrap.js — PyWebView handshake, opt-in demo data, agent/workspace hydration.
+// ui/js/bootstrap.js — Gateway handshake, opt-in demo data, agent/workspace hydration.
 // ============================================================================
-// PyWebView Integration & Plan Initialization
+// Startup: the local API gateway
 // ============================================================================
-import { connectEventStream } from "./api-client.js";
+import { api, connectEventStream } from "./api-client.js";
 import { beginRunUi } from "./actions.js";
 import { installBus } from "./bridge-bus.js";
 import { renderSidebarAgents } from "./agents.js";
@@ -13,16 +13,21 @@ import { renderSidebarWorkspaceTree } from "./sidebar.js";
 import { DOM, state } from "./store.js";
 import { refreshWorkbenchChrome } from "./workbench.js";
 
-export async function onPyWebViewReady() {
-  console.log("[PyWebView] API connected");
-  // The single inbound sink: the backend delivers every event to this one function.
-  installBus();
+// The gateway answers `{success:false, error}` for a transport failure rather than throwing, so
+// a caller that wants the failure path has to ask for it. Without this, an unreachable gateway
+// would render an empty sidebar and an empty plan tree -- indistinguishable from a workspace
+// that genuinely has neither.
+function unwrap(res, what) {
+  if (res && res.success === false) throw new Error(res.error || `${what} failed`);
+  return res;
+}
 
+export async function initFromGateway() {
   try {
-    const agentsData = await window.pywebview.api.get_agents();
+    const agentsData = unwrap(await api.get_agents(), "the agent registry");
     applyAgentsData(agentsData);
 
-    const wsInfo = await window.pywebview.api.get_workspace_info();
+    const wsInfo = unwrap(await api.get_workspace_info(), "the workspace listing");
     if (wsInfo && wsInfo.workspace_dir) {
       updateWorkspaceUI(wsInfo.workspace_dir);
     }
@@ -31,7 +36,7 @@ export async function onPyWebViewReady() {
     renderSidebarWorkspaceTree((wsInfo && wsInfo.files) || []);
 
     // Load active plan with plan.json machine state
-    const planData = await window.pywebview.api.get_active_plan();
+    const planData = unwrap(await api.get_active_plan(), "the active plan");
     applyPlanData(planData);
     reportPlanDiagnostics(planData);
 
@@ -39,35 +44,29 @@ export async function onPyWebViewReady() {
       openCreatePlanModal();
     }
 
-    // A reload mid-run leaves the backend thread alive while `state.isExecuting` resets, so
-    // The UI is loaded and its inbound bus is bound, so the backend may start the swarm. The
+    // The UI is loaded and its inbound sink is bound, so the backend may start the swarm. The
     // cold-start tick is gated on this: a tick before these listeners exist would broadcast
     // task_state_updated into nothing and the DAG would render stale until the next plan load.
-    if (typeof window.pywebview.api.ui_ready === "function") {
-      await window.pywebview.api.ui_ready();
-    }
+    await api.ui_ready();
 
+    // A reload mid-run leaves the backend thread alive while `state.isExecuting` resets, so
     // Stop stays hidden and a second run is launchable. Ask the backend and re-arm the lock
-    // (audit H6). Guarded: an older bridge without the method keeps the old behaviour.
-    if (typeof window.pywebview.api.get_run_state === "function") {
-      const runState = await window.pywebview.api.get_run_state();
-      if (runState && runState.running && typeof beginRunUi === "function") {
-        beginRunUi();
-      }
+    // (audit H6).
+    const runState = unwrap(await api.get_run_state(), "the run state");
+    if (runState && runState.running && typeof beginRunUi === "function") {
+      beginRunUi();
     }
   } catch (err) {
-    console.warn("[PyWebView] Init notice:", err);
-    // A failure in the handshake above used to be silent: the window stayed fully
-    // rendered but with no agents and no plan, which looks identical to a working
-    // app. Surface it, because the packaged app runs with debug=False where console
-    // output is invisible.
+    // A failure here used to be silent: the window stayed fully rendered but with no agents
+    // and no plan, which looks identical to a working app. The packaged window runs with
+    // debug=False, where console output is invisible, so it is surfaced instead.
     notifyInitFailure(err);
+    initFallbackMode();
   }
 }
 
-// Starts the engine event stream. Independent of pywebview on purpose: the gateway is a plain
-// HTTP server, so this works in the desktop window and in a browser alike, and it is the path
-// every event will take once the bridge is gone.
+// Starts the engine event stream. The gateway is a plain HTTP server, so this works in the
+// desktop window and in a browser alike -- there is no desktop-only path left.
 //
 // The sink is installed first. A frame that arrives before the sink exists is dropped, and the
 // sink is the same strict parser the pywebview push used -- so an event from the stream is
@@ -116,10 +115,10 @@ function reportPlanDiagnostics(planData) {
 }
 
 // Demo data is opt-in (open this page with ?demo=1). It exists to preview the layout
-// in a plain browser, where there is no pywebview bridge. In the packaged app a missing
-// bridge means the desktop API failed to load, not that the user has no project -- and
-// seeding demo data there disguised exactly that failure as a working app showing a
-// project the user does not have.
+// in a plain browser with no gateway behind it. In the packaged app a gateway that cannot be
+// reached means the backend failed to start, not that the user has no project -- and seeding
+// demo data there disguised exactly that failure as a working app showing a project the user
+// does not have.
 function isDemoModeRequested() {
   try {
     // A proper `demo=1` match, not a substring test: `?x=demo` enabled the preview path,
@@ -134,7 +133,7 @@ function isDemoModeRequested() {
 
 export function initFallbackMode() {
   if (!isDemoModeRequested()) {
-    const message = "Desktop bridge unavailable: the workspace could not be loaded. " +
+    const message = "The local gateway is unreachable: the workspace could not be loaded. " +
       "Restart the app. (For a layout-only preview in a browser, open this page with ?demo=1.)";
     if (typeof reportStartupFailure === "function") reportStartupFailure(message);
     else console.error("[Aleth UI]", message);

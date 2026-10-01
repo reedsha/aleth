@@ -3,7 +3,7 @@
 // Action Drawer Flow (Critical Rule: All Actions Prompt for Params)
 // ============================================================================
 import { handleAgentEvent } from "./agent-events.js";
-import { emit } from "./bus.js";
+import { api } from "./api-client.js";
 import { repaintCodeSurfaces } from "./code-surface.js";
 import { isDockDrawerOpen, setDockDrawerOpen } from "./dock.js";
 import { showToast } from "./notify.js";
@@ -375,30 +375,23 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
   DOM.systemStatusDot.className = "status-dot running";
   DOM.systemStatusLabel.textContent = "Multi-Agent Active";
 
-  if (window.pywebview && window.pywebview.api) {
-    try {
-      const res = await window.pywebview.api.start_execution(text, actionType, actionParams);
-      // The backend refuses a second run while one is live; undo the optimistic lock so the
-      // UI does not claim a run it never started (audit H7).
-      if (res && res.success === false) {
-        abortRunUi(res.error || "A run is already in progress.");
-      }
-    } catch (err) {
-      console.error("[Execution] Start failed:", err);
-      // A launch that rejected never produced a terminal event, so the lock has to be undone
-      // here or the UI stays "running" forever.
-      abortRunUi(`Could not launch task: ${(err && err.message) || err}`);
-      handleAgentEvent({
-        type: "agent_error",
-        agent: "software-architect",
-        error: `Could not launch task: ${err.message}`
-      });
+  try {
+    const res = await api.start_execution(text, actionType, actionParams);
+    // The backend refuses a second run while one is live; undo the optimistic lock so the
+    // UI does not claim a run it never started (audit H7).
+    if (res && res.success === false) {
+      abortRunUi(res.error || "A run is already in progress.");
     }
-  } else {
-    // No bridge: drive the offline simulator. Published on the bus rather than imported:
-    // visuals.js imports the event handler, so importing it here would put a back-edge in
-    // the graph. wire.js maps the intent to simulateWorkflow().
-    emit("run:simulate", text);
+  } catch (err) {
+    console.error("[Execution] Start failed:", err);
+    // A launch that rejected never produced a terminal event, so the lock has to be undone
+    // here or the UI stays "running" forever.
+    abortRunUi(`Could not launch task: ${(err && err.message) || err}`);
+    handleAgentEvent({
+      type: "agent_error",
+      agent: "software-architect",
+      error: `Could not launch task: ${err.message}`
+    });
   }
 }
 
@@ -407,21 +400,13 @@ export async function handleStopClick() {
   // (status `stopped`) when the run actually unwinds, and `stop_execution` emits one if no
   // run is live. Fabricating it here flipped the UI to "Halted" while the backend kept
   // writing files, so the two disagreed about whether the run was over.
-  if (window.pywebview && window.pywebview.api) {
-    try {
-      await window.pywebview.api.stop_execution();
-      showToast("Stopping the active run\u2026", "info");
-    } catch (err) {
-      // Invisible in the packaged app (debug=False): the user believes the run is stopping
-      // when the halt request actually failed (audit H10).
-      showToast(`Could not stop the run: ${(err && err.message) || err}`, "error");
-    }
-  } else {
-    handleAgentEvent({
-      type: "workflow_complete",
-      status: "stopped",
-      message: "Workflow stopped by user"
-    });
+  try {
+    await api.stop_execution();
+    showToast("Stopping the active run\u2026", "info");
+  } catch (err) {
+    // Invisible in the packaged app (debug=False): the user believes the run is stopping
+    // when the halt request actually failed (audit H10).
+    showToast(`Could not stop the run: ${(err && err.message) || err}`, "error");
   }
 }
 

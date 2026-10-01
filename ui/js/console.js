@@ -9,6 +9,7 @@
 // The transcript is bounded: one node per echoed block would otherwise accumulate for the
 // life of the window. Once the cap is reached the oldest lines are dropped from the top.
 
+import { api } from "./api-client.js";
 import { emit } from "./bus.js";
 import { isDockDrawerOpen } from "./dock.js";
 import { escapeHtml } from "./dom.js";
@@ -239,16 +240,15 @@ function consoleBacklog() {
   return consoleLines.slice();
 }
 
-// Mirrors one line into the detached window. Fire-and-forget: a closed window refuses the
-// push, and the mirror then stops rather than retrying for the life of the session. The
-// backend buffers pushes that arrive before the second window has loaded, so no line is
-// lost to the window's startup race.
+// Mirrors one line into the detached window. Fire-and-forget: the backend refuses the push when
+// no window is open, and the mirror then stops rather than emitting into nothing for the life of
+// the session. The line travels as a `console_line` event, so the second window renders it from
+// the same stream every other client reads.
 function pushDetachedConsoleLine(kind, text) {
   if (!consoleDetached) return;
-  if (!(window.pywebview && window.pywebview.api && window.pywebview.api.push_console_line)) return;
-  window.pywebview.api.push_console_line(kind, text).then((res) => {
+  api.push_console_line(kind, text).then((res) => {
     if (res && res.success === false) consoleDetached = false;
-  }, () => { consoleDetached = false; });
+  });
 }
 
 // The console's slide-up overlay: expanded, the transcript leaves the dock's flow and
@@ -281,15 +281,11 @@ export function toggleConsoleOverlay() {
   }
 }
 
-// Opens the transcript in a real second native window (pywebview.create_window), for
-// tracking a run on another monitor. The backend answers with a console_detached or
-// console_detach_failed event, so the mirror is only claimed once a window exists.
+// Opens the transcript in a real second native window, pointed at the gateway's console page.
+// The backend answers with a console_detached or console_detach_failed event, so the mirror is
+// only claimed once a window exists.
 export function detachConsole() {
-  if (!(window.pywebview && window.pywebview.api && window.pywebview.api.open_console_window)) {
-    showToast("Console detaching is available in the desktop app window", "info");
-    return;
-  }
   consoleDetached = true;
-  window.pywebview.api.open_console_window(consoleBacklog());
+  api.open_console_window(consoleBacklog());
   showToast("Opening the detached console...", "info");
 }

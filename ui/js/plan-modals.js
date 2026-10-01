@@ -2,6 +2,7 @@
 // ============================================================================
 // Plan Setup & Creation Modals (Split: Switch vs Create)
 // ============================================================================
+import { api } from "./api-client.js";
 import { emit } from "./bus.js";
 import { escapeHtml } from "./dom.js";
 import { showToast } from "./notify.js";
@@ -17,14 +18,11 @@ export async function openSwitchPlanModal() {
   // sends a `plan_updated` event that carries the plan's *content* but no file list, and
   // remembering the list across those is what left the modal showing only the active
   // file. Asking the backend here makes the list correct regardless of what state holds.
-  const api = window.pywebview && window.pywebview.api;
-  if (api && typeof api.get_plan_files === "function") {
-    try {
-      const plans = await api.get_plan_files();
-      setAvailablePlans(plans);
-    } catch (_err) {
-      /* offline / no bridge: fall back to the list already in state */
-    }
+  try {
+    const plans = await api.get_plan_files();
+    setAvailablePlans(plans);
+  } catch (_err) {
+    /* offline / no bridge: fall back to the list already in state */
   }
   renderExistingPlansList();
 }
@@ -89,11 +87,6 @@ export function closeNormalizeGateModal() {
 // normal agent events.
 export async function handleNormalizeGateConfirm() {
   closeNormalizeGateModal();
-  const api = window.pywebview && window.pywebview.api;
-  if (!api || typeof api.normalize_plan !== "function") {
-    showToast("Formatting is available in the desktop app window", "info");
-    return;
-  }
   if (state.isExecuting) {
     showToast("A run is already in progress.", "info");
     return;
@@ -111,8 +104,6 @@ export async function handleNormalizeGateConfirm() {
 // Asks the backend whether the plan just switched to can be read as a milestone plan.
 // Read-only, and a bridge without the method leaves the plan open exactly as before.
 export async function checkPlanStructureGate(planName) {
-  const api = window.pywebview && window.pywebview.api;
-  if (!api || !api.validate_plan_structure) return;
   try {
     const report = await api.validate_plan_structure();
     if (report && report.structured === false) openNormalizeGateModal(planName, report);
@@ -136,8 +127,6 @@ function renderExistingPlansList() {
     chip.textContent = planName;
     chip.addEventListener("click", async () => {
       closeSwitchPlanModal();
-      const api = window.pywebview && window.pywebview.api;
-      if (!api) return;
       if (state.isExecuting) {
         showToast("A run is in progress; switch plans after it finishes.", "info");
         return;
@@ -170,41 +159,11 @@ export async function handleCreatePlanSubmit() {
   closeCreatePlanModal();
   showToast(`Generating structured plan: ${planName}...`, "info");
 
-  if (window.pywebview && window.pywebview.api) {
-    try {
-      const res = await window.pywebview.api.create_plan_file(planName, idea);
-      applyPlanData(res);
-      showToast(`Active plan set to: ${res.filename}`, "success");
-    } catch (err) {
-      showToast(`Error creating plan: ${err.message}`, "error");
-    }
-  } else {
-    applyPlanData({
-      filename: planName,
-      exists: true,
-      plans: [planName],
-      plan_json: {
-        version: "1.0",
-        plan_file: planName,
-        title: idea.substring(0, 50),
-        sections: [
-          {
-            id: "sec-1",
-            title: "1. Architecture & Setup",
-            tasks: [{ id: "task-1", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", details: [] }]
-          },
-          {
-            id: "sec-2",
-            title: "2. Core Implementation",
-            tasks: [{ id: "task-2", title: "Build core application modules", status: "pending", details: [] }]
-          }
-        ],
-        steps: [
-          { id: "task-1", section: "1. Architecture & Setup", title: `Initialize plan for "${idea.substring(0, 35)}"`, status: "completed", details: [] },
-          { id: "task-2", section: "2. Core Implementation", title: "Build core application modules", status: "pending", details: [] }
-        ]
-      }
-    });
-    showToast(`Active plan set to: ${planName}`, "success");
+  try {
+    const res = await api.create_plan_file(planName, idea);
+    applyPlanData(res);
+    showToast(`Active plan set to: ${res.filename}`, "success");
+  } catch (err) {
+    showToast(`Error creating plan: ${err.message}`, "error");
   }
 }

@@ -25,6 +25,7 @@
 //
 // Selecting a node hands the artifact for that milestone to ui/js/diff-surface.js, which
 // renders its AST targets against the bytes they would replace.
+import { api } from "./api-client.js";
 import { emit, on } from "./bus.js";
 import { renderDiffPlaceholder, renderDiffSurface } from "./diff-surface.js";
 import { showToast } from "./notify.js";
@@ -408,11 +409,6 @@ function renderInspector() {
  */
 async function rejectArtifact(taskId, feedback, button) {
   const note = String((feedback && feedback.value) || "").trim();
-  const api = window.pywebview && window.pywebview.api;
-  if (!api || typeof api.reject_artifact !== "function") {
-    showToast("Rejection is available in the desktop app window.", "info");
-    return;
-  }
   if (!note) return;  // the control is disabled for this; belt and braces
 
   if (button) button.disabled = true;
@@ -445,11 +441,6 @@ async function rejectArtifact(taskId, feedback, button) {
 async function approveArtifact(taskId, button) {
   const artifact = artifacts.get(taskId);
   const planId = (artifact && artifact.plan_id) || planIdForActivePlan();
-  const api = window.pywebview && window.pywebview.api;
-  if (!api || typeof api.approve_artifact !== "function") {
-    showToast("Approval is available in the desktop app window.", "info");
-    return;
-  }
 
   if (button) {
     button.disabled = true;

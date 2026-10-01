@@ -1,7 +1,8 @@
 // ui/js/workspace.js — Workspace file browser, codebase sync audit, and task rollback modals.
+import { api } from "./api-client.js";
 import { escapeHtml } from "./dom.js";
 import { showToast } from "./notify.js";
-import { planStateSummaryHtml, renderPlanTree } from "./plan-tree.js";
+import { planStateSummaryHtml } from "./plan-tree.js";
 import { setHtml } from "./safe-dom.js";
 import { DOM, state } from "./store.js";
 
@@ -12,25 +13,16 @@ export async function openWorkspaceFilesModal() {
   if (DOM.filesModalOverlay) DOM.filesModalOverlay.style.display = "flex";
   if (DOM.inputSearchWorkspaceFiles) DOM.inputSearchWorkspaceFiles.value = "";
 
-  // Assigned on all three paths below (the read, the failure, and no bridge), so there is no
-  // initialiser to carry a value nothing reads.
+  // Assigned on both paths below (the read and the failure), so there is no initialiser to
+  // carry a value nothing reads.
   let files;
-  if (window.pywebview && window.pywebview.api) {
-    try {
-      const info = await window.pywebview.api.get_workspace_info();
-      files = info.files || [];
-    } catch (e) {
-      // A failed read must not render as "No files in workspace yet." (audit H11).
-      showToast(`Could not read the workspace: ${(e && e.message) || e}`, "error");
-      files = [];
-    }
-  } else {
-    files = [
-      { name: "main.py", path: "main.py", size: 4096 },
-      { name: "PLAN.md", path: "PLAN.md", size: 1024 },
-      { name: "PROGRESS.md", path: "PROGRESS.md", size: 1536 },
-      { name: "test_main.py", path: "test_main.py", size: 2048 }
-    ];
+  try {
+    const info = await api.get_workspace_info();
+    files = info.files || [];
+  } catch (e) {
+    // A failed read must not render as "No files in workspace yet." (audit H11).
+    showToast(`Could not read the workspace: ${(e && e.message) || e}`, "error");
+    files = [];
   }
 
   cachedWorkspaceFiles = files;
@@ -108,24 +100,7 @@ export async function openAuditModal() {
   if (DOM.btnForceCodeToPlan) DOM.btnForceCodeToPlan.disabled = true;
 
   try {
-    let audit;
-    if (window.pywebview && window.pywebview.api) {
-      audit = await window.pywebview.api.audit_codebase_sync();
-    } else {
-      // Fallback demo data
-      audit = {
-        in_sync: false,
-        discrepancy_count: 2,
-        completed_missing_files: [
-          { task_id: "task-2", title: "Scaffold project environment", section: "1. Architecture & Setup", missing_files: ["main.py"] }
-        ],
-        pending_existing_files: [
-          { task_id: "task-3", title: "Build weather service REST endpoints", section: "2. Core Implementation", existing_files: ["weather_api.py"] }
-        ],
-        untracked_files: ["README.md", "requirements.txt"],
-        summary: "Detected 2 discrepancy(ies): 1 completed task(s) missing deliverables, 1 pending task(s) already have deliverables."
-      };
-    }
+    const audit = await api.audit_codebase_sync();
 
     if (audit.error) {
       showToast(`Audit error: ${audit.error}`, "error");
@@ -240,12 +215,7 @@ export async function handleAuditResolution(resolutionType) {
   showToast(`${label}...`, "info");
 
   try {
-    let res;
-    if (window.pywebview && window.pywebview.api) {
-      res = await window.pywebview.api.resolve_sync(resolutionType);
-    } else {
-      res = { success: true, message: `${label} completed (preview mode)` };
-    }
+    const res = await api.resolve_sync(resolutionType);
 
     if (res.success !== false) {
       showToast(`✓ ${label} completed successfully!`, "success");
@@ -324,16 +294,7 @@ export async function handleConfirmRollback() {
   showToast(`Rolling back "${taskTitle}"...`, "info");
 
   try {
-    let res;
-    if (window.pywebview && window.pywebview.api) {
-      res = await window.pywebview.api.rollback_task(taskId);
-    } else {
-      // Fallback: simulate rollback in local state
-      const step = state.planTree.find(t => t.id === taskId);
-      if (step) step.status = "pending";
-      renderPlanTree();
-      res = { success: true };
-    }
+    const res = await api.rollback_task(taskId);
 
     if (res.success) {
       const restoredMsg = (res.restored_files && res.restored_files.length > 0)
