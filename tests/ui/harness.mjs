@@ -189,12 +189,19 @@ export async function openApp(page, options = {}) {
     // path comes from the client's own table, so a route the client can address is a route this
     // mock answers. `gatewayDown` makes every request reject, which is what an engine that is not
     // running looks like to `fetch`.
-    window.fetch = async (input) => {
+    window.fetch = async (input, init) => {
       const url = typeof input === "string" ? input : (input && input.url) || "";
       const path = url.split("?")[0];
-      // Every request is recorded, so a test can assert *which transport* a module used rather
-      // than inferring it from what rendered.
+      // Every request is recorded -- its path *and* its body -- so a test can assert *what* a
+      // module asked the engine for, not merely which route it used.
       window.__alethFetchLog.push(path);
+      if (init && typeof init.body === "string") {
+        try {
+          window.__alethFetchBodies.push(JSON.parse(init.body));
+        } catch (_err) {
+          window.__alethFetchBodies.push(null);
+        }
+      }
       if (data.gatewayDown) throw new TypeError("Failed to fetch");
       const name = Object.keys(data.operationPaths).find(
         (key) => data.operationPaths[key] === path
@@ -203,6 +210,7 @@ export async function openApp(page, options = {}) {
       return jsonResponse({ ok: true, data: name in data.apiReturns ? data.apiReturns[name] : {} });
     };
     window.__alethFetchLog = [];
+    window.__alethFetchBodies = [];
 
     // The stream. Tests drive it with `window.__alethStream`: `drop()` models the backend dying
     // (every attempt fails, as it would against a dead port) and `open()` models it coming back.

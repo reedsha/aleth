@@ -19,6 +19,8 @@ without a socket, so a failure names the handler rather than a port.
 import http.client
 import json
 import os
+import pathlib
+import re
 import shutil
 import socket
 import tempfile
@@ -26,6 +28,8 @@ import threading
 import time
 import unittest
 
+from api import gateway as gateway_module
+from api import operations
 from api.events import EventHub, sse_frame
 from api.gateway import Gateway, Request, StreamResponse
 from api.intents import IntentQueue, IntentQueueFull, run_worker
@@ -43,6 +47,32 @@ from storage.db import PlanDAG, TaskNode, get_store, reset_stores
 from tools import workspace
 
 _LOG_EVENT = {"type": "log", "agent": "architect", "log_type": "thinking", "text": "hello"}
+
+
+class _StubIntentService:
+    """The intent operations, wired exactly as production wires them.
+
+    The queue mechanics live in ``api.intents`` (one implementation for the service and for a
+    stub), so this only has to hold the queue the gateway injects and the ledger the test supplies.
+    """
+
+    def __init__(self, ledger=None):
+        self._ledger = ledger
+        self._queue = None
+
+    def attach_intent_queue(self, queue):
+        self._queue = queue
+
+    def get_intent_status(self):
+        from api.intents import intent_status
+
+        return intent_status(self._queue, self._ledger).model_dump()
+
+    def submit_intent(self, action_type="custom", message="", action_params=None):
+        from api.intents import submit_intent
+
+        return submit_intent(self._queue, action_type=action_type, message=message,
+                             action_params=action_params)
 
 
 class GatewayTestCase(unittest.TestCase):
@@ -92,7 +122,11 @@ class RoutingTests(GatewayTestCase):
 
     def setUp(self):
         super().setUp()
-        self.gateway = Gateway()
+        self.service = _StubIntentService()
+        self.gateway = Gateway(service=self.service)
+        # The service answers for the intent operations, and the queue belongs to the gateway; the
+        # server joins them the same way (``api.server.start_gateway``).
+        self.service.attach_intent_queue(self.gateway.queue)
 
     def _get(self, path, query=None):
         return self.gateway.dispatch(Request(method="GET", path=path, query=query or {}))
@@ -100,6 +134,11 @@ class RoutingTests(GatewayTestCase):
     def _post(self, path, payload):
         body = json.dumps(payload).encode("utf-8")
         return self.gateway.dispatch(Request(method="POST", path=path, body=body))
+
+    def _data(self, response):
+        body = json.loads(response.body)
+        self.assertTrue(body["ok"], body)
+        return body["data"]
 
     def test_health_reports_the_gateway_and_its_plan(self):
         response = self._get("/api/health")
@@ -148,37 +187,85 @@ class RoutingTests(GatewayTestCase):
 
     def test_a_valid_intent_is_queued_and_not_executed(self):
         response = self._post("/api/intent/execute", {"action_type": "next_step", "message": "go"})
-        self.assertEqual(response.status, 202)
-        body = json.loads(response.body)
-        self.assertEqual(body["status"], "queued")
-        self.assertTrue(body["intent_id"])
+        self.assertEqual(response.status, 200)
+        data = self._data(response)
+        self.assertEqual(data["status"], "queued")
+        self.assertTrue(data["intent_id"])
         # Queued, and still queued: nothing has run.
         self.assertEqual(self.gateway.queue.depth, 1)
         self.assertEqual(self.gateway.queue.status().completed, 0)
 
+    def test_the_queue_status_is_served_as_an_operation(self):
+        """The intent surface has no side-band route: its state is an operation like any other."""
+        data = self._data(self._get("/api/intent/status"))
+        self.assertEqual(data["depth"], 0)
+        self.assertEqual(data["capacity"], 32)
+        # The old gateway route is gone, not merely deprecated.
+        self.assertEqual(self._get("/api/intents").status, 404)
+
     def test_an_undocumented_key_is_refused_at_the_door(self):
         response = self._post("/api/intent/execute", {"action_type": "custom", "surprise": 1})
         self.assertEqual(response.status, 400)
-        self.assertIn("invalid intent", response.body.decode("utf-8"))
+        self.assertIn("invalid request", response.body.decode("utf-8"))
 
     def test_an_intent_the_engine_does_not_implement_is_refused(self):
         response = self._post("/api/intent/execute", {"action_type": "delete_everything"})
         self.assertEqual(response.status, 400)
 
     def test_a_full_queue_is_refused_rather_than_accumulated(self):
-        gateway = Gateway(queue=IntentQueue(capacity=1))
+        service = _StubIntentService()
+        gateway = Gateway(queue=IntentQueue(capacity=1), service=service)
+        service.attach_intent_queue(gateway.queue)
         self.assertEqual(
             gateway.dispatch(
                 Request(method="POST", path="/api/intent/execute",
                         body=b'{"action_type": "custom", "message": "one"}')
             ).status,
-            202,
+            200,
         )
         refused = gateway.dispatch(
             Request(method="POST", path="/api/intent/execute",
                     body=b'{"action_type": "custom", "message": "two"}')
         )
-        self.assertEqual(refused.status, 429)
+        # A refusal is *data*, not an HTTP fault: the envelope is ok, the operation said no.
+        self.assertEqual(refused.status, 200)
+        data = json.loads(refused.body)["data"]
+        self.assertIs(data["success"], False)
+        self.assertIn("full", data["error"])
+
+
+class OperationTableTests(unittest.TestCase):
+    """The client's table and the server's table are the same table.
+
+    The intent surface used to be a side-band: two routes on the gateway that the frontend reached
+    through an exception in its client table, which is how a second paradigm starts. This pins the
+    repair -- the two tables map 1:1, and the gateway keeps no intent route at all.
+    """
+
+    @staticmethod
+    def _client_paths():
+        source = pathlib.Path(__file__).resolve().parents[1] / "ui" / "js" / "api-client.js"
+        return set(re.findall(r'path:\s*"([^"]+)"', source.read_text(encoding="utf-8")))
+
+    def test_the_frontend_and_backend_operation_tables_agree(self):
+        server_paths = {operation.path for operation in operations.OPERATIONS}
+        self.assertEqual(self._client_paths(), server_paths)
+
+    def test_the_gateway_keeps_no_intent_route(self):
+        """The two intent routes are gone from the gateway, not merely shadowed by the table.
+
+        Scoped to the intent surface on purpose: ``/api/plan/document`` is matched by the
+        ``/api/plan/{id}`` read as a plan id, which is a pre-existing read, not a second route for
+        an operation.
+        """
+        intent_paths = [op.path for op in operations.OPERATIONS if "/intent/" in op.path]
+        self.assertTrue(intent_paths, "the intent operations must exist somewhere")
+        for path in intent_paths:
+            for _method, pattern, _handler in gateway_module.ROUTES:
+                self.assertIsNone(
+                    re.compile(pattern).match(path),
+                    f"{path} is served by a gateway route as well as the operation table",
+                )
 
 
 class IntentQueueTests(unittest.TestCase):
@@ -303,7 +390,8 @@ class LiveServerTests(GatewayTestCase):
             self.seen_intents.append(intent)
             self.intent_seen.set()
 
-        self.server = start_gateway(port=0, on_intent=on_intent)
+        self.service = _StubIntentService()
+        self.server = start_gateway(port=0, on_intent=on_intent, service=self.service)
         self.addCleanup(self.server.stop)
 
     def _request(self, method, path, *, body=None, headers=None):
@@ -367,7 +455,8 @@ class LiveServerTests(GatewayTestCase):
             body=json.dumps({"action_type": "next_step", "message": "proceed"}),
             headers={"Content-Type": "application/json", "Origin": "http://127.0.0.1:%d" % self.server.bound_port},
         )
-        self.assertEqual(status, 202)
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["data"]["intent_id"])
         self.assertTrue(self.intent_seen.wait(timeout=5), "the intent worker never drained the queue")
         self.assertEqual([intent.action_type for intent in self.seen_intents], ["next_step"])
         self.assertEqual(self.server.gateway.queue.status().completed, 1)

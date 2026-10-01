@@ -78,6 +78,10 @@ class EngineService:
         # The durable intent ledger, attached by ``start_api``. Kept here so the acknowledge
         # endpoint and the run loop reach the same record.
         self._ledger = None
+        # The gateway's intent queue, injected by ``api.server.start_gateway`` when it mints the
+        # queue (``attach_intent_queue``). The service owns the intent *operations*;
+        # the queue lives with the gateway, so the two are joined by injection, never by reaching.
+        self._intent_queue = None
         # The swarm, built on first use -- never in ``__init__``. Constructing the bridge must not
         # spawn a process pool or dispatch a node: the test suite builds one constantly, and a cold
         # tick there would fire the swarm at fixtures that have no planner.
@@ -505,18 +509,46 @@ class EngineService:
         return {"running": bool(self._execution_thread and self._execution_thread.is_alive())}
 
     # -------------------------------------------------------------
-    # The API gateway: the frontend's door to state (Phase 14)
+    # Intents: the queue's surface, owned by the service (Phase 18)
     # -------------------------------------------------------------
-    def _run_intent(self, intent):
-        """Run one queued intent and report how it actually ended.
+    def attach_intent_queue(self, queue) -> None:
+        """Bind the gateway's queue. Called by ``api.server.start_gateway`` where the queue is made.
 
-        The outcome is read from the run's own terminal event: the runner emits exactly one
-        ``workflow_complete``, whose status is ``finished``, ``stopped`` or ``error``. That is the
-        only honest source -- a thread that merely finished is not a run that succeeded, and
-        treating it as one is how a failed plan becomes a green UI.
+        The service answers for the intent *operations* (``api.operations``), and the queue belongs
+        to the gateway, so the queue is injected rather than reached for. This is also what keeps the
+        test suite socket-free: a service built without a gateway simply has no queue, and an intent
+        operation against it refuses instead of raising.
+        """
+        self._intent_queue = queue
 
-        A failure **raises**, which is what makes the queue settle it as ``failed`` and write that
-        to the ledger. It is never re-queued: the user asked for one run and got one run's answer.
+    def get_intent_status(self):
+        """The queue, the durable ledger it wrote through, and the failure gate.
+
+        One implementation lives in ``api.intents``, so this operation and the test stubs that
+        exercise the same wire shape cannot drift apart.
+        """
+        if self._intent_queue is None:
+            return {"success": False, "error": "no intent queue is attached"}
+        from api.intents import intent_status
+
+        return intent_status(self._intent_queue, self._ledger).model_dump()
+
+    def submit_intent(self, action_type: str = "custom", message: str = "", action_params=None):
+        """Validate-and-append one intent. The caller can only *ask*; the loop is what runs it."""
+        if self._intent_queue is None:
+            return {"success": False, "error": "no intent queue is attached"}
+        from api.intents import submit_intent as _submit
+
+        return _submit(self._intent_queue, action_type=action_type, message=message,
+                       action_params=action_params)
+
+    def _run_blocking(self, user_message: str, action_type: str, action_params: dict) -> dict:
+        """Run one workflow pass on this thread and return the run's own terminal event.
+
+        The outcome is read from the run's terminal ``workflow_complete`` -- a thread that merely
+        finished is not a run that succeeded, and treating it as one is how a failed plan becomes a
+        green UI. A *refused* run (the server-side run lock) raises: the caller turns that into a
+        failed intent, which is what the queue settles and the ledger records.
         """
         outcome = {"status": "", "message": ""}
         original = self.emit_event
@@ -531,9 +563,7 @@ class EngineService:
 
         self.emit_event = capture
         try:
-            result = self.start_execution(
-                intent.message, intent.action_type, dict(intent.action_params)
-            )
+            result = self.start_execution(user_message, action_type, dict(action_params or {}))
             if not result.get("success"):
                 raise RuntimeError(str(result.get("error") or "the run was refused"))
             thread = self._execution_thread
@@ -541,11 +571,14 @@ class EngineService:
                 thread.join()
         finally:
             self.emit_event = original
+        return outcome
 
+    def _settle_from_outcome(self, intent, outcome: dict) -> None:
+        """Turn a run's terminal status into the intent's fate. Raises on an error, never retries."""
         if outcome["status"] == "error":
             failure = outcome["message"] or "the run failed"
-            # Announced before it is raised: the queue settles the intent as failed and the
-            # ledger records it, but the *UI* needs to be told now rather than on its next poll.
+            # Announced before it is raised: the queue settles the intent as failed and the ledger
+            # records it, but the *UI* needs to be told now rather than on its next poll.
             self.emit_event({
                 "type": "intent_failed",
                 "intent_id": intent.id,
@@ -556,6 +589,113 @@ class EngineService:
         if outcome["status"] == "stopped":
             # Terminal, but the user's own doing: not a failure, and not something to acknowledge.
             intent.status = "stopped"
+
+    def _run_intent(self, intent):
+        """Run one queued intent and report how it actually ended.
+
+        Two shapes of work reach here. ``execute_plan`` is the autonomous loop (Phase 18): the
+        engine drives the DAG itself, so the loop owns the whole outcome. Every other intent is one
+        workflow pass, whose terminal event is its answer.
+        """
+        if str(intent.action_type) == "execute_plan":
+            return self._drive_plan(intent)
+        outcome = self._run_blocking(
+            intent.message, intent.action_type, dict(intent.action_params)
+        )
+        self._settle_from_outcome(intent, outcome)
+
+    # -------------------------------------------------------------
+    # The autonomous loop: drive the DAG to the human gate (Phase 18)
+    # -------------------------------------------------------------
+    def _plan_progress(self):
+        """The DAG's shape right now, in one query (``orchestration.autonomy``)."""
+        from orchestration import autonomy
+        from storage.db import get_store, plan_id_for
+        from tools.workspace import get_active_plan_filename
+
+        return autonomy.plan_progress(
+            get_store().path, plan_id_for(get_active_plan_filename())
+        )
+
+    def _execute_next_approved(self) -> bool:
+        """Apply the approved (``in_progress``) node, if there is one, and say whether it landed."""
+        from orchestration import autonomy
+        from storage.db import get_store, plan_id_for
+        from tools.workspace import get_active_plan_filename
+
+        plan_id = plan_id_for(get_active_plan_filename())
+        task_id = autonomy.next_approved_task(get_store().path, plan_id)
+        if not task_id:
+            return False
+        outcome = self._run_blocking(
+            "", "execute_artifact", {"taskId": task_id, "planId": plan_id}
+        )
+        if outcome["status"] == "error":
+            # Reported here because the loop's caller only sees the boolean; the run's own message
+            # is the fact the user needs, not a generic "the loop failed".
+            self.emit_event({
+                "type": "intent_failed",
+                "intent_id": "",
+                "action_type": "execute_plan",
+                "error": outcome["message"] or "the execution pass failed",
+            })
+            return False
+        return True
+
+    def _plan_next_runnable(self) -> bool:
+        """Dispatch the runnable nodes to the swarm and wait for the plans to land."""
+        from orchestration import autonomy
+
+        swarm = self._ensure_swarm()
+        dispatched = swarm.tick()
+        if not dispatched:
+            return False
+        # Bounded: a planner that hangs past the budget is a fault to report, not a reason to keep
+        # the loop alive. The breaker's wall-clock check is the outer bound; this is the inner one.
+        swarm.drain(timeout=autonomy.PLAN_DRAIN_SECONDS)
+        return True
+
+    def _drive_plan(self, intent) -> None:
+        """Drive the plan forward until it is done, awaiting approval, or the breaker trips.
+
+        The loop stops for a person at exactly one place -- an artifact awaiting approval -- and it
+        stops hard when the breaker trips. Every other stop is a failure the user is told about, and
+        the ledger's failure gate holds new work until they acknowledge it.
+        """
+        from orchestration import autonomy
+
+        def announce(step: int, move) -> None:
+            self.emit_event({
+                "type": "log",
+                "agent": "software-architect",
+                "log_type": "decision",
+                "text": f"[AUTONOMY] transition {step}: {move.kind} ({move.reason})",
+            })
+
+        report = autonomy.PlanDriver(
+            progress=self._plan_progress,
+            execute_next=self._execute_next_approved,
+            plan_next=self._plan_next_runnable,
+            on_transition=announce,
+        ).drive()
+
+        if report.outcome == autonomy.AWAITING_REVIEW:
+            # A clean stop at the gate, and the pass that produced the artifact already announced
+            # it (``workflow_complete: planned``), so the UI is already showing something to approve.
+            return
+        if report.outcome == autonomy.DONE:
+            return
+
+        failure = report.reason or "the autonomous run stopped without finishing the plan"
+        # The failure gate is the ledger's: with the intent settled failed, ``pending_failure`` is
+        # what stops the UI accepting new work until the user has seen this and acknowledged it.
+        self.emit_event({
+            "type": "intent_failed",
+            "intent_id": intent.id,
+            "action_type": intent.action_type,
+            "error": failure,
+        })
+        raise RuntimeError(failure)
 
     def acknowledge_intent(self, intent_id=None):
         """Clears the failure gate: the user has seen that their run failed.

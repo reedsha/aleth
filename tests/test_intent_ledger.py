@@ -179,15 +179,32 @@ class QueueIdempotencyTests(unittest.TestCase):
 
 
 class _StubService:
-    """The smallest service the operation table can call.
+    """The smallest service the intent operations can call.
 
-    ``acknowledge_intent`` goes through a real ledger, because the point of the test is that the
-    gate *clears* -- a stub that only returns a number would prove nothing about the gate.
+    The queue mechanics live in ``api.intents`` (one implementation for the service and for a
+    stub); this holds the ledger the test supplies and the queue the gateway injects, so the queue
+    state the test asserts on and the ledger the gate is read from are the same two objects the
+    production service uses.
     """
 
     def __init__(self, ledger=None, payload=None):
         self._ledger = ledger
         self._payload = payload
+        self._queue = None
+
+    def attach_intent_queue(self, queue):
+        self._queue = queue
+
+    def get_intent_status(self):
+        from api.intents import intent_status
+
+        return intent_status(self._queue, self._ledger).model_dump()
+
+    def submit_intent(self, action_type="custom", message="", action_params=None):
+        from api.intents import submit_intent
+
+        return submit_intent(self._queue, action_type=action_type, message=message,
+                             action_params=action_params)
 
     def acknowledge_intent(self, intent_id=None):
         if self._payload is not None:
@@ -223,11 +240,12 @@ class GatewayLedgerTests(unittest.TestCase):
         intent.status, intent.error = "failed", "the run died"
         self.ledger.settle(intent)
 
-        status, body = self._request("GET", "/api/intents")
+        status, body = self._request("GET", "/api/intent/status")
         self.assertEqual(status, 200)
-        self.assertEqual(body["pending_failure"]["intent_id"], "boom")
-        self.assertEqual(body["pending_failure"]["error"], "the run died")
-        self.assertEqual([row["intent_id"] for row in body["ledger"]], ["boom"])
+        data = body["data"]
+        self.assertEqual(data["pending_failure"]["intent_id"], "boom")
+        self.assertEqual(data["pending_failure"]["error"], "the run died")
+        self.assertEqual([row["intent_id"] for row in data["ledger"]], ["boom"])
 
     def test_acknowledging_over_http_clears_the_gate(self):
         intent = _intent("boom")
@@ -241,8 +259,8 @@ class GatewayLedgerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["data"]["acknowledged"], 1)
 
-        _, after = self._request("GET", "/api/intents")
-        self.assertIsNone(after["pending_failure"])
+        _, after = self._request("GET", "/api/intent/status")
+        self.assertIsNone(after["data"]["pending_failure"])
 
     def test_boot_reconciles_an_intent_left_running_by_a_dead_engine(self):
         """The intent was written, then the process died. The next boot is what fails it."""
@@ -251,17 +269,17 @@ class GatewayLedgerTests(unittest.TestCase):
         self.ledger.mark_running(intent)
 
         # A fresh gateway over the same ledger is the restart.
-        second = start_gateway(port=0, ledger=self.ledger)
+        second = start_gateway(port=0, ledger=self.ledger, service=_StubService(ledger=self.ledger))
         self.addCleanup(second.stop)
         connection = http.client.HTTPConnection("127.0.0.1", second.bound_port, timeout=10)
         try:
-            connection.request("GET", "/api/intents")
+            connection.request("GET", "/api/intent/status")
             body = json.loads(connection.getresponse().read().decode("utf-8"))
         finally:
             connection.close()
 
-        self.assertEqual(body["pending_failure"]["intent_id"], "orphan")
-        self.assertIn("stopped before", body["pending_failure"]["error"])
+        self.assertEqual(body["data"]["pending_failure"]["intent_id"], "orphan")
+        self.assertIn("stopped before", body["data"]["pending_failure"]["error"])
 
 
 class ContractGuardTests(unittest.TestCase):

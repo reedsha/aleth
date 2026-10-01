@@ -438,3 +438,38 @@ test.describe("the side panels", () => {
     await expect(page.locator("#consoleStream")).toBeHidden();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 18: the plan-wide execution request
+// ---------------------------------------------------------------------------
+
+test.describe("the execution intent the engine is asked for", () => {
+  test("an un-targeted Execute Next Step asks the engine to drive the whole plan", async ({ page }) => {
+    await openApp(page);
+
+    // The palette's next_step entry, confirmed with no task selected: that is the plan-wide
+    // request, so the engine must be asked for `execute_plan` rather than a single node.
+    await runPaletteCommand(page, "next");
+    await page.locator("#btnConfirmActionParam").click();
+
+    const bodies = await page.evaluate(() => window.__alethFetchBodies);
+    const submitted = bodies.find((body) => body && body.action_type);
+    expect(submitted, "the confirm must submit an intent").toBeTruthy();
+    expect(submitted.action_type).toBe("execute_plan");
+  });
+
+  test("a task card's own Execute still targets one node", async ({ page }) => {
+    await openApp(page);
+
+    // The plan tree's per-card Execute names its task, so it stays a single-node `next_step`.
+    await page.locator(".btn-inline-execute").first().click();
+    await expect(page.locator("#actionDrawerPanel")).toBeVisible();
+    await page.locator("#btnConfirmActionParam").click();
+
+    const bodies = await page.evaluate(() => window.__alethFetchBodies);
+    const submitted = bodies.find((body) => body && body.action_type);
+    expect(submitted, "the confirm must submit an intent").toBeTruthy();
+    expect(submitted.action_type).toBe("next_step");
+    expect(submitted.action_params.targetTaskId).toBeTruthy();
+  });
+});

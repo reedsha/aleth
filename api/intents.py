@@ -26,7 +26,7 @@ import time
 import uuid
 from typing import Any, Callable, Deque, Dict, List, Optional
 
-from api.schemas import IntentQueueStatus, IntentRequest, IntentView
+from api.schemas import IntentLedgerEntry, IntentQueueStatus, IntentRequest, IntentView
 
 # A UI that has queued this many unrun intents is not asking for work, it is stuck; refusing the
 # next one is the honest answer, and the frontend gets a 429 rather than an ever-growing list.
@@ -171,6 +171,67 @@ class IntentQueue:
                 failed=self._failed,
                 items=items,
             )
+
+
+def intent_status(queue: "IntentQueue", ledger: Any = None) -> IntentQueueStatus:
+    """The queue's state, plus the durable ledger that outlives it and the gate it holds.
+
+    Factored out of the transport so the answer has exactly one implementation: the typed
+    operation surface (``api.operations``) calls it through the engine service, and a test stub
+    can call the same function rather than re-deriving the shape. The ledger is an observer -- a
+    read that fails is reported, never allowed to take the queue's own answer with it -- because
+    the queue is still the truth about what is in flight.
+    """
+    status = queue.status()
+    if ledger is None:
+        return status
+    try:
+        pending = ledger.pending_failure()
+        return status.model_copy(
+            update={
+                "ledger": [IntentLedgerEntry(**row) for row in ledger.recent(20)],
+                "pending_failure": IntentLedgerEntry(**pending) if pending is not None else None,
+            }
+        )
+    except Exception as error:  # the queue still answers; the ledger is an observer
+        print(
+            f"[intents] the ledger could not be read: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return status
+
+
+def submit_intent(
+    queue: "IntentQueue",
+    action_type: str = "custom",
+    message: str = "",
+    action_params: Any = None,
+) -> Dict[str, Any]:
+    """Validate-and-append one intent, answered in the wire shape. Never raises.
+
+    The same reasoning as :func:`intent_status`: the *service* is what ``api.operations`` calls, but
+    the queue mechanics -- strict request model, the bounded refusal -- have exactly one home so a
+    test stub and the production service cannot disagree about what a submitted intent answers.
+
+    A full queue is a :class:`ServiceRefusal` (``success: false``) rather than a bare ``error``,
+    because the gateway refuses to forward an error that does not say it is one.
+    """
+    try:
+        intent = queue.submit(
+            IntentRequest(
+                action_type=action_type,
+                message=message,
+                action_params=dict(action_params or {}),
+            )
+        )
+    except IntentQueueFull as error:
+        return {"success": False, "error": str(error)}
+    return {
+        "success": True,
+        "intent_id": intent.id,
+        "status": "queued",
+        "position": queue.depth,
+    }
 
 
 def run_worker(

@@ -20,10 +20,13 @@ from storage.db import TaskStatus
 
 _STRICT = ConfigDict(extra="forbid")
 
-# The intents the runner can dispatch, and no others. This is the authority
-# (``orchestration.workflow.runner.run_agent_workflow``); the API validates against it so a
-# request naming an intent the engine does not implement is refused at the door rather than
-# silently falling through to ``custom``.
+# The intents the engine can act on, and no others. This is the authority: the API validates
+# against it so a request naming an intent the engine does not implement is refused at the door
+# rather than silently falling through to ``custom``.
+#
+# ``execute_plan`` is the one intent the *service* owns rather than the runner
+# (``orchestration.workflow.runner``): the queue dispatches it to the autonomous loop, which
+# decomposes it into the ``next_step`` / ``execute_artifact`` passes the runner does implement.
 IntentAction = Literal[
     "custom",
     "fix_bug",
@@ -33,6 +36,7 @@ IntentAction = Literal[
     "recommend",
     "normalize",
     "execute_artifact",
+    "execute_plan",
 ]
 
 
@@ -62,16 +66,6 @@ class IntentRequest(BaseModel):
         if not text.strip():
             raise ValueError("an intent needs a message; the workflow refuses a blank prompt")
         return text
-
-
-class IntentAccepted(BaseModel):
-    """The answer to a queued intent: it is accepted, not started."""
-
-    model_config = _STRICT
-
-    intent_id: str
-    status: Literal["queued"] = "queued"
-    position: int
 
 
 class IntentView(BaseModel):

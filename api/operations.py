@@ -24,6 +24,8 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import BaseModel, ConfigDict
 
+from api.schemas import IntentRequest
+
 _STRICT = ConfigDict(extra="forbid")
 
 
@@ -205,6 +207,12 @@ OPERATIONS: tuple = (
     Operation("push_console_line", "POST", "/api/console/line", ConsoleLineRequest, _invoke("push_console_line")),
     Operation("ui_ready", "POST", "/api/ui/ready", _Empty, _invoke("ui_ready")),
     Operation("get_console_backlog", "GET", "/api/console/backlog", _Empty, _invoke("get_console_backlog")),
+    # -- intents -----------------------------------------------------------------
+    # The queue's state and the one mutation that changes it. Both are operations, so the
+    # intent surface has no privileged route beside the table and the frontend's client table
+    # maps 1:1 onto this one (``tests/test_api_gateway.py::OperationTableTests``).
+    Operation("get_intent_status", "GET", "/api/intent/status", _Empty, _invoke("get_intent_status")),
+    Operation("submit_intent", "POST", "/api/intent/execute", IntentRequest, _invoke("submit_intent")),
     Operation("acknowledge_intent", "POST", "/api/intent/acknowledge", AcknowledgeRequest, _invoke("acknowledge_intent")),
 )
 

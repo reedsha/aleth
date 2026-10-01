@@ -56,14 +56,15 @@ export const OPERATIONS = {
   open_console_window: { verb: "POST", path: "/api/console/open", args: ["backlog"] },
   push_console_line: { verb: "POST", path: "/api/console/line", args: ["kind", "text"] },
   get_console_backlog: { verb: "GET", path: "/api/console/backlog", args: [] },
-  // The gateway's own intent-status route (``api/gateway.py``) rather than a service operation:
-  // it reports the queue *and* the durable ledger, which is what the UI gates on at startup -- a
-  // failure that happened while the window was closed must still be seen.
-  get_intent_status: { verb: "GET", path: "/api/intents", args: [] },
+  // The queue's own state -- depth, history, the durable ledger and the failure gate. An
+  // operation like every other one (`api/operations.py`), so the client table below maps 1:1 onto
+  // the server's and there is no privileged route beside it.
+  get_intent_status: { verb: "GET", path: "/api/intent/status", args: [] },
   acknowledge_intent: { verb: "POST", path: "/api/intent/acknowledge", args: ["intent_id"] },
   ui_ready: { verb: "POST", path: "/api/ui/ready", args: [] },
-  // The one intent. It is not an operation in `api/operations.py` because it is queued rather
-  // than executed: the orchestrator drains it, and the run's progress arrives on the stream.
+  // The one intent. It is an operation -- it is *queued* rather than executed, which is a fact
+  // about the service behind it, not a second transport. `execute_plan` asks the engine to drive
+  // the whole DAG (Phase 18); every other action is one workflow pass.
   start_execution: { verb: "POST", path: "/api/intent/execute", args: ["message", "action_type", "action_params"] },
 };
 

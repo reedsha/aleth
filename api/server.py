@@ -569,8 +569,13 @@ def start_gateway(
         queue=IntentQueue(capacity=capacity, ledger=ledger),
         hub=EventHub(),
         service=service,
-        ledger=ledger,
     )
+    if service is not None:
+        # Hand the engine service the queue it now answers for. The operations that touch intents
+        # (``get_intent_status``, ``submit_intent``) live in the service layer, so the typed
+        # operation table stays the only intent surface -- and the service is injected here, where
+        # the queue is minted, rather than reaching into the gateway later.
+        service.attach_intent_queue(gateway.queue)
     server = ApiServer(
         gateway=gateway,
         host=host,

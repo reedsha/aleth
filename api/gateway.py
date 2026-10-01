@@ -15,25 +15,18 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from pydantic import ValidationError
 
 from api import operations, reads
 from api.events import EventHub
-from api.intents import IntentQueue, IntentQueueFull
+from api.intents import IntentQueue
 from api.schemas import (
     ErrorResponse,
     HealthResponse,
-    IntentAccepted,
-    IntentLedgerEntry,
-    IntentRequest,
     OperationEnvelope,
-    PlanListResponse,
-    PlanView,
     ServiceRefusal,
-    TelemetryListResponse,
-    TelemetryReceiptView,
 )
 
 SERVICE_NAME = "aleth-api"
@@ -138,56 +131,14 @@ def _receipt(request: Request, gateway: "Gateway", match: re.Match) -> Response:
     return _json(200, receipt)
 
 
-def _intent_status(request: Request, gateway: "Gateway", match: re.Match) -> Response:
-    """The queue's state, plus the durable ledger and the gate it holds.
-
-    The ledger is the part that survives the process, so it is the part the UI can trust after a
-    crash. ``pending_failure`` is what it gates on: an unacknowledged failure means the user has
-    not yet been told their last run did not do what they asked.
-    """
-    status = gateway.queue.status()
-    ledger = getattr(gateway, "ledger", None)
-    if ledger is not None:
-        try:
-            status = status.model_copy(
-                update={
-                    "ledger": [IntentLedgerEntry(**row) for row in ledger.recent(20)],
-                    "pending_failure": _entry(ledger.pending_failure()),
-                }
-            )
-        except Exception as error:  # the queue still answers; the ledger is an observer
-            print(f"[api] the intent ledger could not be read: {type(error).__name__}: {error}",
-                  file=sys.stderr)
-    return _json(200, status)
-
-
-def _entry(row) -> Optional[IntentLedgerEntry]:
-    return IntentLedgerEntry(**row) if row is not None else None
-
-
-def _submit_intent(request: Request, gateway: "Gateway", match: re.Match) -> Response:
-    """The one mutation. Validated here, queued here, executed by the orchestrator.
-
-    A malformed body is a 400 (``extra="forbid"``: an undocumented key is refused, not ignored);
-    a full queue is a 429. Neither case starts anything, which is the property that matters --
-    a request from a page can only ever *ask*.
-    """
-    try:
-        parsed = IntentRequest.model_validate_json(request.body or b"{}")
-    except ValidationError as error:
-        return _error(400, "invalid intent", error.json(include_url=False))
-    try:
-        intent = gateway.queue.submit(parsed)
-    except IntentQueueFull as error:
-        return _error(429, "intent queue is full", str(error))
-    return _json(202, IntentAccepted(intent_id=intent.id, position=gateway.queue.depth))
-
-
 def _events(request: Request, gateway: "Gateway", match: re.Match) -> StreamResponse:
     """Hand the connection to the SSE loop; the gateway has nothing else to say about it."""
     return StreamResponse()
 
 
+# The bare infrastructure reads -- health, the plan projections, the telemetry ledger and the
+# event stream -- are the gateway's own. Everything the *engine* can do is in
+# ``api.operations``: one typed table, so the intent surface has no privileged route beside it.
 ROUTES: Tuple[Tuple[str, str, Handler], ...] = (
     ("GET", r"^/api/health$", _health),
     ("GET", r"^/api/plans$", _plans),
@@ -195,9 +146,7 @@ ROUTES: Tuple[Tuple[str, str, Handler], ...] = (
     ("GET", r"^/api/plan/(?P<plan_id>[A-Za-z0-9_.\-]+)$", _plan_by_id),
     ("GET", r"^/api/telemetry$", _telemetry),
     ("GET", r"^/api/telemetry/(?P<execution_id>[A-Za-z0-9_.\-]+)$", _receipt),
-    ("GET", r"^/api/intents$", _intent_status),
     ("GET", r"^/api/events$", _events),
-    ("POST", r"^/api/intent/execute$", _submit_intent),
 )
 
 
@@ -209,16 +158,12 @@ class Gateway:
         queue: Optional[IntentQueue] = None,
         hub: Optional[EventHub] = None,
         service: Any = None,
-        ledger: Any = None,
     ):
         self.queue = queue or IntentQueue()
         self.hub = hub or EventHub()
         # The engine-facing operations (``api.operations``). ``None`` until the app attaches it,
         # and an operation reaching a gateway without one is a 503 rather than an AttributeError.
         self.service = service
-        # The durable intent ledger. The queue is in memory and dies with the process; this is
-        # what a restart reconciles against.
-        self.ledger = ledger
         self._routes = [
             (method, re.compile(pattern), handler) for method, pattern, handler in ROUTES
         ]

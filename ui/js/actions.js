@@ -41,6 +41,8 @@ export function openActionDrawer(actionType, extraParams = {}) {
   state.selectedAction = actionType;
   state.targetTaskId = extraParams.targetTaskId || null;
   state.targetTaskTitle = extraParams.targetTaskTitle || null;
+  // Cleared on every open: it is set again below only for the plan-wide request.
+  state.runWholePlan = false;
 
   // Reset inputs. `prefill` lets a caller hand the drawer a directive the user is asked to
   // confirm before it runs. No caller uses it today: the result view's "Add to Plan" now
@@ -104,10 +106,15 @@ export function openActionDrawer(actionType, extraParams = {}) {
       DOM.paramPresetDescription.textContent = "Architect evaluates requirements against the active plan, prepares workspace context, and delegates task implementation to a specialized Coder.";
       DOM.btnConfirmActionText.textContent = "Execute Step";
 
-      // Find top pending task if not explicitly passed
-      const targetTask = state.targetTaskId
+      // An explicit target is a task card's own Execute: one node. With none, this is the
+      // plan-wide request (Phase 18) -- the engine resolves the DAG's runnable nodes itself and
+      // stops only at the approval gate. A [UI] task is the exception: it needs its reference
+      // mockup, which only a targeted run collects, so it keeps the old single-node behaviour.
+      const explicitTarget = Boolean(extraParams.targetTaskId);
+      const selected = explicitTarget
         ? state.planTree.find(t => t.id === state.targetTaskId)
         : state.planTree.find(t => t.status === "pending");
+      const targetTask = explicitTarget || (selected && isUiTask(selected)) ? selected : null;
 
       if (targetTask) {
         state.targetTaskId = targetTask.id;
@@ -120,6 +127,13 @@ export function openActionDrawer(actionType, extraParams = {}) {
         if (isUiTask(targetTask) && DOM.paramUiVisionSection) {
           DOM.paramUiVisionSection.style.display = "block";
         }
+      } else {
+        state.targetTaskId = null;
+        state.targetTaskTitle = null;
+        state.runWholePlan = true;
+        DOM.paramTargetBadge.textContent = "Full Plan";
+        DOM.paramTargetTitle.textContent = "All runnable milestones, stopping at approval";
+        DOM.paramTargetTaskCard.style.display = "flex";
       }
       focusAfterLayout(DOM.inputActionCustomInstructions);
       break;
@@ -233,6 +247,11 @@ export async function handleActionParamConfirm() {
   // Assigned on every branch below, including the final `else`, so there is no initialiser to
   // carry a value nothing reads.
   let prompt;
+  // The intent the engine is asked for. It differs from the action only for an un-targeted
+  // "Execute Next Step": that is the plan-wide request now, so the engine drives the whole DAG
+  // (Phase 18) instead of stopping after one node. A task card's own Execute still targets one
+  // node and still submits `next_step`.
+  let dispatchType = actionType;
 
   if (actionType === "fix_bug") {
     const bugDesc = DOM.inputBugDescription ? DOM.inputBugDescription.value.trim() : "";
@@ -277,6 +296,9 @@ export async function handleActionParamConfirm() {
     if (customInstructions) {
       prompt += `\nCustom Instructions: ${customInstructions}`;
     }
+    // No specific task: run the plan. The engine resolves and runs the DAG's runnable nodes and
+    // stops only where a person is needed (an artifact awaiting approval).
+    if (state.runWholePlan) dispatchType = "execute_plan";
   } else if (actionType === "update_plan") {
     prompt = `[ACTION: UPDATE_PLAN]\nInstructions: ${customInstructions || "Review and update roadmap milestones"}`;
   } else if (actionType === "analyze") {
@@ -295,7 +317,7 @@ export async function handleActionParamConfirm() {
   }
 
   closeActionDrawer();
-  executeConfirmedTask(prompt, actionType, actionParams);
+  executeConfirmedTask(prompt, dispatchType, actionParams);
 }
 
 // ============================================================================

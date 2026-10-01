@@ -35,6 +35,9 @@ export const state = {
   selectedAction: null,
   targetTaskId: null,
   targetTaskTitle: null,
+  // Whether the open action drawer is asking for the plan-wide run (Phase 18) rather than one
+  // node. Set by `openActionDrawer` and read by the confirm handler.
+  runWholePlan: false,
   // Ids of the agents currently generating work. Held here, and not only flipped on the DOM,
   // because renderSidebarAgents() rebuilds the lists wholesale (for example on agents_updated)
   // and would drop a class set directly on a node; the renderer re-applies this set on rebuild.
