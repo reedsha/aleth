@@ -46,9 +46,13 @@ class IntentRequest(BaseModel):
     ``message`` is the directive text; ``action_type`` names the branch; ``action_params`` carries
     the branch's own arguments (a target task id, an artifact key). Nothing here is trusted to
     execute anything -- it is a *request*, and the queue is where it waits for the orchestrator.
+
+    ``validate_default`` is load-bearing: without it the blank-prompt check below only fires when a
+    caller *spells out* ``"message": ""``, and an omitted message sails through as the default --
+    the check has to be a property of the request, not of how the JSON was written.
     """
 
-    model_config = _STRICT
+    model_config = ConfigDict(extra="forbid", validate_default=True)
 
     action_type: IntentAction = "custom"
     message: str = ""
@@ -56,16 +60,22 @@ class IntentRequest(BaseModel):
 
     @field_validator("message")
     @classmethod
-    def _message_must_not_be_blank(cls, value: str) -> str:
-        """The runner refuses a blank prompt, so the door does too.
+    def _message_must_not_be_blank(cls, value: str, info) -> str:
+        """The runner refuses a blank prompt, so the door does too -- with one exception.
 
         Refusing here is the difference between a 400 the frontend can act on and an intent that
         is accepted, queued, and then fails inside the orchestrator with the same complaint.
+
+        ``execute_plan`` is the exception, and it is not a loophole: it is the plan-wide request
+        (Phase 18), and the engine resolves the DAG from the store rather than from a directive, so
+        there is no prompt for it to carry. Every other intent *is* a prompt.
         """
         text = str(value or "")
-        if not text.strip():
-            raise ValueError("an intent needs a message; the workflow refuses a blank prompt")
-        return text
+        if text.strip():
+            return text
+        if str(info.data.get("action_type") or "") == "execute_plan":
+            return text
+        raise ValueError("an intent needs a message; the workflow refuses a blank prompt")
 
 
 class IntentView(BaseModel):

@@ -212,6 +212,15 @@ class RoutingTests(GatewayTestCase):
         response = self._post("/api/intent/execute", {"action_type": "delete_everything"})
         self.assertEqual(response.status, 400)
 
+    def test_the_plan_wide_intent_needs_no_prompt(self):
+        """``execute_plan`` resolves the DAG from the store, so it carries no directive."""
+        response = self._post("/api/intent/execute", {"action_type": "execute_plan"})
+        self.assertEqual(response.status, 200)
+        self.assertTrue(self._data(response)["intent_id"])
+
+    def test_every_other_intent_still_needs_a_prompt(self):
+        self.assertEqual(self._post("/api/intent/execute", {"action_type": "custom"}).status, 400)
+
     def test_a_full_queue_is_refused_rather_than_accumulated(self):
         service = _StubIntentService()
         gateway = Gateway(queue=IntentQueue(capacity=1), service=service)
