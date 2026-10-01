@@ -21,9 +21,42 @@ from tools import workspace
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# The routing overrides a developer's ``.env`` may carry. ``env_boot.load_environment`` loads
+# ``.env`` with ``override=True`` at the moment ``app`` is imported, so a single test that imports
+# ``app`` arms these names for every test that runs *after* it in the same worker -- the same
+# mechanism that made ``LAYA_BACKEND`` order-dependent, which ``_deterministic_system1`` fixes by
+# injection. Injection is unavailable here (``coder_model`` reads the environment directly, by
+# design: a settings panel writes these names), so they are cleared around every test instead. A
+# test that asserts a committed routing default must not depend on which developer ran the suite.
+_AMBIENT_ROUTING_ENV = (
+    "ALETH_ARCHITECT_MODEL",
+    "ALETH_CODER_DEEP_MODEL",
+    "ALETH_CODER_STANDARD_MODEL",
+)
+
 
 def _never_loads():
     raise AssertionError("the deterministic System 1 must never load a checkpoint")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_routing_overrides():
+    """Run every test with the routing env vars cleared, then restore them.
+
+    Cleared *before* the test and restored *after*, so the fixture holds even when the variables
+    appear mid-session (when a test imports ``app`` and the bootloader re-arms them).
+    """
+    saved = {name: os.environ.get(name) for name in _AMBIENT_ROUTING_ENV}
+    for name in _AMBIENT_ROUTING_ENV:
+        os.environ.pop(name, None)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 @pytest.fixture(autouse=True)
