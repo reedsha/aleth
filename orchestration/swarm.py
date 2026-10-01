@@ -43,16 +43,20 @@ from orchestration.scheduler import (
 )
 from orchestration.worker import execute_node, role_payload
 
-# A worker is a process, and on POSIX the default start method is ``fork``. Forking a parent that
-# already holds native threads -- lancedb's background event loop, torch's pools -- copies those
-# threads' locks into the child without the threads that would release them, and the child dies the
-# moment it touches one. That is not hypothetical: it segfaulted a worker mid-suite and took the
-# test that was waiting on it. ``forkserver`` starts its server from a *fresh* interpreter
-# (fork + exec) and forks workers from that clean process, so none of the parent's thread state
-# crosses over; on Windows the default is already ``spawn``. The worker was written for exactly
-# this boundary -- picklable arguments, nothing live -- so the pool asks for the method explicitly
-# instead of inheriting whatever the platform happens to default to.
-_POOL_START_METHOD = "spawn" if sys.platform == "win32" else "forkserver"
+# A worker is a process, and the pool must not inherit the platform's default start method.
+#
+# ``fork`` is the POSIX default and it is unsafe here: the parent already holds native threads --
+# lancedb's background event loop, torch's pools -- and fork copies their locks into the child
+# without the threads that would release them, so the child dies the moment it touches one. It
+# segfaulted a worker mid-suite and took the test that was waiting on it.
+#
+# ``forkserver`` avoids that, but its workers fork from a long-lived server whose environment is
+# frozen when that server starts, so a value set after the pool came up never reaches the child --
+# and the suite hands a worker its stub through the environment. ``spawn`` execs a fresh
+# interpreter with the parent's *current* environment, which is both safe and correct. The worker
+# was written for exactly this boundary -- picklable arguments, nothing live -- so the pool asks
+# for it explicitly instead of inheriting whatever the platform happens to default to.
+_POOL_START_METHOD = "spawn"
 
 # The exception types that mean "the machine failed", as opposed to "the work is wrong". Kept as
 # a tuple so ``isinstance`` is one call, and deliberately narrow: anything not listed is treated as
