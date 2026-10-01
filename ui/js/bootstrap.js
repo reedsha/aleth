@@ -2,6 +2,7 @@
 // ============================================================================
 // PyWebView Integration & Plan Initialization
 // ============================================================================
+import { connectEventStream } from "./api-client.js";
 import { beginRunUi } from "./actions.js";
 import { installBus } from "./bridge-bus.js";
 import { renderSidebarAgents } from "./agents.js";
@@ -62,6 +63,23 @@ export async function onPyWebViewReady() {
     // output is invisible.
     notifyInitFailure(err);
   }
+}
+
+// Starts the engine event stream. Independent of pywebview on purpose: the gateway is a plain
+// HTTP server, so this works in the desktop window and in a browser alike, and it is the path
+// every event will take once the bridge is gone.
+//
+// The sink is installed first. A frame that arrives before the sink exists is dropped, and the
+// sink is the same strict parser the pywebview push used -- so an event from the stream is
+// validated exactly as an injected one was, and a malformed payload is rejected either way.
+export function startEventStream() {
+  installBus();
+  return connectEventStream({
+    onMessage: (raw) => {
+      const sink = window.__deepAgentsBus;
+      if (sink && typeof sink.receive === "function") sink.receive(raw);
+    },
+  });
 }
 
 function notifyInitFailure(err) {

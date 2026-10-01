@@ -1,10 +1,16 @@
 // ui/js/env.js — The active environment variables panel in the left sidebar.
 //
-// Names and a mask only. The bridge never sends a value: masking happens in Python, so a
+// Names and a mask only. The backend never sends a value: masking happens in Python, so a
 // devtools session cannot read a secret back out of the payload. The per-row reveal shows
 // what is safe to show -- whether the variable resolves, and how long its value is -- which
 // is enough to tell a set-but-empty variable from a populated one.
+//
+// **First module migrated to the HTTP client (Phase 15, strangler step).** It reads through
+// `api.get_environment_variables()` instead of `window.pywebview.api`, so the same panel works
+// in a plain browser as in the desktop window; the two transports coexist while the rest of the
+// frontend is moved over.
 
+import { api } from "./api-client.js";
 import { escapeHtml } from "./dom.js";
 import { showToast } from "./notify.js";
 import { setHtml } from "./safe-dom.js";
@@ -17,9 +23,10 @@ const ENV_REVEAL_ICON =
   'stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>' +
   '<circle cx="12" cy="12" r="3"/></svg>';
 
-function envPanelHasBridge() {
-  return !!(window.pywebview && window.pywebview.api &&
-    typeof window.pywebview.api.get_environment_variables === "function");
+function envPanelAvailable() {
+  // The panel is served by the gateway, so the only question is whether the client exists at
+  // all -- which it does not on a bare document opened outside the app.
+  return typeof api.get_environment_variables === "function";
 }
 
 function envRowMarkup(entry) {
@@ -74,15 +81,18 @@ function handleEnvListClick(event) {
 export async function refreshEnvironmentVariables() {
   if (!DOM.sidebarEnvList) return;
 
-  if (!envPanelHasBridge()) {
+  if (!envPanelAvailable()) {
     if (DOM.countEnvVars) DOM.countEnvVars.textContent = "0";
     setHtml(DOM.sidebarEnvList,
-      '<div class="env-empty">The desktop app is needed to read environment variables.</div>');
+      '<div class="env-empty">The local gateway is not reachable, so variables cannot be read.</div>');
     return;
   }
 
   try {
-    const res = await window.pywebview.api.get_environment_variables();
+    const res = await api.get_environment_variables();
+    if (res && res.success === false) {
+      throw new Error(res.error || "the gateway refused the read");
+    }
     renderEnvironmentVariables((res && res.variables) || []);
   } catch (err) {
     // A read failure must not render as the empty state -- "No environment variables are

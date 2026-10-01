@@ -6,7 +6,7 @@
 import { abortRunUi, beginRunUi, closeActionDrawer, finalizeWorkflow, handleActionParamConfirm, handleStopClick, openActionDrawer } from "./actions.js";
 import { hideTaggingPanel, showTaggingPanel } from "./agent-events.js";
 import { closePromptEditor, saveCurrentSystemPrompt, updateEditorMetrics } from "./agents.js";
-import { applyAgentsData, initFallbackMode, onPyWebViewReady, updateWorkspaceUI } from "./bootstrap.js";
+import { applyAgentsData, initFallbackMode, onPyWebViewReady, startEventStream, updateWorkspaceUI } from "./bootstrap.js";
 import { on as onBus } from "./bus.js";
 import { initCodeSurfaces } from "./code-surface.js";
 import { initCommandPalette, openCommandPalette } from "./command-palette.js";
@@ -106,6 +106,10 @@ document.addEventListener("DOMContentLoaded", () => {
   runStartupStep("Sidebar panels", initSidebars);
   runStartupStep("Environment panel", initEnvironmentPanel);
   runStartupStep("Settings panel", initSettingsPanel);
+  // The engine event stream, over HTTP. Started before the bridge settles because it does not
+  // depend on it: the gateway is an ordinary server, and this is the path every event takes
+  // once the pywebview push is gone.
+  runStartupStep("Event stream", startEventStream);
 
   // Every element the app caches must have resolved. This replaces the check the document
   // head used to make against a hand-maintained list of ~35 window globals: it asks the

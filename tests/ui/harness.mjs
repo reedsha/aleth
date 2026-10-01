@@ -1,13 +1,29 @@
 // Shared harness for the frontend's Playwright suite.
 //
-// Both spec files drive the *built* app through the same mocked desktop bridge. The mock
-// mirrors the real pywebview handshake: pywebview defines `window.pywebview.api` and then
-// fires `pywebviewready` *after* the document has loaded, which is when the app's own
-// bootstrap listens for it. Unknown methods answer with an empty object rather than
-// throwing, so a test never fails because the frontend asked for something this fixture
-// does not model.
+// Both spec files drive the *built* app through the same mocked backend. There are two
+// transports while the frontend is strangled onto HTTP, and the harness models both from one
+// fixture:
+//
+//   * `window.pywebview.api` -- the pywebview bridge, for the modules that have not migrated
+//     yet. It mirrors the real handshake: pywebview defines the object and then fires
+//     `pywebviewready` after the document loads, which is when the app's bootstrap listens.
+//   * `fetch` and `EventSource` -- the HTTP gateway, for the modules that have. The paths are
+//     taken from `ui/js/api-client.js` itself, so the mock cannot drift from the client's own
+//     table: an operation the client can call is an operation this harness answers.
+//
+// A fixture is therefore written once (`options.api`, keyed by operation name) and served over
+// whichever transport the module under test uses. Unknown calls answer with an empty object
+// rather than throwing, so a test never fails because the frontend asked for something this
+// fixture does not model.
 
 import { expect } from "@playwright/test";
+
+import { OPERATIONS } from "../../ui/js/api-client.js";
+
+// The client's table, flattened to the one thing the page-side mock needs: name -> path.
+const OPERATION_PATHS = Object.fromEntries(
+  Object.entries(OPERATIONS).map(([name, operation]) => [name, operation.path])
+);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -132,15 +148,20 @@ export const PLAN = {
  * method name mapped to the (serialisable) value its `async` stub resolves to, e.g.
  * `{ api: { get_preview_source: { success: true, found: true, content: "<html>…" } } }`.
  * The values are serialised into the page, so they must be plain data, not functions.
+ *
+ * `options.bridge` does the same for the *bridge only*, which is how a test proves a migrated
+ * module is no longer reading it.
  */
 export async function openApp(page, options = {}) {
-  const { waitForTree = true, api: apiReturns = {}, ...overrides } = options;
+  const { waitForTree = true, api: apiReturns = {}, bridge: bridgeReturns = {}, ...overrides } = options;
   const payload = {
     agents: AGENTS,
     workspace: WORKSPACE,
     plan: PLAN,
     ...overrides,
     apiReturns,
+    bridgeReturns,
+    operationPaths: OPERATION_PATHS,
   };
 
   await page.addInitScript((data) => {
@@ -153,10 +174,65 @@ export async function openApp(page, options = {}) {
     Object.keys(data.apiReturns).forEach((name) => {
       api[name] = async () => data.apiReturns[name];
     });
+    // Methods that answer *only* on the bridge. A test uses one to prove a migrated module does
+    // not consult it: if the rendered result is the bridge's answer, the module read the bridge.
+    Object.keys(data.bridgeReturns).forEach((name) => {
+      api[name] = async () => data.bridgeReturns[name];
+    });
     window.pywebview = {
       api: new Proxy(api, {
         get: (target, name) => (name in target ? target[name] : async () => ({})),
       }),
+    };
+
+    // -- the HTTP gateway ------------------------------------------------------
+    // One fixture, two transports: a name in `apiReturns` is served over the bridge above and
+    // over this fetch. The path comes from the client's own table, so a route the client can
+    // address is a route this mock answers.
+    const jsonResponse = (body, status = 200) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      headers: { get: () => "application/json" },
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    });
+
+    window.fetch = async (input) => {
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      const path = url.split("?")[0];
+      // Every request is recorded, so a test can assert *which transport* a module used rather
+      // than inferring it from what rendered.
+      window.__alethFetchLog.push(path);
+      const name = Object.keys(data.operationPaths).find(
+        (key) => data.operationPaths[key] === path
+      );
+      if (!name) return jsonResponse({ ok: false, error: "no such endpoint" }, 404);
+      return jsonResponse({ ok: true, data: name in data.apiReturns ? data.apiReturns[name] : {} });
+    };
+    window.__alethFetchLog = [];
+
+    // The stream. Tests push frames with `window.__alethEmit(rawJson)`, which is exactly the
+    // string the backend sends, so the strict parse/validate path is exercised.
+    const streams = [];
+    window.__alethStreams = streams;
+    window.EventSource = class {
+      constructor(url) {
+        this.url = url;
+        this.closed = false;
+        streams.push(this);
+        setTimeout(() => {
+          if (!this.closed && this.onopen) this.onopen({});
+        }, 0);
+      }
+
+      close() {
+        this.closed = true;
+      }
+    };
+    window.__alethEmit = (raw) => {
+      streams.forEach((stream) => {
+        if (!stream.closed && stream.onmessage) stream.onmessage({ data: raw });
+      });
     };
   }, payload);
 
