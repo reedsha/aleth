@@ -102,9 +102,23 @@ jobs:
         if: runner.os == 'Linux'
         run: docker build -f docker/sandbox.Dockerfile -t aleth-sandbox:latest docker/
       - name: Full suite
-        # ``-v -s`` so each test is named as it runs and nothing is captured behind a buffer: a
-        # pipeline that fails has to say which test failed, and where.
-        run: python -m pytest -v -s
+        # Run **unprivileged**. Root bypasses POSIX DAC bits (``CAP_DAC_OVERRIDE``), so a permission
+        # assertion evaluated as root asserts nothing -- the immutability proof failed on exactly
+        # that before it ran the boot as an ordinary user. GitHub's runner user is already
+        # unprivileged, so the ``root`` branch below only ever fires in local emulation, which is
+        # the point: it makes the emulated runner behave like the real one.
+        run: |
+          set -e
+          if [ "$(id -u)" -eq 0 ]; then
+            # The emulated runner is root and reaches the daemon through a socket it owns; the
+            # unprivileged user needs the same reach before we drop to it.
+            chmod 666 /var/run/docker.sock 2>/dev/null || true
+            useradd -m -s /bin/bash alethrunner 2>/dev/null || true
+            chown -R alethrunner:alethrunner .
+            su alethrunner -c "python -m pytest -v -s"
+          else
+            python -m pytest -v -s
+          fi
 
   test-immutable:
     name: test-immutable
