@@ -13,25 +13,38 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 19)
+## ⚡ 0. Current State at This Handoff (Phase 20)
 
-- **Phases 5 → 19 are complete and CI-green.** Phase 19 (deterministic AI routing &
-  handoff) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only
+- **Phases 5 → 20 are complete and CI-green.** Phase 20 (workspace staging & the merge
+  boundary) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only
   points at what changed most recently.
+- **An agent can no longer write to the user's live tree.** Every run copies the
+  workspace into a shadow under `<state_root>/staging/<staging_id>` (`tools/staging.py`);
+  the agent's MCP servers and the container bind-mount that copy. `tools/workspace.py`
+  now has **two roots**: `get_project_dir()` for reads (plan, explorer, preview, source
+  spans, the agent listing) and `get_execution_dir()` for execution writes (the fs
+  server, the container mount, `execute_approved`'s apply target, the planning context,
+  `test_runner`'s cwd). `EngineService._staged_execution` sets the execution root for the
+  duration of the intent; a nested call reuses the active shadow, so the autonomous
+  loop's passes accumulate into one copy.
+- **The delta leaves only through a merge gate.** `GET /api/workspace/diff` returns the
+  content-addressed delta (added/modified/deleted + a capped unified patch);
+  `POST /api/workspace/merge` applies it and purges the shadow, or (approve=false)
+  discards it. A merge is **refused** unless `autonomy.plan_progress(...).finished` —
+  every task completed. Both are rows of `api/operations.py` **and** entries in
+  `ui/js/api-client.js` (the parity test pins the two tables 1:1).
+- **A pre-existing isolation defect was fixed, not excused.** `env_boot` loads `.env`
+  with `override=True` at `app` import, so a test asserting a committed routing default
+  was order-dependent. `tests/conftest.py::_no_ambient_routing_overrides` clears the
+  three `ALETH_*_MODEL` names around every test — the analogue of the `LAYA_BACKEND`
+  injection from Phase 19.
 - **Agent routing is a typed gateway.** `orchestration/routing.py::classify_task` picks
   System 2 (the Architect) vs System 1 (a Coder). It **never raises**: a classifier
   failure or a malformed verdict routes to the Architect with `CLASSIFIER_FAULT`
-  (logged `CRITICAL`). High complexity = an administrative intent **or** a `core`
-  domain. The classifier is injected; the default is `agents.laya_model.classify`.
-- **Every decision is audited.** `storage/telemetry.py::routing_decisions` is its own
-  append-only table. `Swarm._descriptor_for` classifies on the **parent** side of the
-  pool boundary, records the decision, and ships it to the child in the descriptor. A
-  ledger write failure is reported on stderr and dispatch continues.
-- **The System 1 seam is injectable** (`agents/laya_model.install` / `installed`).
-  `tests/conftest.py` injects a deterministic word-list resolver per test, so the
-  ambient `LAYA_BACKEND` can no longer change a test's outcome. The one test that needs
-  the live checkpoint is `tests/test_laya_live.py`, marked `llm`; CI runs
-  `-m "not llm"`.
+  (logged `CRITICAL`). The classifier is injected; the default is `agents.laya_model.classify`.
+- **Every routing decision is audited.** `storage/telemetry.py::routing_decisions` is its
+  own append-only table. `Swarm._descriptor_for` classifies on the **parent** side of the
+  pool boundary, records the decision, and ships it to the child in the descriptor.
 - **The model tier is unchanged.** `orchestration/model_router.py` still owns the model
   choice (Phase 7); the Phase 19 band is a second, independent input. Do not collapse
   the two authorities.
@@ -1326,11 +1339,12 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `9cc9d3e` (Phase 19) |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `786d69d` (Phase 19) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.79 kB |
-| UI tests | `npx playwright test` | **62 passed** in 23.4 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1122 passed, 18 skipped, 233 subtests** in 92.19 s (`-n auto`; CI adds `-m "not llm"`) |
+| UI tests | `npx playwright test` | **62 passed** in 20.1 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1146 passed, 18 skipped, 233 subtests** in 80.36 s (`-n auto`; CI adds `-m "not llm"`) |
+| Staging | `tests/test_staging.py` | **24 passed** — copy, delta, merge, purge, the plan-finished gate, and the execution-root wiring of `run_approved_artifact` / `test_runner` |
 | Rust core | `cargo test` (in crate) | not re-run this pass |
 | Isolation | `tests/test_docker_sandbox.py` | daemon-backed tests skip on Windows (no docker client); the Linux CI runner is the authority |
 | State invariant | `tools/check_ui_state.py` | not re-run this pass |
