@@ -1333,7 +1333,12 @@ token, POSIX rlimits + a process group) is deleted.
   (`--mount type=bind,source=<root>,target=/workspace`) that is also the container's working
   directory — so the command's cwd is the workspace root and nothing outside it is reachable;
 * `--memory`/`--memory-swap`, `--cpus` and `--pids-limit` caps, so a fork bomb or an OOM cannot
-  take the host down;
+  take the host down. The default budget is **512 MB / 1.0 CPU / 64 pids**, and it is bounded by
+  construction: `build_command` clamps to `MAX_MEMORY_MB`/`MAX_CPUS`, so no caller can exceed the
+  ceiling. The only widening is the plan-declared `heavy` capability (4096 MB / 2.0 CPU), which
+  reaches the exec server's own argv as `--resource-profile` -- never a tool argument. A container
+  the kernel's OOM killer ends returns 137, which `run_isolated` marks `oom_killed` and the exec
+  server records as `OOM_KILLED` in `execution_telemetry`;
 * `--cap-drop=ALL` and `--security-opt no-new-privileges`;
 * a named, `--rm` container, so the process tree is owned by the container and dies with it. On
   timeout the container is force-removed by name, because killing the `docker` client alone

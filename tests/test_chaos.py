@@ -12,6 +12,7 @@ import contextlib
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -531,6 +532,68 @@ class NetworkBoundaryTests(unittest.TestCase):
         opened = MCPSessionContext(self.root, capabilities=["exec", "net"])
         self.assertNotIn("--allow-network", sealed._commands["exec"])
         self.assertIn("--allow-network", opened._commands["exec"])
+
+    def test_the_resource_declaration_reaches_the_exec_server_command_line(self):
+        """The hardware budget is decided the way the network is, and is just as unreachable."""
+        from orchestration.mcp_session import MCPSessionContext
+
+        baseline = MCPSessionContext(self.root, capabilities=["exec"])
+        larger = MCPSessionContext(self.root, capabilities=["exec", "heavy"])
+        self.assertNotIn("--resource-profile", baseline._commands["exec"])
+        self.assertIn("--resource-profile", larger._commands["exec"])
+        self.assertIn("heavy", larger._commands["exec"])
+        # A model cannot buy memory: the profile is not a tool argument, and the tool schema does
+        # not carry one.
+        from tools.mcp_exec_server import TOOLS
+
+        for tool in TOOLS:
+            self.assertNotIn("memory", tool["inputSchema"].get("properties", {}), tool["name"])
+
+
+@unittest.skipUnless(_real_runtime_available(), "no live Docker daemon")
+class OomResilienceTests(unittest.TestCase):
+    """A container that exceeds its memory budget dies inside its own cgroup, and says so.
+
+    The hardware counterpart of ``NetworkIsolationTests``: the host must survive a payload that
+    would otherwise take it down, and the death must be recorded as an OOM rather than as an
+    anonymous non-zero exit the engine would retry until its budget ran out.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="aleth_chaos_oom_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+
+    def test_container_oom_resilience(self):
+        from storage import telemetry
+        from tools.mcp_exec_server import ExecServer
+
+        db_path = os.path.join(self.root, "state.db")
+        connection = sqlite3.connect(db_path)
+        try:
+            telemetry.apply_telemetry_schema(connection)
+        finally:
+            connection.close()
+
+        # ``tiny`` is 64 MB. The payload asks for a gigabyte, so the kernel must end the
+        # *container* rather than the host.
+        server = ExecServer(
+            self.root, timeout_seconds=120, db_path=db_path,
+            session_id="oom-session", resource_profile="tiny",
+        )
+        started = time.monotonic()
+        output = server.execute_command("python -c 'x = bytearray(1024 * 1024 * 1024)'")
+        elapsed = time.monotonic() - started
+
+        # It died quickly, and the orchestrator did not hang waiting for it.
+        self.assertLess(elapsed, 120, "the OOM kill did not terminate the run")
+        # The container was killed by the kernel -- not by the timeout path, and not a clean exit.
+        self.assertIn("[Exit Code: 137]", output)
+        self.assertIn("OOM-KILLED", output)
+        # The host is intact (this process is still running) and the ledger recorded *why*.
+        rows = telemetry.receipts_for_session(db_path, "oom-session")
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["exit_code"], 137)
+        self.assertEqual(rows[0]["outcome"], "OOM_KILLED")
 
 
 @unittest.skipUnless(_real_runtime_available(), "no live Docker daemon")

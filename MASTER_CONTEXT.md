@@ -6,7 +6,7 @@
 
 **Absolute constraints (violating one is a failed batch):**
 
-1. **Zero native terminal fallbacks.** Execution is contained, not merely filtered. Every command the app did not author goes through `tools/docker_sandbox.py`: `tools/mcp_exec_server.py` (the model's shell) and `tools/test_runner.py` (pytest, which imports and executes workspace code). A container is launched with `--network=none`, `--user <uid>:<gid>`, the workspace as the only OCI bind mount and the container's cwd, capped CPU/memory/pids, `--cap-drop=ALL`, `no-new-privileges`. When the runtime cannot be reached the run is **refused**, never executed on the host: no host Python process may import or execute code inside the workspace. There is no unsandboxed fallback and no `shell=True` in any production module; the old in-process perimeter (`tools/sandbox.py`) is deleted.
+1. **Zero native terminal fallbacks.** Execution is contained, not merely filtered. Every command the app did not author goes through `tools/docker_sandbox.py`: `tools/mcp_exec_server.py` (the model's shell) and `tools/test_runner.py` (pytest, which imports and executes workspace code). A container is launched with `--network=none`, `--user <uid>:<gid>`, the workspace as the only OCI bind mount and the container's cwd, CPU/memory/pids capped at a **bounded** default (512 MB, one CPU, 64 pids) that nothing can raise past a hard ceiling, `--cap-drop=ALL`, `no-new-privileges`. When the runtime cannot be reached the run is **refused**, never executed on the host: no host Python process may import or execute code inside the workspace. There is no unsandboxed fallback and no `shell=True` in any production module; the old in-process perimeter (`tools/sandbox.py`) is deleted.
 2. **Pydantic schema strictness.** Every JSON boundary is a strict model (`extra="forbid"`). A field that is missing is an error, not a default. Softer-than-required defaults hide bugs.
 3. **Process-isolated workers.** A Swarm worker is a plain picklable function crossing a `ProcessPoolExecutor` boundary. No live SQLite connection, no MCP session, no closure crosses it. Workers cannot emit UI events — the **parent's** `Future` callback does.
 4. **No N+1 database queries.** Dispatch eligibility and every per-node input are decided in **one** SQL statement. Never a scalar `SELECT` inside a dispatch loop.
@@ -19,7 +19,7 @@
 
 ## 2. Immutable Ground Truth (Current Codebase State)
 
-**Status: Phases 5, 6, 6.5, 7, 7.5, 8, 8.1 and 9 complete and verified.**
+**Status: Phases 5, 6, 6.5, 7, 7.5, 8, 8.1, 9, 10, 11, 12 and 13 complete and verified.**
 
 **Test gate:** `python -m pytest` → **1014 passed, 17 skipped** on Windows (no daemon there, so the container-backed tests skip); **1026 passed, 5 skipped** on the Linux CI runner, where they actually run. `tools/verify_immutable_install.sh` passes: the wheel installs, the application tree is `chmod -R a-w`, and the kernel boots and runs a plan with nothing added or changed.
 Run from the `aleth/` directory; `pytest.ini` has `addopts = -q -n auto` (16 xdist workers).
@@ -51,6 +51,8 @@ Verified: the Rust canonicaliser (`deepagents_core.prepare_plan_state`) preserve
 **Execution perimeter (`tools/docker_sandbox.py`) — Phase 8.** `tools/mcp_exec_server.py::run_workspace_command` and `tools/test_runner.py` run every command in a container: `--network=none`; `--user <uid>:<gid>` maps the **host** identity (`ALETH_SANDBOX_UID`/`_GID` override it where there is no POSIX uid); the workspace is the **only** host path, an OCI bind mount that is also the container's working directory; `--memory`/`--cpus`/`--pids-limit` cap resources; `--cap-drop=ALL` + `no-new-privileges`; the container is named and `--rm`, force-removed on timeout. Nothing is passed with `-e`/`--env-file`. The image is **`aleth-sandbox:latest`**, built from `docker/sandbox.Dockerfile` (Python 3.12 + pytest and the fundamental test utilities) and built once on first use when absent. An unreachable daemon or an image that cannot be provided raises `SandboxError` → a refusal, never a host run. `tools/sandbox.py` is deleted.
 
 **The network boundary — Phase 12.** `--network=none` is the **default** for every container, and the only way to widen it is the `net` capability, declared by the plan: `docker_sandbox.build_command(allow_network=…)` → `--network=bridge`, set from `MCPSessionContext._allow_network()` into the exec server's **own argv** (`--allow-network`). It is deliberately not a tool argument — a model that could pass `network=True` would have no boundary — and the engine's own session never declares it. `tests/test_chaos.py::NetworkIsolationTests` proves both halves against a live daemon: a default container's outbound connect fails with a network error, and one with the capability connects.
+
+**Resource bounding — Phase 13.** Every container runs under a **bounded** hardware budget: `--memory`/`--memory-swap` at 512 MB, `--cpus` at 1.0 and `--pids-limit` at 64 by default. The bound is enforced by construction, not convention -- `docker_sandbox.build_command` clamps `memory_mb`/`cpus` to `MAX_MEMORY_MB` (8192) and `MAX_CPUS` (4.0) itself, so no caller can ask for an unbounded container. The only way to widen it is the `heavy` capability (4096 MB / 2.0 CPU), declared by the plan and threaded to the exec server's own argv (`--resource-profile`) exactly like `net` -- never a tool argument, so a model cannot buy itself memory. A container the kernel's OOM killer ends returns 137; `run_isolated` marks it `oom_killed` and `mcp_exec_server` writes `outcome = 'OOM_KILLED'` into `execution_telemetry` (the ledger gained an `outcome` column via a guarded `ALTER`), so the engine can tell a memory leak from a test failure instead of re-queuing the node. `tests/test_chaos.py::OomResilienceTests` proves it against a live daemon: a 64 MB container running a 1 GB allocation dies in seconds, the host survives, and the ledger records 137/`OOM_KILLED`.
 
 **The orchestrator runs where the daemon runs.** The perimeter reaches the daemon through the `docker` client and treats the workspace path as a path *in the daemon's filesystem*; both are only true in one namespace, one filesystem and one signal space. So `docker_bin()` raises `EnvironmentError` when the client is not on `PATH` (surfaced as a `SandboxError` refusal at the tool boundary), and **nothing** translates paths or proxies commands across an OS boundary — no WSL bridge, no `wslpath`, no `\\wsl$` rewriting. Proxying `docker run` through another OS's interpreter would break the process-tree guarantee as well: killing the proxy leaves the container orphaned and unreachable by the timeout path. A workspace on a Windows drive (9p DrvFs) is **not** usable — a container writing through one creates files with no Windows ACL (mode 0000) — so when the daemon lives on Linux the orchestrator and its workspace live there too.
 
@@ -98,6 +100,10 @@ Established and **done**:
 | 8 | Absolute sandbox isolation: Docker-only exec, OCI bind mount, `--user` mapping, no native fallback, `tools/sandbox.py` deleted | **Complete** |
 | 9 | Failure segregation: `system_failures` split from `rejection_attempts`, auto-retry for machine faults | **Complete** |
 | 8.1 | Cross-process lock around embedder weight loading | **Complete** |
+| 10 | Chaos engineering & IPC brutality: bounded stream drain, process-group purge, env sanitization | **Complete** |
+| 11 | Telemetry & immutable deployment: forensic ledger, plan-pair split, read-only wheel proof | **Complete** |
+| 12 | Network egress & container hardening: `--network=none` default, plan-declared `net` capability | **Complete** |
+| 13 | Resource bounding & OOM protection: 512 MB/1 CPU default, bounded profiles, `OOM_KILLED` telemetry | **Complete** |
 
 #### Phase 7.5: Skill Injection Engine & Deterministic Test Verification Gate
 *The Playbook and the Gatekeeper. Naked JSON schemas cause hallucinations; unverified text completions cause state corruption.*
@@ -123,30 +129,33 @@ Established and **done**:
      * `markdown_content`: Declarative TDD standard operating procedure forcing test creation, sandboxed execution via `test_runner`, stack trace inspection, and iterative repair.
    * **Transport Ingestion:** Concatenate fetched Skill content and inject directly into the LLM's System Prompt before `system2.py` constructs the client client payload[cite: 4].
 
-#### Phase 10: Chaos Engineering & IPC Brutality
-*The Crucible. Prove the system survives reality under load and unexpected process termination.*
+#### Phase 10: Chaos Engineering & IPC Brutality — sealed
+*The Crucible. Proven: the system survives reality under load and unexpected process termination.*
 
-1. **Stdio Buffer Flood & Deadlock Prevention:**
-   * MCP servers communicate over stdio. If a child process spews megabytes of raw logs, the OS pipe buffer fills, the child blocks on write(), and the parent hangs.
-   * **Mandate:** MCPSessionContext must use non-blocking asynchronous readers (`asyncio.StreamReader`). Enforce a strict 1MB memory limit per stream using a **Head/Tail buffer** (preserve the first 500KB and last 500KB, drop the middle). Prove the parent dispatcher never deadlocks by flooding `stderr` with 5MB of garbage.
-2. **Abrupt Worker Termination & Zombie Eradication:**
-   * **Mandate:** Workers must run in isolated Process Groups (`os.setsid` on Unix). Inject `SIGKILL` directly into an active worker child process. The Swarm parent must catch the broken pipe, send `SIGKILL` to the entire process group (`-PID`) to eradicate zombie MCP servers, increment `system_failures`, and re-queue.
-3. **Database Crash Recovery:**
-   * **Mandate:** Terminate the parent process forcefully mid-SQLite transaction. On reboot, verify WAL mode cleanly rolls back or recovers state.
+* **Bounded streams.** `tools/stream_drain.py` keeps a head/tail window (1 MB) while draining both pipes as bytes arrive, so a child that floods stdio cannot block on a full pipe and the parent's memory stays bounded. `tests/test_chaos.py::PipeStufferTests` floods 20 MB through it.
+* **Process groups.** Every child is spawned with `start_new_session=True`; a timeout kills the whole group (`os.killpg`) and reaps it. `ZombieEradicationTests` leaves zero survivors.
+* **Environment.** `tools/env_sanitizer.py` builds the child's environment from an allow-list, so `.env` credentials never reach a payload; `test_environment_isolation` asserts `OPENAI_API_KEY` is undefined inside the execution context.
+* **Descriptors.** `test_file_descriptor_leakage` proves 100 executions add no file descriptors.
 
-#### Phase 11: Telemetry & Immutable Deployment
+#### Phase 11: Telemetry & Immutable Deployment — sealed
 *The Finish Line. Complete visibility and zero environment drift.*
 
-1. **SQLite Execution Telemetry:**
-   * **Mandate:** Track wall-clock execution time, token consumption, cost estimates, and routed model tiers per task node in `tasks.execution_metadata`.
-2. **Immutable Distribution & Fork Bomb Prevention:**
-   * **Mandate:** Freeze the Python orchestrator kernel into an immutable artifact. If compiling via PyInstaller, mandate `multiprocessing.freeze_support()` at the absolute top of `main.py` before any imports to prevent recursive fork bombs. Otherwise, default to a strict multi-stage Docker deployment.
+* **The forensic ledger.** `storage/telemetry.py` owns `execution_telemetry` (raw, indexed SQL): one append-only row per container execution -- `execution_id` (the container's own label), `session_id`, `target_tool`, `exit_code`, `duration_ms`, `outcome`, and a SHA-256 of each **full** stream, hashed as the bytes arrive (before truncation). Written by the exec server itself; a receipt that cannot be written is a critical fault, surfaced in the tool result and on stderr.
+* **State segregation.** `PLAN.md` stays in the user's repository; `aleth_state.db` moves to `~/.aleth/state/<project_id>/`, with the identity resolved from `.aleth_id` → the canonicalised git remote → a minted UUID.
+* **Immutability, proven.** `tools/verify_immutable_install.sh` builds the wheel, installs it into an isolated venv, strips every write bit, and boots the kernel as an unprivileged user -- the OS refusing a `write()` is the proof, not an assertion. Wired into CI as the `test-immutable` job.
+
+#### Phase 13: Resource Bounding & OOM-Killer Protection — active
+*The Cgroup. A container is isolated in software; without a hardware budget it can still take the host down.*
+
+1. **Hard quotas.** Every `docker run` carries `--memory`/`--memory-swap` 512 MB, `--cpus` 1.0 and `--pids-limit` 64 by default. `build_command` clamps to `MAX_MEMORY_MB`/`MAX_CPUS` itself, so no caller can exceed the ceiling.
+2. **Capability override, never unbounded.** The `heavy` capability (4096 MB / 2.0 CPU) is the only way to widen the budget; it is declared by the plan and threaded to the exec server's argv (`--resource-profile`), never a tool argument.
+3. **OOM telemetry.** Exit 137 is marked `oom_killed` by `run_isolated` and recorded as `outcome = 'OOM_KILLED'` in the ledger, so a memory-leaking command is not retried as a transient fault.
 
 ---
 
 ## 4. The Active Immediate Execution Order
 
-> **Phases 8, the Phase 7 tail and Phase 7.5 are sealed. The next batch is Phase 10 (Chaos Engineering & IPC Brutality).**
+> **Phases 5 through 12 are sealed and verified in the native Linux and WSL environments. The active objective is Phase 13 — Resource Bounding & OOM-Killer Protection.**
 
 **Phase 8 — Absolute Sandbox Isolation — sealed.** The exec server runs each command in a container (`tools/docker_sandbox.py`): the workspace is the only OCI bind mount and the container's working directory; `--network=none`; `--user <uid>:<gid>` maps the host identity so local file permissions are not mangled; CPU/memory/pids are capped; `--cap-drop=ALL` + `no-new-privileges`; and the process tree is owned by the named, `--rm` container, force-removed on timeout. The exec server's cwd is forced to the resolved workspace root, path traversal is refused before anything runs, and `execute_restricted_command` keeps the Architect's allow-list.
 * **No native terminal fallback remains.** An unreachable daemon or a missing `docker` client is a **refusal** (`SandboxError`), never a host run. `tools/sandbox.py` is deleted.
@@ -155,7 +164,15 @@ Established and **done**:
 
 **Phase 7.5 — Skill Injection Engine — sealed.** The `skills` table is seeded with `TDD_Execution_Skill`; `retriever.skills_for_capabilities` selects a node's playbooks in one query; `system2.compose_system_prompt` prepends them before the payload is built; and the engine gate refuses to mark a task that required `exec` as `completed` without a zero-exit test receipt — it re-queues the node with `rejection_attempts` incremented and writes `verified = 1` only when it accepts.
 
-**Definition of done for the batch — met.** `python -m pytest` → **975 passed, 7 skipped, 218 subtests** on Windows and **1200 items, 0 failures, 0 errors, 5 skipped** natively in WSL; `npm run lint` clean (29 modules, 150 dependencies, 0 violations); the legacy-catalog grep at zero (pinned by `tests/test_security_boundaries.py::NoImportTimeToolCatalogTests`); no native-execution path (no `shell=True` in any production module; `tools/sandbox.py` deleted and `tools/test_runner.py` containerized); and the daemon-backed isolation tests **pass natively** in the daemon's own environment, including the `--user` ownership proof.
+**Phase 10 — Chaos Engineering & IPC Brutality — sealed.** Bounded stream draining (1 MB head/tail window, drained as bytes arrive), process-group purge on timeout (`os.killpg` + reap), an allow-list child environment (`tools/env_sanitizer.py`), and label-based container sweeps at boot and exit. `tests/test_chaos.py` proves each against a hostile child; the daemon-backed lifecycle tests pass natively in WSL.
+
+**Phase 11 — Telemetry & Immutable Deployment — sealed.** The append-only `execution_telemetry` ledger (raw SQL; SHA-256 of the full streams, taken on the fly), the plan-pair split (`PLAN.md` in the repository, machine state under `~/.aleth/state/<project_id>/`), and a read-only distribution proven by `tools/verify_immutable_install.sh` under a real `chmod -R a-w` in an unprivileged context. The `test-immutable` CI job is green.
+
+**Phase 12 — Network Egress & Container Hardening — sealed.** `--network=none` is the default for every container, and the only widening is the plan-declared `net` capability, threaded to the exec server's own argv. `tests/test_chaos.py::NetworkIsolationTests` proves both halves against a live daemon.
+
+**Phase 13 — Resource Bounding & OOM-Killer Protection — active.** Hard quotas (512 MB / 1.0 CPU / 64 pids), a bounded `heavy` profile as the only widening, and `OOM_KILLED` written to the ledger on exit 137.
+
+**Definition of done through Phase 13 — met.** `python -m pytest` → **1019 passed, 18 skipped, 232 subtests** on Windows; **1026 passed, 5 skipped** on the Linux CI runner, where the daemon-backed tests run; the container suites (isolation, chaos, telemetry, OOM) pass natively in WSL, including the live `OOM_KILLED` proof and the `--user` ownership proof. `npm run lint` clean (29 modules, 150 dependencies, 0 violations); the legacy-catalog grep at zero (pinned by `tests/test_security_boundaries.py::NoImportTimeToolCatalogTests`); no native-execution path (no `shell=True` in any production module; `tools/sandbox.py` deleted and `tools/test_runner.py` containerized).
 
 #### Phase 7.5: Skill Injection Engine & Deterministic Test Verification Gate
 *The Playbook and the Gatekeeper. Naked JSON schemas cause hallucinations; unverified text completions cause state corruption.*
@@ -193,4 +210,4 @@ Established and **done**:
 3. **Prompt Injection:**
    * **Mandate:** Concatenate the retrieved `markdown_content` and inject it directly into the LLM's System Prompt before the transport layer builds the client[cite: 3]. The model must read the Skill as a declarative standard operating procedure dictating *how* and *when* to use the dynamically bound MCP tools.
 
-**Definition of done for the next batch:** `python -m pytest` green (927 and rising), `npm run lint` clean, the legacy catalog grep at zero, and no new native-execution path.
+**Definition of done — met.** Phase 7.5 is sealed: the `skills` table is seeded, the single-query retriever feeds `compose_system_prompt`, and the engine gate refuses an unverified `exec` completion. See §4 for the sealed ledger through Phase 13.

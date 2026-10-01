@@ -37,7 +37,7 @@ from pydantic import BaseModel, ConfigDict
 
 _STRICT = ConfigDict(extra="forbid", strict=False)
 
-from storage.telemetry import TELEMETRY_DDL
+from storage.telemetry import apply_telemetry_schema
 
 # The database file name. It lives in the project's *state* directory, not beside the plan:
 # see ``tools.workspace.state_dir`` for why the two are separated.
@@ -562,9 +562,12 @@ class PlanStore:
                 """
                 + KNOWLEDGE_GRAPH_DDL
                 + SKILLS_DDL
-                + TELEMETRY_DDL
             )
             self._migrate(connection)
+            # The ledger's own DDL *and* its guarded column migrations, on this connection: the
+            # receipt writer (``storage.telemetry``) runs in a child process and must find the
+            # table already shaped the way it writes it.
+            apply_telemetry_schema(connection)
             self._seed_skills(connection)
 
     # -- migrations ---------------------------------------------------------------

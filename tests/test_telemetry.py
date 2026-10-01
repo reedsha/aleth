@@ -2,8 +2,9 @@
 
 Two things are proven here. First, that an execution leaves a **complete, verifiable** row --
 the hash in the ledger is a SHA-256 of the *full* stream, not of the 1 MB the perimeter retains,
-so a stored receipt can be checked against bytes recovered later. Second, that running the engine
-writes nothing beside its own source, which is what makes a read-only install possible.
+so a stored receipt can be checked against bytes recovered later, and an OOM kill is recorded as
+one rather than as an anonymous failure. Second, that running the engine writes nothing beside its
+own source, which is what makes a read-only install possible.
 """
 
 import hashlib
@@ -98,6 +99,21 @@ class TelemetryReceiptTests(TelemetryTestCase):
         self.assertGreaterEqual(row["duration_ms"], 0)
         self.assertEqual(row["stdout_hash"], _sha256(body))
         self.assertGreater(row["recorded_at"], 0)
+
+    def test_an_oom_kill_is_recorded_as_such(self):
+        """Exit 137 is the kernel's OOM killer, and the ledger says so rather than "a failure"."""
+        output = self._run("echo ignored", FAKE_DOCKER_STDOUT="", FAKE_DOCKER_EXIT="137")
+        self.assertTrue(output.startswith("[Exit Code: 137]"), output)
+        self.assertIn("OOM-KILLED", output)
+
+        row = telemetry.receipts_for_session(self.store.path, "session-1")[0]
+        self.assertEqual(row["exit_code"], 137)
+        self.assertEqual(row["outcome"], "OOM_KILLED")
+
+    def test_a_clean_run_records_no_outcome(self):
+        self._run("echo ignored", FAKE_DOCKER_STDOUT="ok\n", FAKE_DOCKER_EXIT="0")
+        row = telemetry.receipts_for_session(self.store.path, "session-1")[0]
+        self.assertEqual(row["outcome"], "")
 
     def test_the_receipt_execution_id_matches_the_container_label(self):
         """The ledger key *is* the container's identity, so a row can be tied to a container."""

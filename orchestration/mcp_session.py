@@ -82,10 +82,20 @@ CAPABILITIES: Dict[str, Dict[str, tuple]] = {
     # egress open for everything so one tool can use it) turns a boundary into decoration. A node
     # that does not declare it runs sealed, which is the baseline.
     "net": {"servers": (EXEC_SERVER,), "groups": (EXEC_SERVER,)},
+    # The resource counterpart of ``net``: it buys a larger -- still bounded -- hardware budget for
+    # the containers this node's commands run in. It implies the exec server because that is the
+    # only thing that runs containers.
+    "heavy": {"servers": (EXEC_SERVER,), "groups": (EXEC_SERVER,)},
 }
 
 # The capability whose *presence* is the only thing that unseals the network.
 NET_CAPABILITY = "net"
+
+# The capability whose *presence* buys the larger resource budget. It names a rung of the ladder in
+# ``tools.docker_sandbox.RESOURCE_PROFILES`` -- that module is the authority on what the budget is,
+# and every rung of it is bounded.
+RESOURCE_CAPABILITY = "heavy"
+RESOURCE_PROFILE = "heavy"
 
 # Accepted spellings. Explicit and small on purpose: this is a vocabulary, not fuzzy matching, so
 # a planner that writes the URI-ish name it was shown (``mcp://local-fs``) is understood, and
@@ -105,6 +115,9 @@ CAPABILITY_ALIASES: Dict[str, str] = {
     "internet": NET_CAPABILITY,
     "http": NET_CAPABILITY,
     "web": NET_CAPABILITY,
+    "memory": RESOURCE_CAPABILITY,
+    "compute": RESOURCE_CAPABILITY,
+    "large": RESOURCE_CAPABILITY,
 }
 
 
@@ -171,6 +184,7 @@ class MCPSessionContext:
                 db_path=self._telemetry_db(),
                 session_id=self.session_id,
                 allow_network=self._allow_network(),
+                resource_profile=self._resource_profile(),
             ),
         }
         self._clients: Dict[str, MCPClient] = {}
@@ -189,6 +203,19 @@ class MCPSessionContext:
         a model that could grant itself the network would not have a boundary at all.
         """
         return self._resolved is not None and NET_CAPABILITY in self._resolved
+
+    def _resource_profile(self) -> str:
+        """Which resource profile this session's containers run under.
+
+        The resource counterpart of :meth:`_allow_network`: only a node that declared the
+        capability gets the larger budget, the engine's own session never does, and the answer is
+        baked into the exec server's command line rather than being something a tool call can
+        change. Every profile is bounded (``tools.docker_sandbox``), so this widens a container's
+        hardware -- it never removes its ceiling.
+        """
+        if self._resolved is not None and RESOURCE_CAPABILITY in self._resolved:
+            return RESOURCE_PROFILE
+        return "default"
 
     def _telemetry_db(self) -> Optional[str]:
         """Where the exec server writes its receipts, or ``None`` when it cannot be resolved.

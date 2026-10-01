@@ -116,14 +116,35 @@ class CommandContractTests(unittest.TestCase):
 
     def test_memory_cpu_and_the_process_tree_are_capped(self):
         argv = self._argv()
-        self.assertEqual(self._flag(argv, "--memory"), "2048m")
-        self.assertEqual(self._flag(argv, "--memory-swap"), "2048m")
+        self.assertEqual(self._flag(argv, "--memory"), f"{docker_sandbox.DEFAULT_MEMORY_MB}m")
+        self.assertEqual(self._flag(argv, "--memory-swap"), f"{docker_sandbox.DEFAULT_MEMORY_MB}m")
         self.assertEqual(self._flag(argv, "--cpus"), str(docker_sandbox.DEFAULT_CPUS))
         self.assertEqual(self._flag(argv, "--pids-limit"), str(docker_sandbox.DEFAULT_MAX_PROCESSES))
         self.assertEqual(self._flag(argv, "--cap-drop"), "ALL")
         self.assertEqual(self._flag(argv, "--security-opt"), "no-new-privileges")
         self.assertIn("--rm", argv)
         self.assertEqual(self._flag(argv, "--name"), "probe")
+        # The default budget is small on purpose: a bound that is never hit costs nothing, and a
+        # bound that is too generous is the vulnerability.
+        self.assertLessEqual(docker_sandbox.DEFAULT_MEMORY_MB, 512)
+
+    def test_the_budget_cannot_be_widened_past_the_ceiling(self):
+        """No caller -- and nothing a model can say -- asks for an unbounded container."""
+        argv = self._argv(memory_mb=10 ** 9, cpus=10 ** 3)
+        self.assertEqual(self._flag(argv, "--memory"), f"{docker_sandbox.MAX_MEMORY_MB}m")
+        self.assertEqual(self._flag(argv, "--memory-swap"), f"{docker_sandbox.MAX_MEMORY_MB}m")
+        self.assertEqual(self._flag(argv, "--cpus"), str(docker_sandbox.MAX_CPUS))
+
+    def test_every_profile_is_a_bounded_budget(self):
+        for name, budget in docker_sandbox.RESOURCE_PROFILES.items():
+            self.assertEqual(docker_sandbox.resource_limits(name), budget, name)
+            self.assertLessEqual(budget[0], docker_sandbox.MAX_MEMORY_MB, name)
+            self.assertLessEqual(budget[1], docker_sandbox.MAX_CPUS, name)
+        # An unknown name is the baseline, never an unbounded one.
+        self.assertEqual(
+            docker_sandbox.resource_limits("does-not-exist"),
+            (docker_sandbox.DEFAULT_MEMORY_MB, docker_sandbox.DEFAULT_CPUS),
+        )
 
     def test_no_host_environment_reaches_the_container(self):
         argv = self._argv()

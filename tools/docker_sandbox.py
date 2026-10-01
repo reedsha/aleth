@@ -16,7 +16,10 @@ Each command runs under ``docker run`` with these invariants (see :func:`build_c
   (``--mount type=bind,source=<root>,target=/workspace``), and it is the container's working
   directory -- so a command's cwd is the workspace root and nothing outside it exists to reach;
 * ``--memory``/``--memory-swap``, ``--cpus`` and ``--pids-limit`` cap memory, CPU and the
-  process count, so a fork bomb or an OOM cannot take the host down;
+  process count, so a fork bomb or an OOM cannot take the host down. The budget is **bounded by
+  construction**: 512 MB and one CPU by default, a larger but still fixed profile for a node that
+  declared the ``heavy`` capability, and a hard ceiling (:data:`MAX_MEMORY_MB`,
+  :data:`MAX_CPUS`) that no caller can exceed -- see :func:`resource_limits`;
 * ``--cap-drop=ALL`` and ``--security-opt no-new-privileges`` strip Linux capabilities and
   forbid privilege escalation;
 * the container is named and ``--rm``, so the **process tree is owned by the container**: it
@@ -78,9 +81,29 @@ DEFAULT_IMAGE = "aleth-sandbox:latest"
 # The image contract lives beside the repo it serves. It describes the sandbox image only.
 DOCKERFILE = Path(__file__).resolve().parent.parent / "docker" / "sandbox.Dockerfile"
 
-DEFAULT_MEMORY_MB = 2048
-DEFAULT_MAX_PROCESSES = 64
+DEFAULT_MEMORY_MB = 512
 DEFAULT_CPUS = 1.0
+DEFAULT_MAX_PROCESSES = 64
+# The hard ceiling. No profile, and no caller, may exceed it: ``_clamp_limits`` is applied inside
+# ``build_command`` itself, so even a direct caller cannot ask for an unbounded container.
+MAX_MEMORY_MB = 8192
+MAX_CPUS = 4.0
+
+# The profile ladder, every rung bounded. A node's ``required_capabilities`` may name ``heavy``
+# (see ``orchestration.mcp_session``), and that is the *only* way a command gets a larger budget:
+# it travels to the exec server's own command line like the network capability, never through a
+# tool argument, so a model cannot widen its own hardware. ``tiny`` is not a capability -- it is a
+# budget the tests and cheap probes use.
+RESOURCE_PROFILES: Dict[str, Tuple[int, float]] = {
+    "tiny": (64, 0.5),
+    "default": (DEFAULT_MEMORY_MB, DEFAULT_CPUS),
+    "heavy": (4096, 2.0),
+}
+
+# Docker reports 128 + SIGKILL (9) for a container the kernel's OOM killer ended. It is also what
+# ``docker rm -f`` produces, so it is only read as an OOM when the run did not time out.
+OOM_EXIT_CODE = 137
+
 # Windows has no POSIX identity of its own. The engine maps the host user to a uid inside the
 # Linux VM, and 1000 is the conventional unprivileged default; the value is overridable for a
 # host whose mapping differs. The point that matters -- the container is not root -- holds.
@@ -184,6 +207,10 @@ class IsolatedResult:
     stderr: str
     sandboxed: bool
     timed_out: bool = False
+    # The kernel's OOM killer ended the container's cgroup. A separate fact from ``returncode``
+    # because 137 alone is ambiguous (``docker rm -f`` produces it too), and the ledger has to be
+    # able to say *why* a command died.
+    oom_killed: bool = False
     notes: str = ""
     execution_id: str = ""
     duration_ms: int = 0
@@ -395,12 +422,32 @@ def capabilities() -> Capabilities:
     )
 
 
+def _clamp_limits(memory_mb: int, cpus: float) -> Tuple[int, float]:
+    """Clamp a budget to the ceiling. The last line of defence, inside the argv builder."""
+    return min(int(memory_mb), MAX_MEMORY_MB), min(float(cpus), MAX_CPUS)
+
+
+def resource_limits(profile: str = "default") -> Tuple[int, float]:
+    """The ``(memory_mb, cpus)`` a named profile grants, clamped to the ceiling.
+
+    An unknown name resolves to the **default** profile rather than raising: the name has already
+    been through the capability vocabulary (``orchestration.mcp_session``), which refuses anything
+    it does not implement, so by here it is a known profile or the caller is asking for the
+    baseline. What matters is that the answer is always bounded -- there is no name, and no
+    argument, that yields an unbounded container.
+    """
+    key = str(profile or "").strip().lower()
+    memory_mb, cpus = RESOURCE_PROFILES.get(key, RESOURCE_PROFILES["default"])
+    return _clamp_limits(memory_mb, cpus)
+
+
 def build_command(
     command: str,
     *,
     root: str,
     name: str,
     memory_mb: int = DEFAULT_MEMORY_MB,
+    cpus: float = DEFAULT_CPUS,
     max_processes: int = DEFAULT_MAX_PROCESSES,
     image_name: Optional[str] = None,
     execution_id: Optional[str] = None,
@@ -423,6 +470,10 @@ def build_command(
     ``required_capabilities`` through ``orchestration.mcp_session`` to the exec server's own
     command line; a model that could grant itself the network would not have a boundary at all.
 
+    The resource budget is bounded by the same rule, enforced here in the builder: ``memory_mb``
+    and ``cpus`` are clamped to :data:`MAX_MEMORY_MB`/:data:`MAX_CPUS`, so nothing a model can say
+    -- and no caller -- can ask for an unbounded container.
+
     The three labels make the container accountable: that it is ours, which execution it belongs
     to, and which process created it. That last one is the whole point -- see
     :func:`purge_orphaned_containers`.
@@ -430,6 +481,7 @@ def build_command(
     uid, gid = host_identity()
     resolved = str(Path(root).resolve())
     network = "bridge" if allow_network else "none"
+    memory_mb, cpus = _clamp_limits(memory_mb, cpus)
     return [
         *docker_bin(), "run", "--rm",
         "--name", name,
@@ -443,7 +495,7 @@ def build_command(
         "--mount", f"type=bind,source={resolved},target={WORKSPACE_MOUNT}",
         "--memory", f"{int(memory_mb)}m",
         "--memory-swap", f"{int(memory_mb)}m",
-        "--cpus", str(DEFAULT_CPUS),
+        "--cpus", str(cpus),
         "--pids-limit", str(int(max_processes)),
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
@@ -694,6 +746,7 @@ def run_isolated(
     cwd: str,
     timeout: int = 30,
     memory_mb: int = DEFAULT_MEMORY_MB,
+    cpus: float = DEFAULT_CPUS,
     max_processes: int = DEFAULT_MAX_PROCESSES,
     allow_network: bool = False,
 ) -> IsolatedResult:
@@ -715,7 +768,7 @@ def run_isolated(
         execution_id = uuid.uuid4().hex
         name = f"aleth-exec-{execution_id[:12]}"
         argv = build_command(
-            command, root=str(root), name=name, memory_mb=memory_mb,
+            command, root=str(root), name=name, memory_mb=memory_mb, cpus=cpus,
             max_processes=max_processes, image_name=target, execution_id=execution_id,
             allow_network=allow_network,
         )
@@ -791,6 +844,16 @@ def run_isolated(
 
     result = _receipts()
     _unregister_active(name)
+    if result.returncode == OOM_EXIT_CODE:
+        # The kernel's OOM killer ended the container's cgroup: the payload asked for more memory
+        # than its budget allowed. Marked here rather than left to the caller, because the exit
+        # status alone is ambiguous -- ``docker rm -f`` also yields 137 -- and the ledger must say
+        # *why* a command died, not merely that it did.
+        result.oom_killed = True
+        result.notes = (
+            f"exit {OOM_EXIT_CODE} (SIGKILL): the container was killed, which for a container "
+            f"capped at {int(memory_mb)}MB is the kernel's OOM killer"
+        )
     if result.returncode in DOCKER_CLIENT_ERROR_CODES and _is_unreachable_runtime(
         result.stderr, result.stdout
     ):

@@ -201,7 +201,7 @@ class CommandEscaped(Exception):
 
 def run_workspace_command_result(
     command: str, *, root: str, timeout: int = DEFAULT_TIMEOUT_SECONDS,
-    allow_network: bool = False,
+    allow_network: bool = False, resource_profile: str = "default",
 ) -> Tuple[str, Optional[Any]]:
     """The formatted block **and** the isolated result, so a caller can record the receipt.
 
@@ -211,13 +211,20 @@ def run_workspace_command_result(
 
     A refusal returns ``None`` for the result: no container ran, so there is nothing to record.
     A timeout *does* carry a result -- an execution that had to be killed is telemetry too.
+
+    ``resource_profile`` names the budget the container runs under (``tools.docker_sandbox``). It
+    is set from the plan's capabilities, never from a tool argument, so a model cannot buy itself
+    more memory or CPU.
     """
     from tools import docker_sandbox
 
+    # Resolved to a *bounded* pair here, in the parent's own module: an unknown name is the
+    # default profile, and the builder clamps whatever it is handed.
+    memory_mb, cpus = docker_sandbox.resource_limits(resource_profile)
     try:
         result = docker_sandbox.run_isolated(
             command, cwd=str(Path(root).resolve()), timeout=int(timeout),
-            allow_network=allow_network,
+            memory_mb=memory_mb, cpus=cpus, allow_network=allow_network,
         )
     except docker_sandbox.SandboxError as error:
         return (
@@ -229,6 +236,17 @@ def run_workspace_command_result(
 
     if result.timed_out:
         return f"Error: Command timed out after {timeout} seconds.", result
+
+    if result.oom_killed:
+        # Not a test failure and not a transient fault: the command asked for more memory than its
+        # budget allows. Said plainly so neither the model nor the engine reads it as a flake to
+        # retry -- the ledger records the same fact as ``OOM_KILLED``.
+        return (
+            f"[Exit Code: {result.returncode}]\n"
+            f"[OOM-KILLED] the container exceeded its {memory_mb}MB memory limit and was killed "
+            f"by the kernel's OOM killer; the command did not complete.",
+            result,
+        )
 
     parts = []
     stdout = (result.stdout or "").strip()
@@ -252,6 +270,20 @@ def run_workspace_command(command: str, *, root: str, timeout: int = DEFAULT_TIM
     return run_workspace_command_result(command, root=root, timeout=timeout)[0]
 
 
+def _outcome_of(result: Any) -> str:
+    """Why an execution ended, when it did not end on its own terms.
+
+    ``137`` is SIGKILL, and inside a memory-capped container that is the kernel's OOM killer. The
+    ledger records it so the engine can tell a memory leak apart from a genuine test failure
+    instead of re-queuing the node until its retry budget runs out.
+    """
+    if getattr(result, "oom_killed", False):
+        return "OOM_KILLED"
+    if getattr(result, "timed_out", False):
+        return "TIMEOUT"
+    return ""
+
+
 class ExecServer:
     """The command runner, bound to one root directory."""
 
@@ -262,6 +294,7 @@ class ExecServer:
         db_path: Optional[str] = None,
         session_id: str = "",
         allow_network: bool = False,
+        resource_profile: str = "default",
     ):
         self.root = Path(root).resolve()
         self.timeout_seconds = int(timeout_seconds)
@@ -272,6 +305,8 @@ class ExecServer:
         # The network boundary. Off unless the plan declared the capability that needs it, which
         # the parent decided before this process existed -- nothing a tool call says can change it.
         self.allow_network = bool(allow_network)
+        # The resource budget, decided the same way and for the same reason.
+        self.resource_profile = str(resource_profile or "default")
 
     def _record_receipt(self, tool: str, result: Any) -> str:
         """Append the forensic receipt. Returns ``""`` on success, or the fault to report.
@@ -294,6 +329,7 @@ class ExecServer:
                 duration_ms=int(result.duration_ms),
                 stdout_hash=result.stdout_sha256,
                 stderr_hash=result.stderr_sha256,
+                outcome=_outcome_of(result),
             )
         except Exception as error:
             return f"{type(error).__name__}: {error}"
@@ -324,7 +360,7 @@ class ExecServer:
         self._assert_contained(text)
         output, result = run_workspace_command_result(
             text, root=str(self.root), timeout=int(timeout_seconds or self.timeout_seconds),
-            allow_network=self.allow_network,
+            allow_network=self.allow_network, resource_profile=self.resource_profile,
         )
         if result is not None:
             fault = self._record_receipt(tool, result)
@@ -411,13 +447,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         root = args[args.index("--root") + 1]
     db_path = args[args.index("--db-path") + 1] if "--db-path" in args else None
     session_id = args[args.index("--session-id") + 1] if "--session-id" in args else ""
+    resource_profile = (
+        args[args.index("--resource-profile") + 1] if "--resource-profile" in args else "default"
+    )
     server = ExecServer(
         root,
         db_path=db_path,
         session_id=session_id,
-        # A flag on *this* process's command line, set by the parent from the plan's declaration.
-        # It is not a tool argument: the model cannot reach it.
+        # Flags on *this* process's command line, set by the parent from the plan's declaration.
+        # They are not tool arguments: the model cannot reach them.
         allow_network="--allow-network" in args,
+        resource_profile=resource_profile,
     )
     install_container_reaper()
     return mcp_stdio.serve(

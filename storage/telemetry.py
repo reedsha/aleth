@@ -1,6 +1,6 @@
 """The forensic ledger: one append-only row per container execution.
 
-Raw SQL on purpose. Six columns and an index do not want an ORM, and -- more to the point -- this
+Raw SQL on purpose. Seven columns and an index do not want an ORM, and -- more to the point -- this
 table is written by a **child process**: the exec server records its own receipt, and it should
 not have to construct a store (and open the whole schema) to append one row. The store owns the
 DDL; this module owns the two statements.
@@ -34,6 +34,7 @@ TELEMETRY_DDL = """
                     duration_ms  INTEGER NOT NULL DEFAULT 0,
                     stdout_hash  TEXT NOT NULL DEFAULT '',
                     stderr_hash  TEXT NOT NULL DEFAULT '',
+                    outcome      TEXT NOT NULL DEFAULT '',
                     recorded_at  REAL NOT NULL
                 );
 
@@ -42,6 +43,16 @@ TELEMETRY_DDL = """
                 CREATE INDEX IF NOT EXISTS idx_telemetry_tool
                     ON execution_telemetry(target_tool);
 """
+
+# New columns go here *and* in the DDL above. ``CREATE TABLE IF NOT EXISTS`` never adds a column to
+# a table that already exists, so a ledger written by an earlier build is upgraded by the guarded
+# ``ALTER`` below rather than silently missing the field.
+TELEMETRY_MIGRATIONS = (
+    # Phase 13: why an execution ended, when it did not end on its own terms -- ``OOM_KILLED`` when
+    # the kernel's OOM killer took the container, ``TIMEOUT`` when the perimeter did. The engine
+    # reads it so a memory-leaking command is not mistaken for a transient fault and retried.
+    ("outcome", "TEXT NOT NULL DEFAULT ''"),
+)
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -53,6 +64,12 @@ def _connect(db_path: str) -> sqlite3.Connection:
 def apply_telemetry_schema(connection: sqlite3.Connection) -> None:
     """Create the ledger on a caller's connection, so a test can build the real table."""
     connection.executescript(TELEMETRY_DDL)
+    # ``PRAGMA table_info`` is read positionally on purpose: this is called with a bare connection
+    # (no ``row_factory``), and the column name is index 1.
+    existing = {row[1] for row in connection.execute("PRAGMA table_info(execution_telemetry)")}
+    for name, ddl in TELEMETRY_MIGRATIONS:
+        if name not in existing:
+            connection.execute(f"ALTER TABLE execution_telemetry ADD COLUMN {name} {ddl}")
 
 
 def record(
@@ -65,6 +82,7 @@ def record(
     duration_ms: int = 0,
     stdout_hash: str = "",
     stderr_hash: str = "",
+    outcome: str = "",
 ) -> None:
     """Append one receipt. **Raises** on failure: the caller decides what a lost receipt means.
 
@@ -77,11 +95,11 @@ def record(
             connection.execute(
                 "INSERT INTO execution_telemetry"
                 " (execution_id, session_id, target_tool, exit_code, duration_ms,"
-                "  stdout_hash, stderr_hash, recorded_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "  stdout_hash, stderr_hash, outcome, recorded_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     str(execution_id), str(session_id), str(target_tool), int(exit_code),
-                    int(duration_ms), str(stdout_hash), str(stderr_hash), time.time(),
+                    int(duration_ms), str(stdout_hash), str(stderr_hash), str(outcome), time.time(),
                 ),
             )
     finally:

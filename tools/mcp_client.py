@@ -255,6 +255,7 @@ def default_exec_command(
     db_path: Optional[str] = None,
     session_id: Optional[str] = None,
     allow_network: bool = False,
+    resource_profile: Optional[str] = None,
 ) -> List[str]:
     """The command that starts the in-repo exec server bound to ``root``.
 
@@ -263,10 +264,10 @@ def default_exec_command(
     purpose: the child's environment is an allow-list (``tools.env_sanitizer``), so a path the
     child needs is a decision the parent states, not something it happens to export.
 
-    ``allow_network`` is the same kind of decision, and it is the *only* way the sandbox's network
-    boundary is ever widened. It is set from the plan's ``required_capabilities`` (see
-    ``orchestration.mcp_session``) -- never from a tool call, so a model cannot grant itself
-    egress.
+    ``allow_network`` and ``resource_profile`` are the same kind of decision, and they are the
+    only ways the sandbox's network and hardware boundaries are ever widened. Both are set from the
+    plan's ``required_capabilities`` (see ``orchestration.mcp_session``) -- never from a tool call,
+    so a model cannot grant itself egress or memory.
     """
     command = [sys.executable, str(EXEC_SERVER_SCRIPT), "--root", str(root)]
     if db_path:
@@ -275,6 +276,8 @@ def default_exec_command(
         command += ["--session-id", str(session_id)]
     if allow_network:
         command += ["--allow-network"]
+    if resource_profile and resource_profile != "default":
+        command += ["--resource-profile", str(resource_profile)]
     return command
 
 
