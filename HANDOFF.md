@@ -107,7 +107,7 @@ aleth/
 │
 ├── crates/deepagents_core/    # THE COMPILED CORE (Rust, exposed to Python by PyO3)
 │   ├── Cargo.toml             # pyo3, serde_json, pulldown-cmark, regex, fs2
-│   ├── rust-toolchain.toml    # pins the self-contained GNU toolchain (see §3)
+│   ├── rust-toolchain.toml    # host-neutral channel; the machine selects GNU (see §3)
 │   ├── .cargo/config.toml     # PYO3_USE_RAW_DYLIB=0 so PyO3 links the interpreter's .lib
 │   ├── pyproject.toml         # maturin build definition; module name deepagents_core
 │   ├── deepagents_core.pyi    # Type stubs for the boundary (shipped in the wheel)
@@ -272,10 +272,14 @@ cargo test
 
 Three environment facts, all pinned in the crate so a plain `cargo build` works:
 
-- **The toolchain is the self-contained GNU one** (`rust-toolchain.toml`). This machine has
-the MSVC compiler but not the Windows SDK's import libraries, so an MSVC link fails with
-`LNK1181: cannot open input file 'kernel32.lib'`. The GNU toolchain ships its own linker and
-needs nothing installed.
+- **The toolchain file names a host-neutral channel** (`rust-toolchain.toml`, `channel = "stable"`).
+The target is a property of the host, not of the repository: rustup refuses a fully-qualified
+channel (`stable-<triple>`) unless that exact toolchain happens to be installed, so a pinned one
+builds on exactly one machine. This machine has the MSVC compiler but not the Windows SDK's
+import libraries, so an MSVC link fails with `LNK1181: cannot open input file 'kernel32.lib'`;
+its rustup default is therefore the self-contained GNU toolchain
+(`rustup default stable-x86_64-pc-windows-gnu`), which ships its own linker and needs nothing
+installed.
 - **`PYO3_USE_RAW_DYLIB=0`** (`.cargo/config.toml`). PyO3 0.29 defaults to `raw-dylib`, which
 makes rustc synthesise an import library with `dlltool` at link time; that fails here. The
 opt-out links the interpreter's own `python3XX.lib` instead.
@@ -1113,7 +1117,7 @@ co-located tiers.
 | --- | --- | --- | --- |
 | A — Frontend | JS ES modules (22) + CSS (19) | Vite 7.3.6 | `dist/index.html` (single module script) |
 | B — Python host | Python | 3.12.9 (`venv/`) | `app.py` (GUI), `main.py --cli` |
-| C — Compiled core | Rust | edition 2021, pinned `stable-x86_64-pc-windows-gnu` | `crates/deepagents_core` (PyO3 + maturin) |
+| C — Compiled core | Rust | edition 2021, host-neutral `stable` (GNU selected per machine) | `crates/deepagents_core` (PyO3 + maturin) |
 | D — State on disk | filesystem | — | `PLAN.md` ⇄ `plan.json`, `.env`, backups, `agents/*.py` |
 
 **Communication protocols — none of REST/gRPC/WebSocket.** Python→JS is stringified code
@@ -1305,9 +1309,8 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 > includes eslint 10 — so `npm install`/`npm ci` resolve with no `legacy-peer-deps` bypass.
 >
 > Note: `cargo test` must run **inside** `crates/deepagents_core` (or with the directory as
-> the working dir). Passing `--manifest-path` from the repo root selects the default MSVC
-> toolchain and fails with `LNK1181: cannot open input file 'kernel32.lib'`, because
-> `rust-toolchain.toml` is only honoured when the crate directory is the working directory.
+> the working dir) so the crate's `rust-toolchain.toml` is honoured. Passing `--manifest-path`
+> from the repo root ignores that file and builds with whatever the machine's rustup default is.
 
 ---
 

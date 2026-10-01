@@ -1,9 +1,19 @@
-# This crate builds with the self-contained GNU toolchain.
+# A toolchain file is portable, so it may not name an architecture or OS: rustup refuses a
+# fully-qualified channel (``stable-<triple>``) unless that exact toolchain is already installed
+# on the machine, precisely because the target is a property of the host and not of the
+# repository. Pinning ``stable-x86_64-pc-windows-gnu`` here therefore worked only on a machine
+# that had that toolchain installed, and broke every other host -- including a Windows CI runner
+# whose default host is MSVC, with ``error: target tuple in channel name``.
 #
-# The MSVC toolchain needs the Windows SDK's import libraries (kernel32.lib and
-# friends) to link anything, and this machine has the MSVC compiler but not the
-# SDK. The windows-gnu toolchain ships its own linker and import libraries, so it
-# needs nothing installed beyond rustup itself -- which is why the toolchain is
-# pinned here rather than left to the machine default.
+# The channel is host-neutral and resolves to the host's own default toolchain: the GNU channel
+# on Linux, and MSVC on a Windows runner (which carries the Windows SDK an MSVC link needs).
+#
+# A Windows machine that has the MSVC compiler but not the SDK cannot link an MSVC build, and
+# selects the self-contained GNU toolchain for itself instead -- a machine setting, not a
+# repository one:
+#
+#     rustup default stable-x86_64-pc-windows-gnu
+#     # or, for a single invocation:
+#     RUSTUP_TOOLCHAIN=stable-x86_64-pc-windows-gnu pip install -e crates/deepagents_core
 [toolchain]
-channel = "stable-x86_64-pc-windows-gnu"
+channel = "stable"

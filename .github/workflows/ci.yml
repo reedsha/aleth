@@ -85,11 +85,10 @@ jobs:
             build-essential pkg-config libgomp1 libglib2.0-0 libssl-dev curl
       - name: Build the compiled core
         shell: bash
-        env:
-          # ``crates/deepagents_core/rust-toolchain.toml`` pins the *Windows* GNU channel, because
-          # the MSVC toolchain needs a Windows SDK this project does not assume. On Linux that
-          # channel is not installable, so this override is what lets the same crate build there.
-          RUSTUP_TOOLCHAIN: ${{ runner.os == 'Linux' && 'stable' || '' }}
+        # ``crates/deepagents_core/rust-toolchain.toml`` names a host-neutral channel, so it needs
+        # no per-OS override: it resolves to this runner's own default toolchain. (A
+        # fully-qualified channel would be a machine fact, not a repository one -- rustup rejects
+        # it outright when the named toolchain is not installed.)
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e crates/deepagents_core
@@ -131,6 +130,12 @@ jobs:
           cache: pip
       - name: Install the build frontend
         run: python -m pip install --upgrade pip build
+      - name: Build the sandbox image
+        # The boot below executes a command through the container perimeter, and the perimeter
+        # refuses rather than runs natively when the image is absent. The wheel does not ship the
+        # Dockerfile -- it is an artifact of the checkout -- so the image is built here, from the
+        # repository, exactly as the native job builds it.
+        run: docker build -f docker/sandbox.Dockerfile -t aleth-sandbox:latest docker/
       - name: Build the wheel, lock it, and boot from it
         # The only acceptable proof of immutability: the wheel is installed into an isolated venv,
         # every write bit is stripped from the installed application, and the kernel is booted. If it
