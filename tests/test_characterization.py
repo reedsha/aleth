@@ -2566,7 +2566,7 @@ class WorkspaceLocationTests(unittest.TestCase):
 
 
 class AddPlanTaskBridgeTests(WorkspaceTestCase):
-    """BridgeAPI.add_plan_task -- the one-click "Add to Plan" write.
+    """EngineService.add_plan_task -- the one-click "Add to Plan" write.
 
     The result view calls this directly rather than routing a proposal through the Update
     Plan drawer, so the contract is the ordinary one: a real pending task appended to the
@@ -2582,7 +2582,7 @@ class AddPlanTaskBridgeTests(WorkspaceTestCase):
         self.app = app
 
     def _api(self):
-        api = self.app.BridgeAPI()
+        api = self.app.EngineService()
         api._events = []
         api.emit_event = api._events.append
         return api
@@ -2617,7 +2617,7 @@ class AddPlanTaskBridgeTests(WorkspaceTestCase):
 
 
 class RevertPlanUpdateBridgeTests(WorkspaceTestCase):
-    """BridgeAPI.revert_plan_update -- the one-click undo of a saved plan revision.
+    """EngineService.revert_plan_update -- the one-click undo of a saved plan revision.
 
     Update Plan auto-commits, so the result view's revert control is the only way back to the
     previous roadmap. This is the endpoint behind it: restore the snapshot taken immediately
@@ -2633,7 +2633,7 @@ class RevertPlanUpdateBridgeTests(WorkspaceTestCase):
         self.app = app
 
     def _api(self):
-        api = self.app.BridgeAPI()
+        api = self.app.EngineService()
         api._events = []
         api.emit_event = api._events.append
         return api
@@ -2710,7 +2710,7 @@ class StopExecutionBridgeTests(WorkspaceTestCase):
 
         registry_module.registry.stop_event.clear()
         self.addCleanup(registry_module.registry.stop_event.clear)
-        api = self.app.BridgeAPI()
+        api = self.app.EngineService()
         api._events = []
         api.emit_event = api._events.append
 
@@ -2738,10 +2738,10 @@ class RunLockBridgeTests(WorkspaceTestCase):
         self.app = app
 
     def _api_with_live_run(self):
-        """A BridgeAPI whose "run" is a thread that stays alive until cleanup."""
+        """An EngineService whose "run" is a thread that stays alive until cleanup."""
         import threading
 
-        api = self.app.BridgeAPI()
+        api = self.app.EngineService()
         stop = threading.Event()
         thread = threading.Thread(target=stop.wait, daemon=True)
         thread.start()
@@ -2750,7 +2750,7 @@ class RunLockBridgeTests(WorkspaceTestCase):
         return api
 
     def test_get_run_state_is_idle_with_no_thread(self):
-        self.assertFalse(self.app.BridgeAPI().get_run_state()["running"])
+        self.assertFalse(self.app.EngineService().get_run_state()["running"])
 
     def test_get_run_state_reports_a_live_run(self):
         self.assertTrue(self._api_with_live_run().get_run_state()["running"])
@@ -2797,7 +2797,7 @@ class ApproveArtifactBridgeTests(WorkspaceTestCase):
 
     def _api(self):
         """A bridge whose swarm is guaranteed to be shut down before the workspace goes away."""
-        api = self.app.BridgeAPI()
+        api = self.app.EngineService()
         self._apis.append(api)
         return api
 
@@ -2921,7 +2921,7 @@ class AddTaskDependencyBridgeTests(WorkspaceTestCase):
         from storage.db import get_store
 
         self._seed()
-        res = self.app.BridgeAPI().add_task_dependency("task-1", "task-8", "PLAN")
+        res = self.app.EngineService().add_task_dependency("task-1", "task-8", "PLAN")
 
         self.assertTrue(res["success"], res)
         self.assertIn("task-1", get_store().get_dag("PLAN").nodes["task-8"].dependencies)
@@ -2932,7 +2932,7 @@ class AddTaskDependencyBridgeTests(WorkspaceTestCase):
 
     def test_the_ipc_refuses_an_unknown_node_or_a_self_edge(self):
         self._seed()
-        api = self.app.BridgeAPI()
+        api = self.app.EngineService()
 
         self.assertFalse(api.add_task_dependency("task-1", "ghost", "PLAN")["success"])
         self.assertFalse(api.add_task_dependency("ghost", "task-1", "PLAN")["success"])
@@ -2975,7 +2975,7 @@ class AmendArtifactBridgeTests(WorkspaceTestCase):
 
         task_id = self._planned_node()
 
-        res = self.app.BridgeAPI().update_artifact_target(task_id, 0, "x = 2\n", "PLAN")
+        res = self.app.EngineService().update_artifact_target(task_id, 0, "x = 2\n", "PLAN")
 
         self.assertTrue(res["success"], res)
         stored = get_store().get_artifact("PLAN", task_id)
@@ -2984,7 +2984,7 @@ class AmendArtifactBridgeTests(WorkspaceTestCase):
     def test_it_refuses_an_out_of_range_index(self):
         task_id = self._planned_node()
 
-        res = self.app.BridgeAPI().update_artifact_target(task_id, 5, "x = 2\n", "PLAN")
+        res = self.app.EngineService().update_artifact_target(task_id, 5, "x = 2\n", "PLAN")
 
         self.assertFalse(res["success"])
         self.assertIn("out of range", res["error"])
@@ -2995,7 +2995,7 @@ class AmendArtifactBridgeTests(WorkspaceTestCase):
         task_id = self._planned_node()
         get_store().update_task_status("PLAN", task_id, "in_progress")
 
-        res = self.app.BridgeAPI().update_artifact_target(task_id, 0, "x = 2\n", "PLAN")
+        res = self.app.EngineService().update_artifact_target(task_id, 0, "x = 2\n", "PLAN")
 
         self.assertFalse(res["success"])
         self.assertIn("only a 'planned' artifact", res["error"])
@@ -3021,7 +3021,7 @@ class SourceSpanBridgeTests(WorkspaceTestCase):
     def test_it_returns_the_bytes_at_the_recorded_span(self):
         ft.overwrite_source("main.py", "abcdef\n")
 
-        res = self.app.BridgeAPI().get_source_span("main.py", 1, 4)
+        res = self.app.EngineService().get_source_span("main.py", 1, 4)
 
         self.assertTrue(res["success"], res)
         self.assertTrue(res["found"])
@@ -3034,7 +3034,7 @@ class SourceSpanBridgeTests(WorkspaceTestCase):
         self.assertEqual((res["start"], res["end"]), (1, 4))
 
     def test_a_missing_file_reports_no_bytes_rather_than_an_error(self):
-        res = self.app.BridgeAPI().get_source_span("nope.py", 0, 10)
+        res = self.app.EngineService().get_source_span("nope.py", 0, 10)
 
         self.assertTrue(res["success"])
         self.assertFalse(res["found"])
@@ -3043,13 +3043,13 @@ class SourceSpanBridgeTests(WorkspaceTestCase):
     def test_a_span_past_the_end_is_clamped(self):
         ft.overwrite_source("main.py", "abc")
 
-        res = self.app.BridgeAPI().get_source_span("main.py", 0, 999)
+        res = self.app.EngineService().get_source_span("main.py", 0, 999)
 
         self.assertEqual(res["text"], "abc")
         self.assertEqual(res["end"], 3)
 
     def test_it_refuses_a_path_outside_the_workspace(self):
-        res = self.app.BridgeAPI().get_source_span("../../secret.txt", 0, 5)
+        res = self.app.EngineService().get_source_span("../../secret.txt", 0, 5)
 
         self.assertFalse(res["success"])
         self.assertIn("Path traversal denied", res["error"])
@@ -3061,7 +3061,7 @@ class SourceSpanBridgeTests(WorkspaceTestCase):
             # character, so a name containing one cannot leave the workspace.
             candidates.append("..\\..\\secret.txt")
         for candidate in candidates:
-            res = self.app.BridgeAPI().get_source_span(candidate, 0, 5)
+            res = self.app.EngineService().get_source_span(candidate, 0, 5)
             self.assertFalse(res["success"], candidate)
             self.assertIn("Path traversal denied", res["error"])
 
@@ -3082,14 +3082,14 @@ class ValidatePlanStructureBridgeTests(WorkspaceTestCase):
         self.app = app
 
     def test_a_crashed_check_is_marked_not_checked(self):
-        api = self.app.BridgeAPI()
+        api = self.app.EngineService()
         with mock.patch("app.plan_structure_report", side_effect=RuntimeError("boom")):
             report = api.validate_plan_structure()
         self.assertTrue(report["structured"])
         self.assertFalse(report["checked"])
 
     def test_a_produced_verdict_is_marked_checked(self):
-        report = self.app.BridgeAPI().validate_plan_structure()
+        report = self.app.EngineService().validate_plan_structure()
         self.assertTrue(report["checked"])
 
 

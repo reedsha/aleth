@@ -288,7 +288,7 @@ class DetachedConsoleBridgeTests(unittest.TestCase):
         cls.app = app
 
     def _api(self):
-        api = self.app.BridgeAPI()
+        api = self.app.EngineService()
         api._events = []
         api.emit_event = api._events.append
         return api

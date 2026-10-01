@@ -24,13 +24,14 @@ client goes away.
 from __future__ import annotations
 
 import dataclasses
+import mimetypes
 import os
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
-from urllib.parse import parse_qs, urlsplit
+from typing import Dict, Iterable, List, Optional, Sequence, Set
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from api.events import HEARTBEAT_FRAME, EventHub
 from api.gateway import Gateway, Request, Response, StreamResponse
@@ -114,16 +115,29 @@ def origin_allowed(origin: str, port: int, extra: Iterable[str] = ()) -> bool:
 
 
 class _ThreadingServer(ThreadingHTTPServer):
-    """The socket, plus the three things a handler needs to answer a request."""
+    """The socket, plus the four things a handler needs to answer a request."""
 
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, handler, *, gateway: Gateway, allowed_origins: Set[str], stop_event: threading.Event):
+    def __init__(
+        self,
+        address,
+        handler,
+        *,
+        gateway: Gateway,
+        allowed_origins: Set[str],
+        stop_event: threading.Event,
+        static_root: str = "",
+    ):
         super().__init__(address, handler)
         self.gateway = gateway
         self.allowed_origins = allowed_origins
         self.stop_event = stop_event
+        # The built frontend. Serving it from this socket is what makes the window an ordinary
+        # browser on the gateway's own origin: no CORS, no "null" origin, and no second way for
+        # the page to learn where the API lives -- it is where the page came from.
+        self.static_root = str(static_root or "")
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -240,7 +254,48 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if not self._guard(state_changing=False):
             return
+        path = urlsplit(self.path).path
+        if not path.startswith("/api/") and path != "/console":
+            self._serve_static(path)
+            return
         self._dispatch(b"")
+
+    def _serve_static(self, path: str) -> None:
+        """Serve the built frontend from ``static_root``. Never escapes that directory.
+
+        The page is served by the same socket that answers ``/api``, so the document's origin
+        *is* the gateway's: the API needs no CORS exemption for its own UI, and a browser client
+        cannot be confused about which server it is talking to.
+        """
+        root = self._server.static_root
+        if not root or not os.path.isdir(root):
+            self._denied(404, "the frontend is not being served", path)
+            return
+        relative = unquote(path).lstrip("/") or "index.html"
+        candidate = os.path.realpath(os.path.join(root, relative))
+        base = os.path.realpath(root)
+        # A path that resolves outside the bundle is refused, not normalised into something
+        # that happens to exist: ``..`` must never reach the repository it was built from.
+        if candidate != base and not candidate.startswith(base + os.sep):
+            self._denied(404, "no such asset", path)
+            return
+        if os.path.isdir(candidate):
+            candidate = os.path.join(candidate, "index.html")
+        if not os.path.isfile(candidate):
+            self._denied(404, "no such asset", path)
+            return
+        with open(candidate, "rb") as handle:
+            body = handle.read()
+        content_type = mimetypes.guess_type(candidate)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type in ("application/javascript",):
+            content_type += "; charset=utf-8"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        for name, value in self._cors().items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802
         if not self._guard(state_changing=True):
@@ -273,6 +328,8 @@ class ApiServer:
     host: str = LOOPBACK_HOST
     port: int = DEFAULT_PORT
     allowed_origins: Set[str] = dataclasses.field(default_factory=set)
+    # The built frontend to serve at ``/``. Empty means "API only", which is what the tests want.
+    static_root: str = ""
 
     def __post_init__(self) -> None:
         self.stop_event = threading.Event()
@@ -280,31 +337,31 @@ class ApiServer:
         self._thread: Optional[threading.Thread] = None
         self._worker: Optional[threading.Thread] = None
         self._worker_stop: Optional[threading.Event] = None
-        self._bus_listener = None
+        self._bus_attached = False
 
     # -- lifecycle ------------------------------------------------------------
     def attach_bus(self) -> None:
-        """Broadcast every bus event to this hub, so SSE clients see what the window sees.
+        """Observe the bus, so every event it carries is broadcast to the stream's clients.
 
-        The bus is the engine's one outbound seam (``bridge_bus``); the hub is a second consumer
-        of it rather than a parallel notification path, which is what keeps the two clients from
-        drifting.
+        A **listener**, not the transport: the bus's transport is still the pywebview window
+        while the frontend is strangled onto HTTP, and the hub must receive the identical
+        validated event rather than a parallel notification that could drift from it.
         """
-        if self._bus_listener is not None:
+        if self._bus_attached:
             return
         import bridge_bus
 
-        listener = self.gateway.hub.publish
-        bridge_bus.add_listener(listener)
-        self._bus_listener = listener
+        bridge_bus.add_listener(self.gateway.hub.publish)
+        self._bus_attached = True
 
     def detach_bus(self) -> None:
-        if self._bus_listener is None:
+        """Stop observing, so a stopped server stops receiving events. Idempotent."""
+        if not self._bus_attached:
             return
         import bridge_bus
 
-        bridge_bus.remove_listener(self._bus_listener)
-        self._bus_listener = None
+        bridge_bus.remove_listener(self.gateway.hub.publish)
+        self._bus_attached = False
 
     def start_intent_worker(self, handler) -> None:
         """Start the background orchestrator loop that drains the intent queue."""
@@ -326,6 +383,7 @@ class ApiServer:
             gateway=self.gateway,
             allowed_origins=set(self.allowed_origins),
             stop_event=self.stop_event,
+            static_root=self.static_root,
         )
 
     def start(self) -> str:
@@ -380,24 +438,31 @@ class ApiServer:
 
 def start_gateway(
     *,
+    service=None,
     port: Optional[int] = None,
     host: str = LOOPBACK_HOST,
     allowed_origins: Sequence[str] = (),
     on_intent=None,
     capacity: int = 32,
+    static_root: str = "",
 ) -> ApiServer:
     """Build the queue, hub and router; attach the bus; optionally start the worker; bind.
 
     This is the one function the app calls. Everything it wires is real from the first request:
     the hub is attached to the bus before the socket opens, so an event emitted the moment the
     server is up reaches a client that connected for it.
+
+    ``service`` is the engine-facing object the operation table calls. Passing ``None`` leaves the
+    read-only endpoints working and every operation a 503 -- which is what a test that only wants
+    the state surface asks for. ``static_root`` mounts the built frontend at ``/``.
     """
-    gateway = Gateway(queue=IntentQueue(capacity=capacity), hub=EventHub())
+    gateway = Gateway(queue=IntentQueue(capacity=capacity), hub=EventHub(), service=service)
     server = ApiServer(
         gateway=gateway,
         host=host,
         port=default_port() if port is None else int(port),
         allowed_origins=set(allowed_origins),
+        static_root=str(static_root or ""),
     )
     server.attach_bus()
     if on_intent is not None:

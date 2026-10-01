@@ -97,78 +97,20 @@ _CONSOLE_WINDOW_APPEND_JS = (
 
 # --- Frontend delivery -------------------------------------------------------
 #
-# The frontend is built by Vite into ``dist/`` and handed to the webview through
-# WebView2's own virtual-host mapping, not as a ``file://`` document.
+# The frontend is built by Vite into ``dist/`` and served by the API gateway itself, so the
+# window is an ordinary browser pointed at ``http://127.0.0.1:<port>/index.html``.
 #
-# ``file://`` is the historical failure mode of this window: WebView2 drops
-# individual subresource fetches from a local document intermittently, and a lost
-# module fetch left the window fully rendered but inert -- no click handlers at all,
-# which is indistinguishable from a working app because the packaged build runs with
-# ``debug=False``. The bundle used to be inlined into ``ui/index.html`` to dodge that.
-# Mapping a host name onto the build directory removes the failure at the layer that
-# has the bug: the document and every asset it names become ordinary https requests
-# WebView2 resolves straight out of the folder, with no HTTP server and no inlining.
-
-ASSET_HOST = "aleth.local"
+# This replaced WebView2's virtual-host mapping. ``file://`` was the historical failure mode --
+# WebView2 drops individual subresource fetches from a local document intermittently, and a lost
+# module fetch left the window fully rendered but inert. Serving the bundle from the same socket
+# that answers ``/api`` removes that class of failure *and* the two problems the mapping could
+# never solve: the document's origin is now the API's origin (so no CORS exemption and no
+# ``null`` origin), and the page needs no way to be told where the API lives -- it came from it.
 
 
 def frontend_root() -> str:
     """The directory holding the frontend to serve: the Vite build output."""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
-
-
-def install_asset_host(folder: str, host: str, fallback_url: str) -> bool:
-    """Serves ``folder`` under ``https://<host>/`` inside the WebView2 window.
-
-    Returns True when the mapping is available -- Windows, with pywebview driving the
-    EdgeChromium backend -- so the caller can point the window at the mapped URL
-    rather than at a file path.
-
-    pywebview 6 exposes no public API for WebView2's
-    ``SetVirtualHostNameToFolderMapping``, so the one seam it does expose is used: the
-    handler it runs when CoreWebView2 finishes initializing. Wrapping that handler
-    installs the mapping *before* pywebview performs the window's first navigation,
-    which is the ordering WebView2 requires -- a navigation to a host that is not yet
-    mapped fails, and there is no second chance at it.
-
-    ``Allow`` (rather than ``DenyCors``) is deliberate: the preview pane renders
-    generated markup in a ``srcdoc`` frame, whose opaque origin would be refused
-    access to these assets under the stricter mode.
-    """
-    if sys.platform != "win32":
-        return False
-    try:
-        # The enum is not re-exported by pywebview, so it is imported from the assembly
-        # pywebview has already loaded -- which is also what makes this the right place
-        # to fail: an unavailable mapping is reported before the window is created, and
-        # the caller falls back to loading the document as a file.
-        from webview.platforms import edgechromium
-        from Microsoft.Web.WebView2.Core import CoreWebView2HostResourceAccessKind
-    except Exception as e:
-        print(f"[UI] WebView2 virtual host mapping is unavailable: {e}")
-        return False
-
-    original = edgechromium.EdgeChrome.on_webview_ready
-
-    def on_webview_ready(self, sender, args):
-        mapped = False
-        if args.IsSuccess:
-            try:
-                sender.CoreWebView2.SetVirtualHostNameToFolderMapping(
-                    host, folder, CoreWebView2HostResourceAccessKind.Allow
-                )
-                mapped = True
-            except Exception as e:
-                print(f"[UI] Could not map {host} to {folder}: {e}")
-        original(self, sender, args)
-        if args.IsSuccess and not mapped:
-            # The window was pointed at the mapped URL, which cannot resolve without
-            # the mapping. Recover by loading the document the way it was loaded
-            # before the mapping existed.
-            self.load_url(fallback_url)
-
-    edgechromium.EdgeChrome.on_webview_ready = on_webview_ready
-    return True
 
 
 def _console_kind(kind) -> str:
@@ -209,19 +151,23 @@ def _push_console_line_to(window, kind, text) -> None:
     )
 
 
-class BridgeAPI:
-    """
-    Two-way asynchronous bridge connecting PyWebView UI to Python Aleth backend.
+class EngineService:
+    """The engine-facing operations.
+
+    **Still bound as pywebview's ``js_api`` during the cutover.** The HTTP gateway
+    (``api.operations``) can already serve every one of these operations over the loopback
+    socket, but the frontend is being migrated one module at a time, so both paths exist until
+    the last call site moves and the binding is deleted (Phase 15, step 4).
     """
     def __init__(self):
         self._window = None
-        # The one typed channel to the UI. Built here so it exists before the window is
-        # bound; ``WebviewTransport`` no-ops until ``set_window`` supplies one.
+        # The typed channel to the desktop window. Built here so it exists before the window
+        # is bound; ``WebviewTransport`` no-ops until ``set_window`` supplies one.
         self._bus = BridgeBus(WebviewTransport(lambda: self._window))
         self._execution_thread = None
         self._tagging_thread = None
         # The local API gateway (Phase 14). Built on demand by ``start_api`` -- the test suite
-        # constructs this bridge constantly and must not bind a socket doing it.
+        # constructs this service constantly and must not bind a socket doing it.
         self._api = None
         # The swarm, built on first use -- never in ``__init__``. Constructing the bridge must not
         # spawn a process pool or dispatch a node: the test suite builds one constantly, and a cold
@@ -235,11 +181,11 @@ class BridgeAPI:
         self._console_lock = threading.Lock()
 
     def set_window(self, window):
-        """Bind the webview window for pushing asynchronous events to JavaScript."""
+        """Bind the webview window: the event transport, the native dialogs, the console."""
         self._window = window
 
     def emit_event(self, event_data: dict):
-        """Pushes a structured real-time event to the frontend UI through the bus.
+        """Pushes a structured real-time event to the clients through the bus.
 
         The bus validates ``event_data`` against the strict event union before it is
         serialised, so a drifted payload is reported here rather than delivered. The
@@ -251,7 +197,7 @@ class BridgeAPI:
             self._bus.dispatch(event_data)
         except Exception as e:
             traceback.print_exc()
-            print(f"[BridgeAPI] Error pushing event to UI: {e}", file=sys.stderr)
+            print(f"[EngineService] Error pushing event: {e}", file=sys.stderr)
 
     # -------------------------------------------------------------
     # Dynamic Agent Registry Methods
@@ -332,7 +278,7 @@ class BridgeAPI:
                         "plans": list_plan_files()
                     }
             except Exception as e:
-                print(f"[BridgeAPI] Dialog error: {e}", file=sys.stderr)
+                print(f"[EngineService] Dialog error: {e}", file=sys.stderr)
 
         if selected_path:
             abs_path = set_project_dir(selected_path)
@@ -667,12 +613,12 @@ class BridgeAPI:
         if thread is not None:
             thread.join()
 
-    def start_api(self, ui_origin: str = ""):
-        """Bind the local gateway, with this bridge as its intent executor. Idempotent.
+    def start_api(self):
+        """Bind the local gateway, serving the built frontend and the API from one origin.
 
-        ``ui_origin`` is the origin the window was actually loaded from; it is the only origin
-        the gateway will accept a state-changing request from, so the allow-list is the app's own
-        origin rather than a guess.
+        The window is then pointed at this socket, which is what makes the page an ordinary
+        browser: its origin is the API's origin, so no request needs a CORS exemption and the
+        page never has to be told where the API lives.
         """
         if self._api is not None:
             return {"success": True, "base_url": self._api.base_url, "already_running": True}
@@ -680,8 +626,9 @@ class BridgeAPI:
             from api.server import start_gateway
 
             self._api = start_gateway(
+                service=self,
                 on_intent=self._run_intent,
-                allowed_origins=[ui_origin] if ui_origin else [],
+                static_root=frontend_root(),
             )
         except Exception as error:
             print(
@@ -689,7 +636,10 @@ class BridgeAPI:
                 file=sys.stderr,
             )
             return {"success": False, "error": str(error)}
-        print(f"[api] gateway bound to {self._api.base_url} (loopback only)", flush=True)
+        print(
+            f"[api] gateway bound to {self._api.base_url} (loopback only, serving the frontend)",
+            flush=True,
+        )
         return {"success": True, "base_url": self._api.base_url}
 
     def get_api_base(self):
@@ -1161,7 +1111,7 @@ class BridgeAPI:
                     background_color="#0a0c10",
                 )
             except Exception as e:
-                print(f"[BridgeAPI] Detached console failed: {e}", file=sys.stderr)
+                print(f"[EngineService] Detached console failed: {e}", file=sys.stderr)
                 self.emit_event({"type": "console_detach_failed", "error": str(e)})
                 return
             if not window:
@@ -1196,7 +1146,7 @@ class BridgeAPI:
             try:
                 _push_console_line_to(window, kind, text)
             except Exception as e:
-                print(f"[BridgeAPI] Detached console push failed: {e}", file=sys.stderr)
+                print(f"[EngineService] Detached console push failed: {e}", file=sys.stderr)
                 with self._console_lock:
                     self._console_window = None
                 return
@@ -1253,7 +1203,7 @@ def main(argv=None):
     from agents import laya_model
     laya_model.warm_up_async()
 
-    api = BridgeAPI()
+    api = EngineService()
 
     # The window is loaded from the Vite build, not from the hand-authored document in
     # ui/. A build that has not been made yet is reported as the build step it is,
@@ -1265,18 +1215,14 @@ def main(argv=None):
         print("Build it once with:  npm install && npm run build")
         raise SystemExit(1)
 
-    # Mapped delivery where the platform supports it, the file document otherwise, so
-    # the app still opens (without the mapped origin's guarantees) on a backend that
-    # has no virtual-host mapping.
-    if install_asset_host(dist, ASSET_HOST, index_path):
-        ui_url = f"https://{ASSET_HOST}/index.html"
-        ui_origin = f"https://{ASSET_HOST}"
-    else:
-        ui_url = index_path
-        # A file:// document has the opaque origin "null". The gateway allows exactly that when
-        # the app itself is running unmapped, because the alternative is an app whose own UI
-        # cannot reach its own API on the platforms without the virtual-host mapping.
-        ui_origin = "null"
+    # The gateway serves the bundle *and* the API from one origin, so the window loads a URL
+    # rather than a document path. It must be listening before the window is created, or the
+    # first navigation has nothing to resolve against.
+    started = api.start_api()
+    if not started.get("success"):
+        print("The local API gateway could not start; the UI would have no backend.")
+        raise SystemExit(1)
+    ui_url = f"{started['base_url']}/index.html"
 
     window = webview.create_window(
         title="Aleth • Plan Orchestrator Studio",
@@ -1289,9 +1235,6 @@ def main(argv=None):
     )
 
     api.set_window(window)
-    # The gateway comes up before the window is shown, so the first request the UI makes finds it
-    # already listening; it is torn down when the window closes, which is the only exit path.
-    api.start_api(ui_origin=ui_origin)
     try:
         webview.start(debug=debug)
     finally:

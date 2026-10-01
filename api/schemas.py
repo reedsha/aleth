@@ -204,3 +204,18 @@ class ErrorResponse(BaseModel):
 
     error: str
     detail: str = ""
+
+
+class OperationEnvelope(BaseModel):
+    """The one answer shape for the typed operation surface (``api.operations``).
+
+    ``data`` carries the service's own payload -- the dictionaries the UI and the
+    characterization suite already speak -- so moving the transport did not invent a second wire
+    format for the plan. The envelope is what makes a single client-side failure branch possible.
+    """
+
+    model_config = _STRICT
+
+    ok: bool
+    data: Any = None
+    error: str = ""

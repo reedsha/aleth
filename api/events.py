@@ -110,11 +110,16 @@ class EventHub:
     def publish(self, event: Dict[str, Any]) -> None:
         """Fan one validated event out to every subscriber. Never blocks, never raises."""
         try:
-            frame = sse_frame(event)
+            text = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
         except (TypeError, ValueError):
             # An unserialisable event is the bus's problem, not the stream's; the bus has
             # already validated it, so this is unreachable in practice and harmless if not.
             return
+        self.publish_text(text)
+
+    def publish_text(self, json_text: str) -> None:
+        """Fan out an event the bus already serialised. This is the transport's entry point."""
+        frame = f"{FRAME_PREFIX}{json_text}{FRAME_SUFFIX}"
         with self._lock:
             subscribers = list(self._subscribers)
         for subscriber in subscribers:
@@ -131,3 +136,19 @@ class EventHub:
     def subscriber_count(self) -> int:
         with self._lock:
             return len(self._subscribers)
+
+
+class HubTransport:
+    """The bus's one transport: publish each validated event to the stream's subscribers.
+
+    This replaced the pywebview push. ``bridge_bus`` used to inject a call into the window with
+    ``evaluate_js``; now the bus's transport *is* the stream, and the window is a browser that
+    reads it like any other client. That is the whole of the cutover: one delivery path, and the
+    desktop window is no longer special.
+    """
+
+    def __init__(self, hub: EventHub):
+        self._hub = hub
+
+    def send(self, json_text: str) -> None:
+        self._hub.publish_text(json_text)

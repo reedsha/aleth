@@ -13,12 +13,13 @@ decorator magic, so the whole surface of the API is one list a reader can check.
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
-from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 from pydantic import ValidationError
 
-from api import reads
+from api import operations, reads
 from api.events import EventHub
 from api.intents import IntentQueue, IntentQueueFull
 from api.schemas import (
@@ -26,6 +27,7 @@ from api.schemas import (
     HealthResponse,
     IntentAccepted,
     IntentRequest,
+    OperationEnvelope,
     PlanListResponse,
     PlanView,
     TelemetryListResponse,
@@ -175,11 +177,19 @@ ROUTES: Tuple[Tuple[str, str, Handler], ...] = (
 
 
 class Gateway:
-    """The router: one queue, one hub, one table of routes."""
+    """The router: one queue, one hub, one service, and the routes over them."""
 
-    def __init__(self, queue: Optional[IntentQueue] = None, hub: Optional[EventHub] = None):
+    def __init__(
+        self,
+        queue: Optional[IntentQueue] = None,
+        hub: Optional[EventHub] = None,
+        service: Any = None,
+    ):
         self.queue = queue or IntentQueue()
         self.hub = hub or EventHub()
+        # The engine-facing operations (``api.operations``). ``None`` until the app attaches it,
+        # and an operation reaching a gateway without one is a 503 rather than an AttributeError.
+        self.service = service
         self._routes = [
             (method, re.compile(pattern), handler) for method, pattern, handler in ROUTES
         ]
@@ -196,11 +206,58 @@ class Gateway:
                 matched_method = True
                 continue
             return handler(request, self, match)
+        # The typed operation surface: a closed table, so a path that is not in it is a 404 and
+        # an operation that is not implemented has no address at all.
+        if operations.is_known_path(path):
+            return self._dispatch_operation(request)
         if matched_method:
             # The path exists but not for this verb: 405 says so, where 404 would send a reader
             # looking for a typo in the path they got right.
             return _error(405, "method not allowed", f"{request.method} {path}")
         return _error(404, "no such endpoint", path)
+
+    def _dispatch_operation(self, request: Request) -> Response:
+        """Validate the body against the operation's own model, then call the service."""
+        operation = operations.operation_for(request.method, request.path)
+        if operation is None:
+            return _error(405, "method not allowed", f"{request.method} {request.path}")
+        if self.service is None:
+            return _error(503, "the engine service is not attached", operation.name)
+        try:
+            raw = _operation_body(operation, request)
+            parsed = operation.request.model_validate(raw)
+        except ValidationError as error:
+            return _error(400, "invalid request", error.json(include_url=False))
+        except ValueError as error:
+            return _error(400, "invalid request", str(error))
+        try:
+            payload = operation.call(self.service, parsed)
+        except Exception as error:  # a service fault is the operation's answer, not a crash
+            return _error(500, "the operation failed", f"{type(error).__name__}: {error}")
+        try:
+            envelope = OperationEnvelope(ok=True, data=payload)
+            return Response(status=200, body=envelope.model_dump_json().encode("utf-8"))
+        except Exception as error:
+            return _error(500, "the answer could not be serialised", str(error))
+
+
+def _operation_body(operation: Any, request: Request) -> Dict[str, Any]:
+    """The arguments for an operation: the query for a GET, the JSON body for anything else.
+
+    A GET carries its arguments in the query string because that is what a GET is for -- a
+    readable, cacheable read -- and the operation's model coerces the strings to its own types.
+    """
+    if operation.verb == "GET":
+        return {name: values[0] for name, values in (request.query or {}).items() if values}
+    if not request.body:
+        return {}
+    try:
+        parsed = json.loads(request.body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError(f"the request body is not JSON: {error}") from error
+    if not isinstance(parsed, dict):
+        raise ValueError("the request body must be a JSON object")
+    return parsed
 
 
 __all__ = [

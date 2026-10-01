@@ -1,29 +1,27 @@
 """The single, typed server -> client event bus.
 
-Every payload the backend pushes to the webview crosses exactly one seam: this bus. It
-replaces the ad-hoc ``window.evaluate_js(f"window.onAgentEvent({json})")`` calls that
-were built by string interpolation at each call site.
+Every payload the backend pushes to a client crosses exactly one seam: this bus. It
+validates the payload against the strict discriminated union in ``tools.payloads``
+(``extra="forbid"``) *before* it is serialised, so an unknown ``type`` or an undocumented key
+raises at the boundary rather than reaching a renderer.
 
-Two guarantees:
+Two delivery paths exist while the frontend is being strangled onto HTTP, and the bus owns both:
 
-* **Typed.** :meth:`BridgeBus.dispatch` validates the payload against the strict
-  discriminated union in ``tools.payloads`` (``extra="forbid"``) *before* it is
-  serialised. An unknown ``type`` or an undocumented key raises at the boundary.
-* **Inert.** The serialised payload is handed to the frontend as a JSON *string*
-  argument to one fixed sink, ``window.__deepAgentsBus.receive``. The sink call is a
-  constant; only a JSON string literal varies, and it is encoded with
-  ``ensure_ascii=True`` so it can never terminate the call or introduce executable
-  code. The client parses it with ``JSON.parse`` and validates it again.
+* **the transport** -- the pywebview window, pushed through one static sink call
+  (``window.__deepAgentsBus.receive``). The payload is embedded as a JSON *string* literal with
+  ``ensure_ascii=True``, so it can never terminate the call or introduce executable code.
+* **the listeners** -- in-process observers of the same validated event. The API gateway's SSE
+  hub is one, so a browser client and the desktop window receive the identical event rather than
+  two renderings that can drift.
 
-pywebview offers no data channel of its own -- ``evaluate_js`` is the only server ->
-client push -- so the safety does not come from avoiding ``evaluate_js``; it comes from
-never interpolating anything but a safely-encoded JSON string into a single static sink.
+When the cutover completes, the pywebview transport is deleted and the hub becomes the sole
+path; until then both must work, which is why delivery to one can never affect the other.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict, Protocol
+from typing import Any, Callable, Dict, List, Protocol
 
 from tools.payloads import validated_bus_event
 
@@ -56,10 +54,10 @@ class WebviewTransport:
     """Delivers events to a pywebview window through the static sink.
 
     ``get_window`` is a callable rather than a window so the transport survives the
-    window being bound (or replaced) after the bus is constructed -- ``BridgeAPI``
-    builds the bus in ``__init__`` but only receives the window from ``set_window``.
-    A callable that returns ``None`` makes delivery a silent no-op, which is what keeps
-    an event emitted before the window exists from raising.
+    window being bound (or replaced) after the bus is constructed -- the app builds the
+    bus in ``__init__`` but only receives the window from ``set_window``. A callable that
+    returns ``None`` makes delivery a silent no-op, which is what keeps an event emitted
+    before the window exists from raising.
     """
 
     def __init__(self, get_window: Callable[[], Any]):
@@ -72,14 +70,18 @@ class WebviewTransport:
         window.evaluate_js(sink_script(json_text))
 
 
+class NullTransport:
+    """Drops everything: the bus before the app binds one, and the tests."""
+
+    def send(self, json_text: str) -> None:
+        return
+
+
 class BridgeBus:
     """Validates and dispatches outbound events to a transport, and to local listeners."""
 
     def __init__(self, transport: Transport):
         self._transport = transport
-        # Local observers: the API gateway's SSE hub is one. They are *in-process* consumers of
-        # the same validated event the transport carries, which is what keeps a browser client and
-        # the desktop window from being two renderings that can drift.
         self._listeners: List[Callable[[Dict[str, Any]], None]] = []
 
     def set_transport(self, transport: Transport) -> None:
@@ -97,16 +99,16 @@ class BridgeBus:
             self._listeners.remove(listener)
 
     def dispatch(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate ``event``, deliver it to the sink, and return it unchanged.
+        """Validate ``event``, deliver it, and return it unchanged.
 
         Raises ``pydantic.ValidationError`` (unknown type / undocumented key) or
         ``TypeError`` (a value that is not JSON-serialisable) at the boundary rather
         than swallowing it. The event is returned unchanged so a caller keeps the exact
         dict it built -- its key order is part of the wire contract.
 
-        Listeners are notified **after** the transport and can never change the answer: one that
-        raises is not allowed to break the emit that reached it, because the emitter is the
-        workflow thread and the listener is an observer.
+        Listeners are notified **after** the transport and can never change the answer: one
+        that raises is not allowed to break the emit that reached it, because the emitter is
+        the workflow thread and a listener is an observer.
         """
         validated_bus_event(event)
         self._transport.send(json.dumps(event, ensure_ascii=True, separators=(",", ":")))
@@ -118,17 +120,10 @@ class BridgeBus:
         return event
 
 
-class _NullTransport:
-    """Drops everything: the bus before the window exists, and the tests."""
-
-    def send(self, json_text: str) -> None:
-        return
-
-
 # The process-wide bus. The app binds the webview transport on construction; any other
 # module (the state kernel, the workflow) emits through :func:`emit` without needing a
 # reference to the window.
-_bus = BridgeBus(_NullTransport())
+_bus = BridgeBus(NullTransport())
 
 
 def set_transport(transport: Transport) -> None:

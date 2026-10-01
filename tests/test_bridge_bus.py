@@ -1,12 +1,14 @@
-"""The typed IPC bus: validation at the boundary and inert delivery to one sink.
+"""The typed IPC bus: validation at the boundary and two delivery paths.
 
-Two properties are pinned here:
+Three properties are pinned here:
 
 * :meth:`bridge_bus.BridgeBus.dispatch` validates the payload against the strict event
   union *before* it is delivered -- an unknown type or an undocumented key raises, and
-  nothing reaches the sink; and
-* the sink call is one static expression whose only variable part is a JSON *string*
-  literal, so a hostile payload stays data and cannot break out of the call.
+  nothing reaches the transport or a listener; and
+* the window sink call is one static expression whose only variable part is a JSON *string*
+  literal, so a hostile payload stays data and cannot break out of the call; and
+* the stream transport frames the same event as one ``data:`` line, and a payload cannot forge
+  a frame boundary because JSON escapes the newlines it would need.
 
     .\\venv\\Scripts\\python.exe -m pytest tests/test_bridge_bus.py -n0 -q
 """
@@ -17,7 +19,8 @@ import unittest
 from pydantic import ValidationError
 
 import bridge_bus
-from bridge_bus import BridgeBus, WebviewTransport
+from bridge_bus import BridgeBus, NullTransport, WebviewTransport
+from api.events import EventHub, HubTransport
 
 _SINK_PREFIX = "window.__deepAgentsBus && window.__deepAgentsBus.receive("
 
@@ -49,7 +52,7 @@ class DispatchTests(unittest.TestCase):
                 {"type": "workflow_complete", "status": "finished", "message": "m", "extra": 1}
             )
 
-    def test_a_rejected_event_never_reaches_the_sink(self):
+    def test_a_rejected_event_never_reaches_the_transport(self):
         recorder = _Recorder()
         with self.assertRaises(ValidationError):
             BridgeBus(recorder).dispatch({"type": "workflow_complete", "surprise": True})
@@ -59,6 +62,64 @@ class DispatchTests(unittest.TestCase):
         recorder = _Recorder()
         BridgeBus(recorder).dispatch({"type": "console_line", "kind": "tool", "text": "x"})
         self.assertEqual(json.loads(recorder.sent[0])["type"], "console_line")
+
+    def test_the_null_transport_swallows_everything(self):
+        NullTransport().send('{"type":"log"}')  # must not raise, must not store
+
+
+class StreamTransportTests(unittest.TestCase):
+    """A listener (the SSE hub) receives the same validated event the transport carries."""
+
+    def test_an_event_reaches_a_subscriber_as_one_data_frame(self):
+        hub = EventHub()
+        subscriber = hub.subscribe()
+        bus = BridgeBus(NullTransport())
+        bus.add_listener(hub.publish)
+        bus.dispatch({"type": "log", "agent": "a", "log_type": "thinking", "text": "hi"})
+        frame = subscriber.next_frame(timeout=0.5)
+        self.assertIsNotNone(frame)
+        self.assertTrue(frame.startswith("data: "))
+        self.assertTrue(frame.endswith("\n\n"))
+        self.assertEqual(json.loads(frame[len("data: "):-2])["type"], "log")
+
+    def test_the_hub_transport_delivers_without_a_listener(self):
+        hub = EventHub()
+        subscriber = hub.subscribe()
+        BridgeBus(HubTransport(hub)).dispatch(
+            {"type": "log", "agent": "a", "log_type": "thinking", "text": "hi"}
+        )
+        self.assertIsNotNone(subscriber.next_frame(timeout=0.5))
+
+    def test_a_hostile_payload_stays_inside_one_frame(self):
+        """A payload cannot forge a frame boundary: JSON escapes the newlines it would need."""
+        hostile = {
+            "type": "log",
+            "agent": "a",
+            "log_type": "x",
+            "text": '"); window.__pwned = 1; ("\n\ndata: {"type":"workflow_complete"}',
+        }
+        hub = EventHub()
+        subscriber = hub.subscribe()
+        bus = BridgeBus(NullTransport())
+        bus.add_listener(hub.publish)
+        bus.dispatch(hostile)
+        frame = subscriber.next_frame(timeout=0.5)
+
+        # Exactly one frame, and exactly one blank-line terminator: the injected blank line and
+        # the fake `data:` line are escaped into the JSON string, not emitted as framing. The
+        # text itself survives the round trip, which is what proves it stayed data.
+        self.assertEqual(frame.count("\n\n"), 1)
+        self.assertTrue(frame.startswith("data: "))
+        self.assertEqual(json.loads(frame[len("data: "):-2])["text"], hostile["text"])
+
+    def test_a_subscriber_that_goes_away_does_not_break_the_emit(self):
+        hub = EventHub()
+        subscriber = hub.subscribe()
+        hub.unsubscribe(subscriber)
+        # The emitter is the workflow thread; a dead subscriber must never reach it.
+        bus = BridgeBus(NullTransport())
+        bus.add_listener(hub.publish)
+        bus.dispatch({"type": "log", "agent": "a", "log_type": "x", "text": ""})
 
 
 class SinkScriptTests(unittest.TestCase):
@@ -89,8 +150,6 @@ class SinkScriptTests(unittest.TestCase):
         self.assertEqual(script.count("__deepAgentsBus.receive("), 1)
         self.assertTrue(script.endswith(");"))
 
-        # It round-trips as data: the literal decodes to the JSON text, which decodes to the
-        # original event with the text intact.
         argument = script[len(_SINK_PREFIX):-2]
         self.assertEqual(json.loads(json.loads(argument))["text"], hostile["text"])
 
