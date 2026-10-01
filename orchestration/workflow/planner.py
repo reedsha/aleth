@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from storage.db import TaskNode, get_store, plan_id_for
 from tools.payloads import ASTTarget, ImplementationPlanArtifact
-from tools.workspace import get_active_plan_filename, get_project_dir
+from tools.workspace import get_active_plan_filename, get_execution_dir
 
 # Where an ad-hoc directive's task is filed. One section, so a run of untasked fixes does
 # not scatter nodes across the roadmap's own sections.
@@ -363,7 +363,7 @@ def plan_task(
     ``workflow_complete``, which is the honest outcome for a request that cannot be planned.
     """
     resolved_plan = plan_id or plan_id_for(get_active_plan_filename())
-    resolved_workspace = workspace_dir or get_project_dir()
+    resolved_workspace = workspace_dir or get_execution_dir()
     files = _declared_files(task)
     resolved_model = str(model or "") or _routed_route(resolved_plan, task)
 

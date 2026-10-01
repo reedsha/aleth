@@ -268,14 +268,23 @@ def load_staging(staging_id: str) -> Optional[StagingWorkspace]:
 
 
 def list_stagings() -> List[StagingWorkspace]:
-    """Every shadow currently on disk, in creation order. Reads the manifests, not a registry."""
+    """Every shadow currently on disk, oldest first. Reads the manifests, not a registry."""
     base = staging_base()
     found: List[StagingWorkspace] = []
     try:
-        entries = sorted(os.listdir(base))
+        entries = os.listdir(base)
     except OSError:
         return found
-    for name in entries:
+    # Ordered by creation time, so ``find_staging``'s "the last one" really is the newest: a plan
+    # can carry more than one shadow (a manual approval, then an ``execute_plan``), and the review
+    # view wants the latest, not an arbitrary directory name.
+    def _created(name: str) -> float:
+        try:
+            return os.path.getmtime(os.path.join(base, name))
+        except OSError:
+            return 0.0
+
+    for name in sorted(entries, key=_created):
         workspace = load_staging(name)
         if workspace is not None:
             found.append(workspace)
