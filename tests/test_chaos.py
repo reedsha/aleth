@@ -307,17 +307,21 @@ class FileDescriptorTests(unittest.TestCase):
 
 
 def _real_runtime_available() -> bool:
-    """A live daemon reached through the real client (no test double).
+    """A live daemon reached through the real client (no test double) that can run the image.
 
-    These tests assert on the container *table*, so a double cannot stand in: they are about the
-    lifecycle the daemon owns.
+    These tests assert on the container *table* and on real egress, so a double cannot stand in:
+    they are about the lifecycle the daemon owns. They need more than a reachable daemon, though --
+    they need the Linux sandbox image, and a daemon that cannot run it (a Windows daemon in
+    Windows-containers mode, or any host where the image was never built) would fail them for a
+    reason that has nothing to do with the lifecycle under test. ``test_docker_sandbox`` gates its
+    live tests on exactly this pair.
     """
     if os.environ.get("ALETH_DOCKER_BIN"):
         return False
     try:
         from tools import docker_sandbox
 
-        return docker_sandbox.available()
+        return docker_sandbox.available() and docker_sandbox.image_present(docker_sandbox.image())
     except Exception:
         return False
 

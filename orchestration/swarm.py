@@ -26,6 +26,7 @@ correctness guarantee.
 
 from __future__ import annotations
 
+import multiprocessing
 import sqlite3
 import sys
 import time
@@ -41,6 +42,17 @@ from orchestration.scheduler import (
     get_executable_nodes,
 )
 from orchestration.worker import execute_node, role_payload
+
+# A worker is a process, and on POSIX the default start method is ``fork``. Forking a parent that
+# already holds native threads -- lancedb's background event loop, torch's pools -- copies those
+# threads' locks into the child without the threads that would release them, and the child dies the
+# moment it touches one. That is not hypothetical: it segfaulted a worker mid-suite and took the
+# test that was waiting on it. ``forkserver`` starts its server from a *fresh* interpreter
+# (fork + exec) and forks workers from that clean process, so none of the parent's thread state
+# crosses over; on Windows the default is already ``spawn``. The worker was written for exactly
+# this boundary -- picklable arguments, nothing live -- so the pool asks for the method explicitly
+# instead of inheriting whatever the platform happens to default to.
+_POOL_START_METHOD = "spawn" if sys.platform == "win32" else "forkserver"
 
 # The exception types that mean "the machine failed", as opposed to "the work is wrong". Kept as
 # a tuple so ``isinstance`` is one call, and deliberately narrow: anything not listed is treated as
@@ -263,7 +275,10 @@ class Swarm:
             # shut-down pool or leak a new one, so a tick after close is inert by definition.
             return []
         if self._executor is None:
-            self._executor = ProcessPoolExecutor(max_workers=self.max_workers)
+            self._executor = ProcessPoolExecutor(
+                max_workers=self.max_workers,
+                mp_context=multiprocessing.get_context(_POOL_START_METHOD),
+            )
 
         connection = self._connection()
         try:
