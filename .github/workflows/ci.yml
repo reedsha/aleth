@@ -53,6 +53,28 @@ jobs:
         # Python half -- every module must at least parse.
         run: python -m compileall -q agents core orchestration storage tools app.py bridge_bus.py env_boot.py main.py registry.py
 
+  test-ui:
+    # The Playwright suite guards the behaviour ESLint cannot see -- the intent a button submits,
+    # the resilience screens, the plan tree's rendering. It is built and run here because a suite
+    # that only ever runs by hand is a suite that bit-rots, and because the frontend's behaviour is
+    # the half of the system a lint rule can never check.
+    name: test-ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install the UI toolchain
+        run: npm ci
+      - name: Build the bundle the tests run against
+        run: npm run build
+      - name: Install Chromium and its system libraries
+        run: npx playwright install --with-deps chromium
+      - name: Playwright suite
+        run: npx playwright test
+
   test-native:
     name: test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
