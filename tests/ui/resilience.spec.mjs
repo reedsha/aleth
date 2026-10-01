@@ -129,3 +129,81 @@ test("reconnecting re-enables the triggers", async ({ page }) => {
   await expect(page.locator("#btnConfirmActionParam")).not.toBeDisabled();
   await expect(page.locator("#engineStatusPill")).toBeHidden();
 });
+
+// ---------------------------------------------------------------------------
+// 3. A failed run is terminal, and gates new work until it is acknowledged
+// ---------------------------------------------------------------------------
+
+const PENDING_FAILURE = {
+  intent_id: "boom",
+  action_type: "next_step",
+  message: "proceed",
+  status: "failed",
+  error: "the container was OOM-killed",
+  created_at: 1,
+  updated_at: 2,
+  acknowledged_at: 0,
+};
+
+test("a failed run gates the UI and says why", async ({ page }) => {
+  await openApp(page);
+
+  await page.evaluate(() =>
+    window.__alethEmit(
+      JSON.stringify({
+        type: "intent_failed",
+        intent_id: "boom",
+        action_type: "next_step",
+        error: "the container was OOM-killed",
+      })
+    )
+  );
+
+  const banner = page.locator("#engineFailureBanner");
+  await expect(banner).toBeVisible();
+  // The reason, not a generic "something failed" -- an OOM is a different fact to be told.
+  await expect(banner).toContainText("OOM-killed");
+  await expect(page.locator("#btnConfirmActionParam")).toBeDisabled();
+  expect(await page.evaluate(() => window.Aleth.diagnostics().engineAvailable)).toBe(false);
+});
+
+test("acknowledging a failure clears the gate in the ledger", async ({ page }) => {
+  await openApp(page, {
+    api: {
+      get_intent_status: { pending_failure: PENDING_FAILURE, ledger: [PENDING_FAILURE] },
+      acknowledge_intent: { success: true, acknowledged: 1 },
+    },
+  });
+
+  // The gate was read from the ledger at startup, so a failure that happened while the window
+  // was closed is still seen.
+  await expect(page.locator("#engineFailureBanner")).toBeVisible();
+  await expect(page.locator("#btnConfirmActionParam")).toBeDisabled();
+
+  await page.locator("#engineFailureAcknowledge").click();
+
+  await expect(page.locator("#engineFailureBanner")).toHaveCount(0);
+  await expect(page.locator("#btnConfirmActionParam")).not.toBeDisabled();
+  expect(await page.evaluate(() => window.Aleth.diagnostics().engineAvailable)).toBe(true);
+  // The acknowledgement went to the engine, not just to the DOM: a UI-only dismissal would come
+  // back on the next reload.
+  expect(await page.evaluate(() => window.__alethFetchLog)).toContain("/api/intent/acknowledge");
+});
+
+test("a failure the engine refuses to acknowledge keeps the gate up", async ({ page }) => {
+  await openApp(page, {
+    api: {
+      get_intent_status: { pending_failure: PENDING_FAILURE },
+      // The ledger write failed, so the acknowledgement did not happen.
+      acknowledge_intent: { success: false, error: "the ledger is locked" },
+    },
+  });
+  await expect(page.locator("#engineFailureBanner")).toBeVisible();
+
+  await page.locator("#engineFailureAcknowledge").click();
+
+  // Still gated, and the user was told: clearing it locally would be the UI claiming a write
+  // that did not happen.
+  await expect(page.locator("#engineFailureBanner")).toBeVisible();
+  await expect(page.locator("#btnConfirmActionParam")).toBeDisabled();
+});

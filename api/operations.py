@@ -124,6 +124,13 @@ class SaveSettingsRequest(BaseModel):
     values: Dict[str, Any]
 
 
+class AcknowledgeRequest(BaseModel):
+    """Acknowledge a failed intent, or every unacknowledged one when no id is given."""
+
+    model_config = _STRICT
+    intent_id: Optional[str] = None
+
+
 class ConsoleOpenRequest(BaseModel):
     model_config = _STRICT
     backlog: List[Dict[str, Any]] = []
@@ -198,6 +205,7 @@ OPERATIONS: tuple = (
     Operation("push_console_line", "POST", "/api/console/line", ConsoleLineRequest, _invoke("push_console_line")),
     Operation("ui_ready", "POST", "/api/ui/ready", _Empty, _invoke("ui_ready")),
     Operation("get_console_backlog", "GET", "/api/console/backlog", _Empty, _invoke("get_console_backlog")),
+    Operation("acknowledge_intent", "POST", "/api/intent/acknowledge", AcknowledgeRequest, _invoke("acknowledge_intent")),
 )
 
 

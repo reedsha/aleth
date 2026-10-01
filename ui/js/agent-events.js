@@ -3,6 +3,7 @@
 // Inbound Event Handler (invoked by ui/js/bridge-bus.js, the strict bus sink)
 // ============================================================================
 import { emit } from "./bus.js";
+import { blockOnEngineFailure } from "./connection.js";
 import { echoAgentEvent, hideConsole, revealConsoleForAttention, showConsole } from "./console.js";
 import { escapeHtml } from "./dom.js";
 import { showToast } from "./notify.js";
@@ -179,6 +180,20 @@ export function handleAgentEvent(event) {
       if (event.status === "finished" && typeof mountResultView === "function") {
         mountResultView();
       }
+      break;
+
+    case "intent_failed":
+      // Terminal, and the engine will not retry it: the only thing left is to tell the user and
+      // stop accepting new work until they have seen it. The gate itself lives in
+      // ui/js/connection.js, which is also what the startup ledger read feeds -- a reload must not
+      // forget a failure.
+      revealConsoleForAttention();
+      clearAllAgentThinking();
+      blockOnEngineFailure({
+        intent_id: event.intent_id || "",
+        action_type: event.action_type || "",
+        error: event.error || "the run failed",
+      });
       break;
 
     case "workspace_changed":

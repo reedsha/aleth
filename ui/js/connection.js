@@ -15,6 +15,7 @@
 // `engineAvailable()` is the single question every execution trigger asks. The indicator is the
 // visible half; freezing the triggers is the half that stops the user doing damage.
 
+import { api } from "./api-client.js";
 import { showToast } from "./notify.js";
 
 export const CONNECTING = "connecting";
@@ -41,17 +42,42 @@ const TRIGGER_IDS = [
 let current = CONNECTING;
 let graceTimer = null;
 let indicator = null;
+let failure = null;
+let failureBanner = null;
 
 /**
  * Whether the engine may be asked to do something.
  *
+ * Two things close the door, and both are about not lying to the user:
+ *
+ * * a **lost** stream -- the engine is not answering at all;
+ * * an **unacknowledged failure** -- the last run did not do what the user asked, and they have
+ *   not been told yet. Accepting a new intent first would bury the failure under a fresh one.
+ *
  * A drop does **not** immediately close the door: `reconnecting` is a warning, and the grace
- * window exists so a restart or a laptop waking costs the user nothing. Only `lost` -- the stream
- * still down after :data:`GRACE_MS` -- freezes the UI, which is when continuing to accept work
- * would be stacking intents into a queue nothing is draining.
+ * window exists so a restart or a laptop waking costs the user nothing.
  */
 export function engineAvailable() {
-  return current !== LOST;
+  return current !== LOST && !failure;
+}
+
+/** The failure gating the UI, or ``null``. */
+export function pendingEngineFailure() {
+  return failure;
+}
+
+/**
+ * Gates the UI on a failed run, until the user acknowledges it.
+ *
+ * Called from two places on purpose: the stream (an `intent_failed` event, so it is immediate)
+ * and startup (reading the ledger, so a failure that happened while the window was closed is
+ * still seen). Either way it is the *ledger's* failure, not a UI-only dismissal -- a reload must
+ * not forget that a run failed.
+ */
+export function blockOnEngineFailure(next) {
+  failure = next || null;
+  renderFailureBanner();
+  applyTriggerAvailability();
 }
 
 export function connectionState() {
@@ -89,6 +115,72 @@ function applyTriggerAvailability() {
       element.disabled = false;
     }
   });
+}
+
+/**
+ * The failure banner: what went wrong, and the one thing the user can do about it.
+ *
+ * It is not a toast. A toast is gone in three seconds, and this is a gate -- the UI will not
+ * accept a new intent until it is dismissed, so it has to stay until it is.
+ */
+function renderFailureBanner() {
+  const body = document.body || document.documentElement;
+  if (!body) return;
+  if (!failure) {
+    if (failureBanner) {
+      failureBanner.remove();
+      failureBanner = null;
+    }
+    return;
+  }
+  if (failureBanner && failureBanner.isConnected) return;
+
+  const banner = document.createElement("div");
+  banner.id = "engineFailureBanner";
+  banner.setAttribute("role", "alert");
+  banner.style.cssText =
+    "position:fixed;left:14px;right:14px;bottom:14px;z-index:9999;display:flex;gap:14px;" +
+    "align-items:center;justify-content:space-between;padding:10px 14px;border-radius:10px;" +
+    "background:#3f1d1d;color:#fecaca;border:1px solid #7f1d1d;" +
+    "font:12px/1.5 system-ui,-apple-system,Segoe UI,sans-serif";
+
+  const text = document.createElement("div");
+  const detail = failure.error || "the run failed";
+  text.textContent = `The last run failed: ${detail}. Actions are paused until you acknowledge it.`;
+
+  const ack = document.createElement("button");
+  ack.type = "button";
+  ack.id = "engineFailureAcknowledge";
+  ack.textContent = "Acknowledge";
+  ack.style.cssText =
+    "flex:0 0 auto;padding:6px 14px;border-radius:8px;border:1px solid #7f1d1d;" +
+    "background:#15181d;color:#e2e8f0;font:inherit;cursor:pointer";
+  ack.addEventListener("click", () => acknowledgeFailure());
+
+  banner.appendChild(text);
+  banner.appendChild(ack);
+  body.appendChild(banner);
+  failureBanner = banner;
+}
+
+/**
+ * Clears the gate, in the ledger and in the UI.
+ *
+ * The ledger first: a UI-only dismissal would come back on the next reload and tell the user
+ * about a failure they already dealt with. If the write fails the gate stays up, which is the
+ * honest outcome -- the acknowledgement did not happen.
+ */
+export async function acknowledgeFailure() {
+  if (!failure) return false;
+  try {
+    await api.acknowledge_intent(failure.intent_id);
+  } catch (err) {
+    showToast(`Could not acknowledge the failure: ${(err && err.message) || err}`, "error");
+    return false;
+  }
+  blockOnEngineFailure(null);
+  showToast("Failure acknowledged.", "success");
+  return true;
 }
 
 /** Moves the connection to `next` and reflects it: indicator, triggers, and the grace timer. */
@@ -133,6 +225,7 @@ export function initConnectionIndicator() {
     "background:#3f2d0a;color:#fbbf24;border:1px solid #78350f;pointer-events:none";
   body.appendChild(indicator);
   renderIndicator(current);
+  renderFailureBanner();
   applyTriggerAvailability();
   return indicator;
 }

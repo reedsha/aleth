@@ -9,6 +9,7 @@ import {
   CONNECTED,
   LOST,
   RECONNECTING,
+  blockOnEngineFailure,
   initConnectionIndicator,
   setConnectionState,
 } from "./connection.js";
@@ -48,6 +49,14 @@ export async function initFromGateway() {
     // cold-start tick is gated on this: a tick before these listeners exist would broadcast
     // task_state_updated into nothing and the DAG would render stale until the next plan load.
     await api.ui_ready();
+
+    // The durable ledger, not the in-memory queue: a run that failed while this window was closed
+    // is still a run that failed, and the user has not been told. Reading it here is what makes
+    // the gate survive a reload.
+    const intents = await api.get_intent_status();
+    if (intents && intents.pending_failure) {
+      blockOnEngineFailure(intents.pending_failure);
+    }
 
     // A reload mid-run leaves the backend thread alive while `state.isExecuting` resets, so
     // Stop stays hidden and a second run is launchable. Ask the backend and re-arm the lock

@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import mimetypes
 import os
+import socket
 import sys
 import threading
 import time
@@ -51,6 +52,10 @@ MAX_BODY_BYTES = 256 * 1024
 # thread for the life of the process.
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_MAX_SECONDS = 3600.0
+
+# Why an unfinished intent is failed at boot. It is the honest answer: nothing was written, and
+# the only thing that writes a terminal state is the engine that is no longer there.
+RECOVERY_REASON = "the engine stopped before this run finished"
 
 _LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -117,6 +122,10 @@ def origin_allowed(origin: str, port: int, extra: Iterable[str] = ()) -> bool:
 class _ThreadingServer(ThreadingHTTPServer):
     """The socket, plus the four things a handler needs to answer a request."""
 
+    # A wedged handler must never hold the process open, so the threads are daemons -- but that
+    # also means ``server_close()`` does not wait for them. They are tracked here so ``stop()``
+    # can: a request from a finished test still in flight is a request that can answer into the
+    # next one.
     daemon_threads = True
     allow_reuse_address = True
 
@@ -134,10 +143,25 @@ class _ThreadingServer(ThreadingHTTPServer):
         self.gateway = gateway
         self.allowed_origins = allowed_origins
         self.stop_event = stop_event
+        self.handlers: List[threading.Thread] = []
         # The built frontend. Serving it from this socket is what makes the window an ordinary
         # browser on the gateway's own origin: no CORS, no "null" origin, and no second way for
         # the page to learn where the API lives -- it is where the page came from.
         self.static_root = str(static_root or "")
+
+    def process_request(self, request, client_address) -> None:
+        thread = threading.Thread(
+            target=self.process_request_thread, args=(request, client_address), daemon=True
+        )
+        self.handlers.append(thread)
+        thread.start()
+
+    def join_handlers(self, timeout: float) -> bool:
+        """Wait for in-flight request threads, bounded. Returns whether all of them finished."""
+        deadline = time.monotonic() + timeout
+        for thread in list(self.handlers):
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        return all(not thread.is_alive() for thread in self.handlers)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -155,7 +179,32 @@ class _Handler(BaseHTTPRequestHandler):
     def _server(self) -> _ThreadingServer:
         return self.server  # type: ignore[return-value]
 
+    def _drain_body(self) -> None:
+        """Discard any request body the client sent.
+
+        A refusal that answers *without* reading the body leaves unread bytes in the socket's
+        receive buffer, and closing a socket with unread data sends RST rather than FIN. On
+        Windows the client then fails with ``ConnectionAbortedError`` instead of reading the
+        403 -- a refusal that arrives as a transport error, which is why this gate looked
+        flaky under load: whether the response was seen before the reset depended on timing.
+
+        Draining first is the whole fix, and it is the correct HTTP behaviour regardless: a
+        server that closes a connection must not leave the client's bytes unread.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            return
+        remaining = min(max(length, 0), MAX_BODY_BYTES)
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 65536))
+            if not chunk:
+                return
+            remaining -= len(chunk)
+
     def _denied(self, status: int, error: str, detail: str = "") -> None:
+        # Before answering: the body is read and discarded, so the connection can close cleanly.
+        self._drain_body()
         body = ErrorResponse(error=error, detail=detail).model_dump_json().encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -163,6 +212,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+        self.wfile.flush()
 
     def _cors(self) -> Dict[str, str]:
         """The CORS headers, emitted only for an origin the app itself served."""
@@ -406,14 +456,24 @@ class ApiServer:
         return self.base_url
 
     def stop(self) -> None:
-        """Stop serving, release subscribers, and stop the worker. Idempotent, never raises."""
+        """Stop serving, release subscribers, and wait for the socket to actually be gone.
+
+        Idempotent, and never raises. The waiting is the point: a caller that hands control back
+        while the listening socket is still open -- or while a request thread is still running --
+        is a caller whose next test can meet the previous one's server. That is how a security
+        assertion ends up answered by a socket it did not start.
+        """
         self.stop_event.set()
         if self._worker_stop is not None:
             self._worker_stop.set()
             self.gateway.queue.wake()
+        # Wakes any streaming handler out of its wait, so the handler threads below finish
+        # promptly instead of sitting out their heartbeat interval.
         self.gateway.hub.close_all()
         httpd, self._httpd = self._httpd, None
+        port = 0
         if httpd is not None:
+            port = int(httpd.server_address[1])
             try:
                 httpd.shutdown()
                 httpd.server_close()
@@ -422,10 +482,37 @@ class ApiServer:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=5)
+        if httpd is not None:
+            try:
+                httpd.join_handlers(timeout=5)
+            except Exception:
+                pass
+        if port:
+            self._wait_for_release(port)
         worker, self._worker = self._worker, None
         if worker is not None:
             worker.join(timeout=5)
         self.detach_bus()
+
+    def _wait_for_release(self, port: int, timeout: float = 5.0) -> bool:
+        """Wait until nothing is listening on ``port`` any more.
+
+        ``server_close()`` closes the descriptor, but a descriptor closed is not the same claim
+        as a port released, and this is the only form of that claim a caller can actually make.
+        The probe binds *without* ``SO_REUSEADDR`` on purpose: with it, the probe would succeed
+        against a socket that is still open, which would make the check worthless.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                probe.bind((self.host, port))
+                return True
+            except OSError:
+                time.sleep(0.01)
+            finally:
+                probe.close()
+        return False
 
     # -- addressing -----------------------------------------------------------
     @property
@@ -440,6 +527,7 @@ class ApiServer:
 def start_gateway(
     *,
     service=None,
+    ledger=None,
     port: Optional[int] = None,
     host: str = LOOPBACK_HOST,
     allowed_origins: Sequence[str] = (),
@@ -456,8 +544,33 @@ def start_gateway(
     ``service`` is the engine-facing object the operation table calls. Passing ``None`` leaves the
     read-only endpoints working and every operation a 503 -- which is what a test that only wants
     the state surface asks for. ``static_root`` mounts the built frontend at ``/``.
+
+    ``ledger`` is reconciled **before** anything is served. An intent left unfinished in it is one
+    whose engine stopped -- crashed, OOM-killed, powered off -- and marking it failed at boot is
+    the only deterministic answer available, because the process that would have written a
+    terminal state is gone. It is deliberately not a retry: the user is told, and decides.
     """
-    gateway = Gateway(queue=IntentQueue(capacity=capacity), hub=EventHub(), service=service)
+    if ledger is not None:
+        try:
+            recovered = ledger.reconcile(RECOVERY_REASON)
+            if recovered:
+                print(
+                    f"[intents] {recovered} intent(s) never finished and were marked failed "
+                    f"({RECOVERY_REASON})",
+                    file=sys.stderr,
+                )
+        except Exception as error:  # a boot that cannot reconcile still boots
+            print(
+                f"[intents] the ledger could not be reconciled: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+
+    gateway = Gateway(
+        queue=IntentQueue(capacity=capacity, ledger=ledger),
+        hub=EventHub(),
+        service=service,
+        ledger=ledger,
+    )
     server = ApiServer(
         gateway=gateway,
         host=host,

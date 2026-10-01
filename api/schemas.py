@@ -83,11 +83,32 @@ class IntentView(BaseModel):
     action_type: str
     message: str
     status: str
+    error: str = ""
     enqueued_at: float
 
 
+class IntentLedgerEntry(BaseModel):
+    """One row of the durable intent ledger."""
+
+    model_config = _STRICT
+
+    intent_id: str
+    action_type: str
+    message: str
+    status: str
+    error: str = ""
+    created_at: float
+    updated_at: float
+    acknowledged_at: float = 0.0
+
+
 class IntentQueueStatus(BaseModel):
-    """The queue's own state: how deep it is, and what has been through it."""
+    """The queue's own state, plus the ledger that outlives it.
+
+    The queue is in memory and dies with the process; the ledger is what a restart reconciles
+    against. ``pending_failure`` is the gate the UI reads: while it is set, the user has not yet
+    been told that their last run did not do what they asked.
+    """
 
     model_config = _STRICT
 
@@ -97,6 +118,16 @@ class IntentQueueStatus(BaseModel):
     completed: int
     failed: int
     items: List[IntentView]
+    ledger: List[IntentLedgerEntry] = []
+    pending_failure: Optional[IntentLedgerEntry] = None
+
+
+class AcknowledgeResponse(BaseModel):
+    """How many failures the user's acknowledgement cleared."""
+
+    model_config = _STRICT
+
+    acknowledged: int
 
 
 class HealthResponse(BaseModel):
@@ -219,3 +250,23 @@ class OperationEnvelope(BaseModel):
     ok: bool
     data: Any = None
     error: str = ""
+
+
+class ServiceRefusal(BaseModel):
+    """The only shape in which a service may report a failure.
+
+    The client's type guard keys on ``success is False``: that is what it turns into a thrown
+    ``ApiError``. A payload that carries an ``error`` without that flag is therefore delivered as
+    a *successful* answer and read as one -- the failure is swallowed, and the caller carries on
+    with state the backend just said was bad. The gateway validates every answer against this
+    model (``api.gateway``), so the anomaly cannot be reintroduced by a future method.
+
+    ``extra`` is allowed on purpose: a refusal carries its own context -- a ``task_id``, an empty
+    ``variables`` list, the payload keys the caller was expecting -- and that shape differs per
+    operation. What is *not* optional is the flag and the reason.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    success: Literal[False]
+    error: str

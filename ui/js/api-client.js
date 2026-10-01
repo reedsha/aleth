@@ -56,6 +56,11 @@ export const OPERATIONS = {
   open_console_window: { verb: "POST", path: "/api/console/open", args: ["backlog"] },
   push_console_line: { verb: "POST", path: "/api/console/line", args: ["kind", "text"] },
   get_console_backlog: { verb: "GET", path: "/api/console/backlog", args: [] },
+  // The gateway's own intent-status route (``api/gateway.py``) rather than a service operation:
+  // it reports the queue *and* the durable ledger, which is what the UI gates on at startup -- a
+  // failure that happened while the window was closed must still be seen.
+  get_intent_status: { verb: "GET", path: "/api/intents", args: [] },
+  acknowledge_intent: { verb: "POST", path: "/api/intent/acknowledge", args: ["intent_id"] },
   ui_ready: { verb: "POST", path: "/api/ui/ready", args: [] },
   // The one intent. It is not an operation in `api/operations.py` because it is queued rather
   // than executed: the orchestrator drains it, and the run's progress arrives on the stream.

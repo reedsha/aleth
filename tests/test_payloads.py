@@ -296,7 +296,7 @@ class BusVocabularyTests(unittest.TestCase):
         "workflow_stopped", "agent_error", "agents_updated", "workspace_changed",
         "laya_tagging_started", "laya_tagging_progress", "laya_tagging_done",
         "console_detached", "console_detach_failed", "console_line", "task_state_updated",
-        "artifact_planned", "artifact_approved",
+        "artifact_planned", "artifact_approved", "intent_failed",
         "tool_call", "tool_result", "log",
     })
 

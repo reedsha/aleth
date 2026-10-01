@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import sys
 import threading
 import time
 import uuid
-from typing import Callable, Deque, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional
 
 from api.schemas import IntentQueueStatus, IntentRequest, IntentView
 
@@ -54,21 +55,47 @@ class Intent:
             action_type=self.action_type,
             message=self.message,
             status=self.status,
+            error=self.error,
             enqueued_at=self.enqueued_at,
         )
 
 
 class IntentQueue:
-    """A bounded FIFO of validated intents, safe to submit to and drain from any thread."""
+    """A bounded FIFO of validated intents, safe to submit to and drain from any thread.
 
-    def __init__(self, capacity: int = DEFAULT_CAPACITY):
+    ``ledger`` is optional so the queue stays testable without a database, and it is written
+    through on every transition: accepted, taken, settled. The ledger, not this object, is what
+    survives a crash -- the queue is in memory and dies with the process.
+    """
+
+    def __init__(self, capacity: int = DEFAULT_CAPACITY, ledger: Any = None):
         self._capacity = max(1, int(capacity))
+        self._ledger = ledger
         self._items: Deque[Intent] = collections.deque()
         self._history: List[Intent] = []
         self._condition = threading.Condition()
         self._accepted = 0
         self._completed = 0
         self._failed = 0
+
+    def _write(self, action: str, intent: Intent) -> None:
+        """One ledger transition. A lost write is reported, never swallowed.
+
+        The ledger is what the next boot reconciles against, so a write that failed silently
+        would leave a run looking alive forever. It is not fatal to the run itself -- the run is
+        the engine's job and the ledger is its record -- so the fault is printed and the run
+        continues.
+        """
+        if self._ledger is None:
+            return
+        try:
+            getattr(self._ledger, action)(intent)
+        except Exception as error:  # the record is an observer of the run, not the run
+            print(
+                f"[intents] the ledger could not record {action} for {intent.id}: "
+                f"{type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
 
     def submit(self, request: IntentRequest) -> Intent:
         """Validate-and-append. Raises :class:`IntentQueueFull` when there is no room."""
@@ -87,6 +114,9 @@ class IntentQueue:
             self._items.append(intent)
             self._history.append(intent)
             self._accepted += 1
+            # Written before it can run: a process that dies mid-run cannot write its own
+            # epitaph, and an intent that was never written is one the next boot cannot reconcile.
+            self._write("record", intent)
             self._condition.notify_all()
             return intent
 
@@ -99,18 +129,25 @@ class IntentQueue:
                 return None
             intent = self._items.popleft()
             intent.status = "running"
-            return intent
+        self._write("mark_running", intent)
+        return intent
 
     def settle(self, intent: Intent, *, error: str = "") -> None:
-        """Mark a drained intent finished, or failed with the reason."""
+        """Mark a drained intent finished, or failed with the reason. **Never retried.**
+
+        A failure is terminal. Re-queueing it would be the engine spending the user's time on its
+        own initiative, and the ledger would then record a run the user never asked for.
+        """
         with self._condition:
             if error:
                 intent.status = "failed"
                 intent.error = str(error)
                 self._failed += 1
             else:
-                intent.status = "completed"
+                if intent.status != "stopped":
+                    intent.status = "completed"
                 self._completed += 1
+        self._write("settle", intent)
 
     def wake(self) -> None:
         """Release a waiter (used by shutdown so the worker leaves promptly)."""

@@ -20,6 +20,7 @@ import http.client
 import json
 import os
 import shutil
+import socket
 import tempfile
 import threading
 import time
@@ -341,6 +342,25 @@ class LiveServerTests(GatewayTestCase):
         self.assertIn("cross-site", body)
         self.assertEqual(self.server.gateway.queue.depth, 0)
 
+    def test_a_refused_post_leaves_its_body_readable(self):
+        """A refusal that is never read is a refusal the client cannot see.
+
+        Answering without draining the request body leaves unread bytes in the socket, and
+        closing a socket with unread data sends RST rather than FIN -- so on Windows the client
+        fails with ``ConnectionAbortedError`` instead of reading the 403. That is what made this
+        gate look flaky under load: the refusal was always correct, and whether the client saw it
+        depended on timing. Repeated, because a race is what it was.
+        """
+        payload = json.dumps({"action_type": "custom", "message": "x" * 4096})
+        for _ in range(20):
+            status, body = self._request(
+                "POST", "/api/intent/execute",
+                body=payload,
+                headers={"Content-Type": "application/json", "Origin": "https://evil.example"},
+            )
+            self.assertEqual(status, 403)
+            self.assertIn("cross-site", body)
+
     def test_an_accepted_intent_is_drained_by_the_orchestrator_loop(self):
         status, body = self._request(
             "POST", "/api/intent/execute",
@@ -403,6 +423,54 @@ class LiveServerTests(GatewayTestCase):
 
         bridge_bus.emit(_LOG_EVENT)  # must not raise, and must not reach a closed hub
         self.assertEqual(self.server.gateway.hub.subscriber_count, 0)
+
+
+class SocketTeardownTests(unittest.TestCase):
+    """A stopped server leaves nothing listening and nothing in flight.
+
+    A fixture that hands control back before the socket is actually gone is a fixture whose next
+    test can meet the previous one's server -- which is how a security assertion gets an answer
+    from a socket it did not start. This pins the guarantee rather than assuming it.
+    """
+
+    def test_stop_releases_the_port_and_joins_the_handlers(self):
+        server = start_gateway(port=0)
+        port = server.bound_port
+        httpd = server._httpd
+
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            connection.request("GET", "/api/health")
+            self.assertEqual(connection.getresponse().status, 200)
+        finally:
+            connection.close()
+
+        # While it is serving, the port is genuinely held -- otherwise the check below proves
+        # nothing at all.
+        self.assertFalse(server._wait_for_release(port, timeout=0.05))
+
+        server.stop()
+
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            # No SO_REUSEADDR: a socket that is still open would win the bind, so this is the
+            # only form of "the port was released" a caller can actually assert.
+            probe.bind(("127.0.0.1", port))
+        except OSError as error:  # pragma: no cover - the failure this test exists for
+            self.fail(f"the port was still held after stop(): {error}")
+        finally:
+            probe.close()
+
+        self.assertIsNone(server._httpd)
+        self.assertTrue(
+            all(not thread.is_alive() for thread in httpd.handlers),
+            "a request thread outlived stop()",
+        )
+
+    def test_stopping_twice_is_harmless(self):
+        server = start_gateway(port=0)
+        server.stop()
+        server.stop()  # must not raise
 
 
 if __name__ == "__main__":

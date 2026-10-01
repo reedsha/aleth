@@ -69,6 +69,11 @@ const SCHEMAS = {
   task_state_updated: { plan_id: isString, task_id: isString, status: isString },
   artifact_planned: { artifact: isObject },
   artifact_approved: { plan_id: isString, task_id: isString },
+  intent_failed: {
+    intent_id: isString,
+    action_type: isString,
+    error: isString,
+  },
   log: { agent: isString, log_type: isString, text: isString },
   tool_call: { agent: isString, tool: isString, args: isObject, description: isString },
   tool_result: { agent: isString, tool: isString, result: isString },

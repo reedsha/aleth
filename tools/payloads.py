@@ -639,6 +639,24 @@ class ArtifactApprovedEvent(BaseModel):
     task_id: str = ""
 
 
+class IntentFailedEvent(BaseModel):
+    """A run the user asked for ended in failure, and it is terminal.
+
+    Announced so the UI does not have to poll for it: the engine does not retry, so the only
+    thing left is to tell the user and wait for them to acknowledge it. ``outcome`` carries the
+    execution's own verdict where there is one -- ``OOM_KILLED`` when the kernel ended a
+    container -- because "the run failed" and "the machine ran out of memory" are different
+    things to be told.
+    """
+
+    model_config = _STRICT
+
+    type: Literal["intent_failed"]
+    intent_id: str = ""
+    action_type: str = ""
+    error: str = ""
+
+
 # The event envelope: any event the backend may push, discriminated on ``type``.
 EventEnvelope = Annotated[
     Union[
@@ -663,6 +681,7 @@ EventEnvelope = Annotated[
         TaskStateUpdatedEvent,
         ArtifactPlannedEvent,
         ArtifactApprovedEvent,
+        IntentFailedEvent,
         ToolCallEvent,
         ToolResultEvent,
         LogEvent,

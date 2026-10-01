@@ -75,6 +75,9 @@ class EngineService:
         # The local API gateway. Built on demand by ``start_api`` -- the test suite constructs
         # this service constantly and must not bind a socket doing it.
         self._api = None
+        # The durable intent ledger, attached by ``start_api``. Kept here so the acknowledge
+        # endpoint and the run loop reach the same record.
+        self._ledger = None
         # The swarm, built on first use -- never in ``__init__``. Constructing the bridge must not
         # spawn a process pool or dispatch a node: the test suite builds one constantly, and a cold
         # tick there would fire the swarm at fixtures that have no planner.
@@ -113,7 +116,8 @@ class EngineService:
         try:
             return registry.get_agent_summary()
         except Exception as e:
-            return {"error": str(e), "main_agents": [], "coder_agents": [], "workspace_dir": get_project_dir()}
+            return {"success": False, "error": str(e), "main_agents": [], "coder_agents": [],
+                    "workspace_dir": get_project_dir()}
 
     def save_system_prompt(self, agent_id: str, new_prompt: str, is_custom_only: bool = False):
         """Persists updated system prompt or custom instructions to disk and reloads registry without restart."""
@@ -400,8 +404,9 @@ class EngineService:
             report.setdefault("checked", True)
             return report
         except Exception as e:
-            return {"structured": True, "checked": False, "issues": [], "counts": {},
-                    "summary": f"Structure check unavailable: {e}", "error": str(e)}
+            return {"success": False, "structured": True, "checked": False, "issues": [],
+                    "counts": {}, "summary": f"Structure check unavailable: {e}",
+                    "error": str(e)}
 
     def normalize_plan(self):
         """Runs the Normalization Gate's reformat as an archived administrative workflow.
@@ -503,21 +508,68 @@ class EngineService:
     # The API gateway: the frontend's door to state (Phase 14)
     # -------------------------------------------------------------
     def _run_intent(self, intent):
-        """Run one queued intent, and wait for it.
+        """Run one queued intent and report how it actually ended.
 
-        The queue is serial because the engine is: this blocks until the run it started has
-        genuinely ended, so the next intent is taken only then -- not when a thread was merely
-        launched. A refusal (a run already live) is raised, so the intent is recorded as failed
-        with the reason instead of vanishing.
+        The outcome is read from the run's own terminal event: the runner emits exactly one
+        ``workflow_complete``, whose status is ``finished``, ``stopped`` or ``error``. That is the
+        only honest source -- a thread that merely finished is not a run that succeeded, and
+        treating it as one is how a failed plan becomes a green UI.
+
+        A failure **raises**, which is what makes the queue settle it as ``failed`` and write that
+        to the ledger. It is never re-queued: the user asked for one run and got one run's answer.
         """
-        result = self.start_execution(
-            intent.message, intent.action_type, dict(intent.action_params)
-        )
-        if not result.get("success"):
-            raise RuntimeError(str(result.get("error") or "the run was refused"))
-        thread = self._execution_thread
-        if thread is not None:
-            thread.join()
+        outcome = {"status": "", "message": ""}
+        original = self.emit_event
+
+        def capture(event):
+            try:
+                if isinstance(event, dict) and event.get("type") == "workflow_complete":
+                    outcome["status"] = str(event.get("status") or "")
+                    outcome["message"] = str(event.get("message") or "")
+            finally:
+                original(event)
+
+        self.emit_event = capture
+        try:
+            result = self.start_execution(
+                intent.message, intent.action_type, dict(intent.action_params)
+            )
+            if not result.get("success"):
+                raise RuntimeError(str(result.get("error") or "the run was refused"))
+            thread = self._execution_thread
+            if thread is not None:
+                thread.join()
+        finally:
+            self.emit_event = original
+
+        if outcome["status"] == "error":
+            failure = outcome["message"] or "the run failed"
+            # Announced before it is raised: the queue settles the intent as failed and the
+            # ledger records it, but the *UI* needs to be told now rather than on its next poll.
+            self.emit_event({
+                "type": "intent_failed",
+                "intent_id": intent.id,
+                "action_type": intent.action_type,
+                "error": failure,
+            })
+            raise RuntimeError(failure)
+        if outcome["status"] == "stopped":
+            # Terminal, but the user's own doing: not a failure, and not something to acknowledge.
+            intent.status = "stopped"
+
+    def acknowledge_intent(self, intent_id=None):
+        """Clears the failure gate: the user has seen that their run failed.
+
+        The ledger is the record and the gate is the UI's, so this writes the acknowledgement
+        where the next read will find it -- a UI-only dismissal would come back on the next
+        reload, and the user would be told about a failure they already dealt with.
+        """
+        if self._ledger is None:
+            return {"success": False, "error": "no intent ledger is attached"}
+        try:
+            return {"success": True, "acknowledged": int(self._ledger.acknowledge(intent_id))}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def start_api(self):
         """Bind the local gateway, serving the built frontend and the API from one origin.
@@ -530,9 +582,13 @@ class EngineService:
             return {"success": True, "base_url": self._api.base_url, "already_running": True}
         try:
             from api.server import start_gateway
+            from storage.db import get_store
+            from storage.intents import IntentLedger
 
+            self._ledger = IntentLedger(get_store().path)
             self._api = start_gateway(
                 service=self,
+                ledger=self._ledger,
                 on_intent=self._run_intent,
                 static_root=frontend_root(),
             )
@@ -569,7 +625,8 @@ class EngineService:
         try:
             return audit_codebase_plan_sync()
         except Exception as e:
-            return {"error": str(e), "in_sync": False, "summary": f"Audit error: {str(e)}"}
+            return {"success": False, "error": str(e), "in_sync": False,
+                    "summary": f"Audit error: {str(e)}"}
 
     def resolve_sync(self, resolution_type: str):
         """

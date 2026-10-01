@@ -26,10 +26,12 @@ from api.schemas import (
     ErrorResponse,
     HealthResponse,
     IntentAccepted,
+    IntentLedgerEntry,
     IntentRequest,
     OperationEnvelope,
     PlanListResponse,
     PlanView,
+    ServiceRefusal,
     TelemetryListResponse,
     TelemetryReceiptView,
 )
@@ -137,7 +139,30 @@ def _receipt(request: Request, gateway: "Gateway", match: re.Match) -> Response:
 
 
 def _intent_status(request: Request, gateway: "Gateway", match: re.Match) -> Response:
-    return _json(200, gateway.queue.status())
+    """The queue's state, plus the durable ledger and the gate it holds.
+
+    The ledger is the part that survives the process, so it is the part the UI can trust after a
+    crash. ``pending_failure`` is what it gates on: an unacknowledged failure means the user has
+    not yet been told their last run did not do what they asked.
+    """
+    status = gateway.queue.status()
+    ledger = getattr(gateway, "ledger", None)
+    if ledger is not None:
+        try:
+            status = status.model_copy(
+                update={
+                    "ledger": [IntentLedgerEntry(**row) for row in ledger.recent(20)],
+                    "pending_failure": _entry(ledger.pending_failure()),
+                }
+            )
+        except Exception as error:  # the queue still answers; the ledger is an observer
+            print(f"[api] the intent ledger could not be read: {type(error).__name__}: {error}",
+                  file=sys.stderr)
+    return _json(200, status)
+
+
+def _entry(row) -> Optional[IntentLedgerEntry]:
+    return IntentLedgerEntry(**row) if row is not None else None
 
 
 def _submit_intent(request: Request, gateway: "Gateway", match: re.Match) -> Response:
@@ -184,12 +209,16 @@ class Gateway:
         queue: Optional[IntentQueue] = None,
         hub: Optional[EventHub] = None,
         service: Any = None,
+        ledger: Any = None,
     ):
         self.queue = queue or IntentQueue()
         self.hub = hub or EventHub()
         # The engine-facing operations (``api.operations``). ``None`` until the app attaches it,
         # and an operation reaching a gateway without one is a 503 rather than an AttributeError.
         self.service = service
+        # The durable intent ledger. The queue is in memory and dies with the process; this is
+        # what a restart reconciles against.
+        self.ledger = ledger
         self._routes = [
             (method, re.compile(pattern), handler) for method, pattern, handler in ROUTES
         ]
@@ -234,11 +263,37 @@ class Gateway:
             payload = operation.call(self.service, parsed)
         except Exception as error:  # a service fault is the operation's answer, not a crash
             return _error(500, "the operation failed", f"{type(error).__name__}: {error}")
+        fault = _contract_fault(operation.name, payload)
+        if fault:
+            # A service that broke the envelope is a server fault, and saying so is the only safe
+            # answer: sending the payload on would hand the client a failure it reads as success.
+            return _error(500, "the operation broke the response contract", fault)
         try:
             envelope = OperationEnvelope(ok=True, data=payload)
             return Response(status=200, body=envelope.model_dump_json().encode("utf-8"))
         except Exception as error:
             return _error(500, "the answer could not be serialised", str(error))
+
+
+def _contract_fault(name: str, payload: Any) -> str:
+    """Whether a service answer breaks the envelope contract, and why.
+
+    The rule is one sentence: **a payload that reports an ``error`` must also report
+    ``success: false``**. The client's type guard keys on that flag -- it is what becomes a thrown
+    ``ApiError`` -- so a bare ``{"error": ...}`` is delivered as a *successful* answer and read as
+    one, which is exactly how a failure becomes corrupted state instead of an exception.
+
+    Checked here rather than trusted: this is the boundary, and a boundary that assumes its
+    inputs are well-formed is not one. A refusal is validated against
+    :class:`~api.schemas.ServiceRefusal`; anything else is reported as the fault it is.
+    """
+    if not isinstance(payload, dict) or not payload.get("error"):
+        return ""
+    try:
+        ServiceRefusal.model_validate(payload)
+    except ValidationError as error:
+        return f"{name} reported an error without success=false: {error.error_count()} field(s)"
+    return ""
 
 
 def _operation_body(operation: Any, request: Request) -> Dict[str, Any]:
