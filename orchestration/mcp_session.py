@@ -77,7 +77,15 @@ CAPABILITIES: Dict[str, Dict[str, tuple]] = {
     "fs": {"servers": (FS_SERVER,), "groups": (FS_SERVER,)},
     "exec": {"servers": (EXEC_SERVER,), "groups": (EXEC_SERVER,)},
     "ast": {"servers": (FS_SERVER,), "groups": (AST_GROUP,)},
+    # The one capability that widens the sandbox. It exists because some tools genuinely need the
+    # network -- an HTTP client, a scraper, a package installer -- and the alternative (leaving
+    # egress open for everything so one tool can use it) turns a boundary into decoration. A node
+    # that does not declare it runs sealed, which is the baseline.
+    "net": {"servers": (EXEC_SERVER,), "groups": (EXEC_SERVER,)},
 }
+
+# The capability whose *presence* is the only thing that unseals the network.
+NET_CAPABILITY = "net"
 
 # Accepted spellings. Explicit and small on purpose: this is a vocabulary, not fuzzy matching, so
 # a planner that writes the URI-ish name it was shown (``mcp://local-fs``) is understood, and
@@ -92,6 +100,11 @@ CAPABILITY_ALIASES: Dict[str, str] = {
     "ast-parser": "ast",
     "surgical": "ast",
     "symbols": "ast",
+    "network": NET_CAPABILITY,
+    "egress": NET_CAPABILITY,
+    "internet": NET_CAPABILITY,
+    "http": NET_CAPABILITY,
+    "web": NET_CAPABILITY,
 }
 
 
@@ -141,19 +154,9 @@ class MCPSessionContext:
         # stamped with it, so an investigation can ask "what did this run execute?" instead of
         # reconstructing it from timestamps.
         self.session_id = uuid.uuid4().hex
-        self._commands = {
-            FS_SERVER: fs_command or default_command(self.root),
-            EXEC_SERVER: exec_command or default_exec_command(
-                self.root, db_path=self._telemetry_db(), session_id=self.session_id
-            ),
-        }
-        self._clients: Dict[str, MCPClient] = {}
-        self._bound: Dict[str, List[Any]] = {}
-        # Servers that failed to start, by name, with the reason. Reported rather than raised:
-        # a run that cannot reach one server should still be able to use the other.
-        self.failures: Dict[str, str] = {}
-        # Resolved eagerly so a hallucinated capability fails at construction, with a message that
-        # names the vocabulary, rather than as a mysteriously empty tool set later.
+        # Resolved before the commands are built, because the exec server's own argv depends on it:
+        # a hallucinated capability must fail at construction, with a message that names the
+        # vocabulary, rather than as a mysteriously empty tool set later.
         self.capabilities: Optional[tuple] = (
             None if capabilities is None else tuple(str(name) for name in capabilities)
         )
@@ -161,8 +164,32 @@ class MCPSessionContext:
             None if capabilities is None
             else tuple(resolve_capability(name) for name in capabilities)
         )
+        self._commands = {
+            FS_SERVER: fs_command or default_command(self.root),
+            EXEC_SERVER: exec_command or default_exec_command(
+                self.root,
+                db_path=self._telemetry_db(),
+                session_id=self.session_id,
+                allow_network=self._allow_network(),
+            ),
+        }
+        self._clients: Dict[str, MCPClient] = {}
+        self._bound: Dict[str, List[Any]] = {}
+        # Servers that failed to start, by name, with the reason. Reported rather than raised:
+        # a run that cannot reach one server should still be able to use the other.
+        self.failures: Dict[str, str] = {}
 
     # -- lifecycle ---------------------------------------------------------------
+    def _allow_network(self) -> bool:
+        """Whether this session's exec server may run containers with egress.
+
+        Only a node that *declared* the capability gets it, and the engine's own session never
+        does -- its commands are verification, and the baseline is absolute isolation. The answer
+        is baked into the exec server's command line, so it cannot be changed from a tool call:
+        a model that could grant itself the network would not have a boundary at all.
+        """
+        return self._resolved is not None and NET_CAPABILITY in self._resolved
+
     def _telemetry_db(self) -> Optional[str]:
         """Where the exec server writes its receipts, or ``None`` when it cannot be resolved.
 

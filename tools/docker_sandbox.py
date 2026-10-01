@@ -404,6 +404,7 @@ def build_command(
     max_processes: int = DEFAULT_MAX_PROCESSES,
     image_name: Optional[str] = None,
     execution_id: Optional[str] = None,
+    allow_network: bool = False,
 ) -> List[str]:
     """The ``docker run`` argv for one command.
 
@@ -412,12 +413,23 @@ def build_command(
     used as written -- the path is a path *in the daemon's filesystem*, because the orchestrator
     runs there too.
 
+    ``allow_network`` is the **only** way to widen the sandbox, and it is off by default: the
+    baseline is ``--network=none``, absolute isolation, with no egress and no ingress. It exists
+    because a few tools genuinely need the network (an HTTP client, a scraper, a package
+    installer) and the alternative -- leaving egress open for everything so one tool can use it --
+    is how a boundary becomes decoration.
+
+    It is deliberately **not** reachable from a tool call. The declaration travels from the plan's
+    ``required_capabilities`` through ``orchestration.mcp_session`` to the exec server's own
+    command line; a model that could grant itself the network would not have a boundary at all.
+
     The three labels make the container accountable: that it is ours, which execution it belongs
     to, and which process created it. That last one is the whole point -- see
     :func:`purge_orphaned_containers`.
     """
     uid, gid = host_identity()
     resolved = str(Path(root).resolve())
+    network = "bridge" if allow_network else "none"
     return [
         *docker_bin(), "run", "--rm",
         "--name", name,
@@ -425,7 +437,7 @@ def build_command(
         "--label", f"{LABEL_EXECUTION}={execution_id or name}",
         "--label", f"{LABEL_OWNER}={os.getpid()}",
         "--label", f"{LABEL_OWNER_START}={_process_start_time(os.getpid()) or ''}",
-        "--network=none",
+        f"--network={network}",
         "--user", f"{uid}:{gid}",
         "--workdir", WORKSPACE_MOUNT,
         "--mount", f"type=bind,source={resolved},target={WORKSPACE_MOUNT}",
@@ -683,12 +695,16 @@ def run_isolated(
     timeout: int = 30,
     memory_mb: int = DEFAULT_MEMORY_MB,
     max_processes: int = DEFAULT_MAX_PROCESSES,
+    allow_network: bool = False,
 ) -> IsolatedResult:
     """Run ``command`` in a container rooted at ``cwd``, or raise :class:`SandboxError`.
 
     ``cwd`` is the workspace root: it becomes the container's bind mount and working directory.
     The command is never executed on the host -- when the runtime or the image cannot be reached
     this raises rather than falling back.
+
+    ``allow_network`` defaults to ``False``, so the network is sealed unless a caller that knows
+    what it is doing asks otherwise (see :func:`build_command`).
     """
     root = Path(cwd).resolve()
     if not root.is_dir():
@@ -701,6 +717,7 @@ def run_isolated(
         argv = build_command(
             command, root=str(root), name=name, memory_mb=memory_mb,
             max_processes=max_processes, image_name=target, execution_id=execution_id,
+            allow_network=allow_network,
         )
     except EnvironmentError as error:
         # The client is missing: a fatal configuration error, reported at the tool boundary as

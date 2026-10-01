@@ -474,5 +474,97 @@ class BootSweepTests(unittest.TestCase):
         )
 
 
+class NetworkBoundaryTests(unittest.TestCase):
+    """The network boundary: sealed by default, and only a plan's declaration can unseal it."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="aleth_chaos_net_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+        # Pin the runtime: ``build_command`` resolves the client, and this machine has none.
+        env_patcher = mock.patch.dict(os.environ, fake_docker_env())
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+
+    def test_the_default_is_no_network(self):
+        argv = docker_sandbox.build_command("echo hi", root=self.root, name="probe")
+        self.assertIn("--network=none", argv)
+        self.assertNotIn("--network=bridge", argv)
+
+    def test_the_opt_in_widens_it_explicitly(self):
+        argv = docker_sandbox.build_command(
+            "echo hi", root=self.root, name="probe", allow_network=True
+        )
+        self.assertIn("--network=bridge", argv)
+        self.assertNotIn("--network=none", argv)
+
+    def test_a_node_that_did_not_declare_the_capability_is_sealed(self):
+        from orchestration.mcp_session import MCPSessionContext
+
+        self.assertFalse(MCPSessionContext(self.root, capabilities=["fs", "exec"])._allow_network())
+        self.assertFalse(MCPSessionContext(self.root, capabilities=[])._allow_network())
+
+    def test_the_engine_session_is_sealed(self):
+        """Its commands are verification; the baseline applies to it too."""
+        from orchestration.mcp_session import MCPSessionContext
+
+        self.assertFalse(MCPSessionContext(self.root)._allow_network())
+
+    def test_declaring_the_capability_unseals_it(self):
+        from orchestration.mcp_session import MCPSessionContext
+
+        self.assertTrue(MCPSessionContext(self.root, capabilities=["net"])._allow_network())
+        # And the spellings a planner might write are understood.
+        for spelling in ("network", "egress", "internet", "http", "web"):
+            with self.subTest(spelling=spelling):
+                session = MCPSessionContext(self.root, capabilities=[spelling])
+                self.assertTrue(session._allow_network())
+
+    def test_the_declaration_reaches_the_exec_server_command_line(self):
+        """Not a tool argument: the flag is on the server's own argv, decided before it starts."""
+        from orchestration.mcp_session import MCPSessionContext
+
+        sealed = MCPSessionContext(self.root, capabilities=["exec"])
+        opened = MCPSessionContext(self.root, capabilities=["exec", "net"])
+        self.assertNotIn("--allow-network", sealed._commands["exec"])
+        self.assertIn("--allow-network", opened._commands["exec"])
+
+
+@unittest.skipUnless(_real_runtime_available(), "no live Docker daemon")
+class NetworkIsolationTests(unittest.TestCase):
+    """The real thing: a container that cannot reach the network at all."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="aleth_chaos_netlive_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.root, ignore_errors=True))
+
+    def test_container_network_isolation(self):
+        """Attempt the network and assert the OS refuses it.
+
+        ``socket.create_connection`` rather than ``curl``: the sandbox image is a slim Python, and
+        a test that needs a tool the image does not carry would pass for the wrong reason.
+        """
+        result = docker_sandbox.run_isolated(
+            "python -c \"import socket;"
+            " socket.create_connection(('1.1.1.1', 53), timeout=5)\"",
+            cwd=self.root, timeout=120,
+        )
+        self.assertNotEqual(result.returncode, 0, "the container reached the network")
+        combined = (result.stdout + "\n" + result.stderr).lower()
+        self.assertTrue(
+            any(word in combined for word in ("unreachable", "network", "refused", "timed out")),
+            f"the failure did not look like a network refusal: {combined[:200]}",
+        )
+
+    def test_a_declared_net_capability_actually_reaches_the_network(self):
+        """The other half: the opt-in is not a flag that does nothing."""
+        result = docker_sandbox.run_isolated(
+            "python -c \"import socket;"
+            " s=socket.create_connection(('1.1.1.1', 53), timeout=5); print('CONNECTED')\"",
+            cwd=self.root, timeout=120, allow_network=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("CONNECTED", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

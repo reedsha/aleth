@@ -68,10 +68,31 @@ for name in agents core orchestration storage tools app.py bridge_bus.py env_boo
 done
 echo "locking:$APP"
 chmod -R a-w $APP
-# Prove it is actually read-only before relying on it.
-if [ -w "$SITE/tools/workspace.py" ]; then
+# The permission *bits*, not an access test. ``test -w`` answers true for root whatever the mode,
+# so a gate built on it passes inside a root container while proving nothing at all -- which is
+# exactly how this check first failed, and it was right to fail.
+if find $APP -perm -u+w | grep -q .; then
     echo "FATAL: the lock did not take"
     exit 1
+fi
+
+# Root also *writes* through the bits (CAP_DAC_OVERRIDE), so the boot must run as an ordinary user
+# or the lock is decorative. That is how the application runs in production too.
+RUN_USER=aleth
+RUN=""
+if [ "$(id -u)" = "0" ]; then
+    id -u "$RUN_USER" >/dev/null 2>&1 || useradd -m -s /bin/sh "$RUN_USER"
+    mkdir -p "$WORK/state" "$WORK/ws"
+    chown -R "$RUN_USER" "$WORK"
+    RUN="setpriv --reuid=$RUN_USER --regid=$RUN_USER --clear-groups"
+fi
+
+# And the same question from that user's side, which is the one that matters.
+if [ -n "$RUN" ]; then
+    if $RUN test -w "$SITE/tools/workspace.py"; then
+        echo "FATAL: the lock is not effective for an unprivileged process"
+        exit 1
+    fi
 fi
 
 echo "=== 5. boot the kernel and run a plan, frozen ==="
@@ -79,7 +100,7 @@ echo "=== 5. boot the kernel and run a plan, frozen ==="
 # source tree and prove nothing about the installed wheel.
 cd "$WORK"
 ALETH_STATE_DIR="$WORK/state" ALETH_WORKSPACE_DIR="$WORK/ws" \
-    "$VENV/bin/python" - "$SITE" <<'DRIVER'
+    $RUN "$VENV/bin/python" - "$SITE" <<'DRIVER'
 import os, sys
 
 site = os.path.realpath(sys.argv[1])
@@ -116,6 +137,7 @@ before = snapshot()
 
 # Boot: import the kernel from the frozen install.
 import storage.db, tools.workspace, tools.mcp_exec_server  # noqa: E402
+from tools import docker_sandbox  # noqa: E402
 
 # The imports must have come from the wheel, not from a checkout that happens to be nearby.
 for module in (storage.db, tools.workspace, tools.mcp_exec_server):
@@ -148,8 +170,15 @@ print("plan persisted; tasks:", len(store.get_dag("PLAN").nodes))
 # And one execution, which is the other thing that touches disk.
 root = os.environ["ALETH_WORKSPACE_DIR"]
 os.makedirs(root, exist_ok=True)
-output = tools.mcp_exec_server.run_workspace_command("true", root=root)
-print("execution:", output.splitlines()[0])
+if docker_sandbox.available():
+    output = tools.mcp_exec_server.run_workspace_command("true", root=root)
+    print("execution:", output.splitlines()[0])
+    if not output.startswith("[Exit Code: 0]"):
+        failures.append(f"the execution did not succeed: {output[:200]}")
+else:
+    # A refusal is the perimeter working, not a gap: an environment with no daemon must never run
+    # the command on the host. Saying so is honest; claiming an execution happened would not be.
+    print("execution: skipped (no Docker daemon reachable in this environment)")
 
 # Nothing may have been added to or changed in the application's own tree.
 app_names = ("agents", "core", "orchestration", "storage", "tools",

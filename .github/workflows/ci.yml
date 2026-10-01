@@ -23,6 +23,11 @@ env:
   ALETH_EMBEDDER: hashing
   ALETH_SYSTEM2: "0"
   PYTHONDONTWRITEBYTECODE: "1"
+  # Flush stdout per line. A CI log that arrives in 8 KB blocks hides *where* a run hung, which is
+  # the only question a failing pipeline asks.
+  PYTHONUNBUFFERED: "1"
+  # A silent apt prompt (tzdata, most often) hangs a runner until its timeout. Never interactive.
+  DEBIAN_FRONTEND: "noninteractive"
 
 jobs:
   lint:
@@ -65,7 +70,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          # Mandatory for a pipeline whose dependencies are gigabytes: without it every run
+          # cold-downloads torch, lancedb and transformers again.
+          cache: pip
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install the system libraries the wheels link against
+        # A raw Ubuntu runner is not a developer machine. It does not carry the shared libraries
+        # the ML and native wheels need: torch links libgomp1 (OpenMP), pyo3/maturin need a C
+        # toolchain, and pkg-config/libssl-dev cover anything that has to build from source.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgomp1 libglib2.0-0 libssl-dev curl
       - name: Build the compiled core
         shell: bash
         env:
@@ -85,7 +102,9 @@ jobs:
         if: runner.os == 'Linux'
         run: docker build -f docker/sandbox.Dockerfile -t aleth-sandbox:latest docker/
       - name: Full suite
-        run: python -m pytest --no-header -q
+        # ``-v -s`` so each test is named as it runs and nothing is captured behind a buffer: a
+        # pipeline that fails has to say which test failed, and where.
+        run: python -m pytest -v -s
 
   test-immutable:
     name: test-immutable
@@ -95,6 +114,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install the build frontend
         run: python -m pip install --upgrade pip build
       - name: Build the wheel, lock it, and boot from it

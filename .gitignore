@@ -34,6 +34,11 @@ crates/*/target/
 # regenerated, not authored.
 *.egg-info/
 
+# ``python -m build``'s staging directory. It holds a *copy* of the source, so leaving it around
+# makes a repository-wide grep report files that do not exist -- a stale copy answered one in
+# this session.
+build/
+
 # Local knowledge-graph vector index
 knowledge_vectors/
 .aleth_id

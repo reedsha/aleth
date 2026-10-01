@@ -67,6 +67,10 @@ Schema:
                                    //   "fs"   -- read workspace files and create new ones
                                    //   "exec" -- run a shell command in the workspace
                                    //   "ast"  -- list a file's symbols and replace exactly one node
+                                   //   "net"  -- reach the network. Baseline is sealed: name this
+                                   //             ONLY when the work genuinely needs egress
+                                   //             (fetching a URL, calling an API, installing a
+                                   //             package). Everything else runs with no network.
                                    // A task that touches the workspace must name what it needs:
                                    // this list is exactly the tool set the worker is given, so an
                                    // empty list hands it no tools at all. Empty is correct only for

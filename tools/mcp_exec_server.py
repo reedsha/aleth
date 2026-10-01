@@ -200,7 +200,8 @@ class CommandEscaped(Exception):
 
 
 def run_workspace_command_result(
-    command: str, *, root: str, timeout: int = DEFAULT_TIMEOUT_SECONDS
+    command: str, *, root: str, timeout: int = DEFAULT_TIMEOUT_SECONDS,
+    allow_network: bool = False,
 ) -> Tuple[str, Optional[Any]]:
     """The formatted block **and** the isolated result, so a caller can record the receipt.
 
@@ -215,7 +216,8 @@ def run_workspace_command_result(
 
     try:
         result = docker_sandbox.run_isolated(
-            command, cwd=str(Path(root).resolve()), timeout=int(timeout)
+            command, cwd=str(Path(root).resolve()), timeout=int(timeout),
+            allow_network=allow_network,
         )
     except docker_sandbox.SandboxError as error:
         return (
@@ -259,6 +261,7 @@ class ExecServer:
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
         db_path: Optional[str] = None,
         session_id: str = "",
+        allow_network: bool = False,
     ):
         self.root = Path(root).resolve()
         self.timeout_seconds = int(timeout_seconds)
@@ -266,6 +269,9 @@ class ExecServer:
         # a caller that did not ask for telemetry gets none, rather than a crash on a missing path.
         self.db_path = str(db_path) if db_path else ""
         self.session_id = str(session_id or "")
+        # The network boundary. Off unless the plan declared the capability that needs it, which
+        # the parent decided before this process existed -- nothing a tool call says can change it.
+        self.allow_network = bool(allow_network)
 
     def _record_receipt(self, tool: str, result: Any) -> str:
         """Append the forensic receipt. Returns ``""`` on success, or the fault to report.
@@ -317,7 +323,8 @@ class ExecServer:
             raise ValueError("an empty command was given")
         self._assert_contained(text)
         output, result = run_workspace_command_result(
-            text, root=str(self.root), timeout=int(timeout_seconds or self.timeout_seconds)
+            text, root=str(self.root), timeout=int(timeout_seconds or self.timeout_seconds),
+            allow_network=self.allow_network,
         )
         if result is not None:
             fault = self._record_receipt(tool, result)
@@ -404,7 +411,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         root = args[args.index("--root") + 1]
     db_path = args[args.index("--db-path") + 1] if "--db-path" in args else None
     session_id = args[args.index("--session-id") + 1] if "--session-id" in args else ""
-    server = ExecServer(root, db_path=db_path, session_id=session_id)
+    server = ExecServer(
+        root,
+        db_path=db_path,
+        session_id=session_id,
+        # A flag on *this* process's command line, set by the parent from the plan's declaration.
+        # It is not a tool argument: the model cannot reach it.
+        allow_network="--allow-network" in args,
+    )
     install_container_reaper()
     return mcp_stdio.serve(
         server_name=SERVER_NAME,
