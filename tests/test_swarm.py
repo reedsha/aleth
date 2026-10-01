@@ -492,6 +492,126 @@ class TestRoutedDispatch:
         assert any("Unroutable" in note for note in node.details)
 
 
+class TestRoutingGateway:
+    """Phase 19: the classifier picks the brain, and the choice is written to the ledger.
+
+    Every test injects its classifier, so these run without a checkpoint and without the ambient
+    environment: the fake answers with a fixed verdict, and the descriptor and the
+    ``routing_decisions`` row are asserted together -- a decision that is not auditable is not a
+    decision the engine may claim to have made.
+    """
+
+    @staticmethod
+    def _classifier(domain, intent=None):
+        from agents import laya
+
+        verdict = laya.Verdict(
+            intent=intent or laya.INTENT_CODE,
+            domain=domain,
+            coder=laya.CODER_STANDARD,
+            confidence=0.9,
+            reasons=("test classifier",),
+        )
+        return lambda text, context=None: verdict
+
+    @staticmethod
+    def _build(workspace):
+        store, build, db_path, _ = workspace
+        build([("a", "pending", [])])
+        return store, db_path
+
+    def test_a_core_node_routes_to_the_architect_and_is_logged(self, workspace):
+        from agents.architect import ARCHITECT_ROLE
+        from storage import telemetry
+
+        store, db_path = self._build(workspace)
+        swarm = _swarm(workspace, max_workers=1, classifier=self._classifier("CORE"))
+        try:
+            descriptor = swarm._descriptor_for(_dispatch_node(store, "a"))
+        finally:
+            swarm.close()
+
+        assert descriptor["name"] == ARCHITECT_ROLE.name
+        assert descriptor["routing"]["classifier"]["route"] == "architect"
+        rows = telemetry.routing_decisions_for_task(db_path, "PLAN", "a")
+        assert len(rows) == 1
+        assert rows[0]["route"] == "architect"
+        assert rows[0]["fault"] == ""
+
+    def test_a_plain_node_routes_to_the_standard_coder(self, workspace):
+        from agents import laya
+        from orchestration import routing
+
+        store, _ = self._build(workspace)
+        swarm = _swarm(workspace, max_workers=1, classifier=self._classifier(laya.DOMAIN_GENERAL))
+        try:
+            descriptor = swarm._descriptor_for(_dispatch_node(store, "a"))
+        finally:
+            swarm.close()
+
+        assert descriptor["name"] == laya.CODER_STANDARD
+        assert descriptor["routing"]["classifier"]["route"] == routing.ROUTE_CODER
+
+    def test_a_faulting_classifier_routes_to_the_architect_and_logs_the_fault(self, workspace):
+        from agents.architect import ARCHITECT_ROLE
+        from storage import telemetry
+
+        store, db_path = self._build(workspace)
+
+        def boom(text, context=None):
+            raise RuntimeError("classifier unavailable")
+
+        swarm = _swarm(workspace, max_workers=1, classifier=boom)
+        try:
+            descriptor = swarm._descriptor_for(_dispatch_node(store, "a"))
+        finally:
+            swarm.close()
+
+        assert descriptor["name"] == ARCHITECT_ROLE.name
+        assert descriptor["routing"]["classifier"]["fault"] == "CLASSIFIER_FAULT"
+        rows = telemetry.routing_decisions_for_task(db_path, "PLAN", "a")
+        assert rows[0]["fault"] == "CLASSIFIER_FAULT"
+
+    def test_the_gateway_does_not_take_over_the_model_choice(self, workspace):
+        """The gateway owns the *agent*; Phase 7's router still owns the model tier."""
+        store, _ = self._build(workspace)
+        store.record_assessment("PLAN", "a", 5, [])
+
+        swarm = _swarm(workspace, max_workers=1, classifier=self._classifier("CORE"))
+        try:
+            descriptor = swarm._descriptor_for(_dispatch_node(store, "a"))
+        finally:
+            swarm.close()
+
+        assert descriptor["model"] == TIERS[TOP_TIER]["route"]
+
+    def test_a_ledger_write_failure_does_not_block_dispatch(self, workspace, monkeypatch, capsys):
+        """A routing row that cannot be written is reported, never fatal.
+
+        The decision still travels in the descriptor, so the node is dispatched with the correct
+        brain; only the audit row is lost, and it is announced on stderr rather than swallowed.
+        """
+        from agents.architect import ARCHITECT_ROLE
+        from orchestration import routing
+
+        store, _ = self._build(workspace)
+
+        def unwritable(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(routing, "record_decision", unwritable)
+
+        swarm = _swarm(workspace, max_workers=1, classifier=self._classifier("CORE"))
+        try:
+            descriptor = swarm._descriptor_for(_dispatch_node(store, "a"))
+        finally:
+            swarm.close()
+
+        assert descriptor["name"] == ARCHITECT_ROLE.name
+        assert descriptor["routing"]["classifier"]["route"] == "architect"
+        assert "routing decision not recorded" in capsys.readouterr().err
+
+
 class TestCapabilityDiet:
     """Phase 7.4: the node's declaration decides the tool set, and nothing else does.
 

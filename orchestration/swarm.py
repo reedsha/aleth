@@ -173,6 +173,7 @@ class Swarm:
         max_system_retries: int = DEFAULT_MAX_SYSTEM_RETRIES,
         worker: Callable[..., Any] = execute_node,
         planner_spec: Optional[str] = None,
+        classifier: Optional[Callable[..., Any]] = None,
     ):
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
@@ -188,6 +189,12 @@ class Swarm:
         self.max_system_retries = int(max_system_retries)
         self.worker = worker
         self.planner_spec = planner_spec
+        # The System 1 classifier the routing gateway calls (Phase 19). Injection is the whole
+        # point: ``None`` uses ``agents.laya_model.classify`` (checkpoint or word list, per
+        # deployment), while a test hands in a fake that returns fixed verdicts. The call happens
+        # on the **parent** side of the pool boundary (``_descriptor_for`` runs in ``tick``), so a
+        # plain callable is safe -- it never has to be pickled.
+        self.classifier = classifier
 
         self._executor: Optional[ProcessPoolExecutor] = None
         # Set by ``close()``. A worker's callback ends by calling ``tick()``, and that callback can
@@ -236,11 +243,36 @@ class Swarm:
         to what the node declared and the model is handed no more tools than that.
         """
         from agents import laya as laya_gate
+        from agents.architect import ARCHITECT_ROLE
         from agents.coders import ROLE_BY_NAME
+        from orchestration import routing
         from orchestration.model_router import resolve_endpoint, route_or_top
 
-        coder_id = laya_gate.route_coder(str(node.get("title") or ""), tag=node.get("tag"))
-        role = ROLE_BY_NAME.get(coder_id) or next(iter(ROLE_BY_NAME.values()))
+        # Phase 19: the **agent** decision, classified now and recorded in the ledger. The route
+        # picks the brain -- System 2's Architect for high-complexity work (analysis, core logic),
+        # a Coder for the rest -- and the decision travels to the child in ``routing``. The model
+        # tier below is a separate authority (``model_router``); collapsing them would put two
+        # owners on the model choice.
+        decision = routing.classify_task(
+            str(node.get("title") or ""), tag=node.get("tag"), classifier=self.classifier
+        )
+        # The decision travels to the child in the descriptor below whether or not the ledger
+        # write lands, and the audit row is not worth the dispatch of every other runnable node:
+        # same principle as ``_fail_unroutable`` -- a recording failure is reported, never fatal.
+        try:
+            routing.record_decision(
+                self.db_path, decision, plan_id=self.plan_id, task_id=str(node.get("id") or "")
+            )
+        except Exception as error:
+            print(
+                f"[Swarm] routing decision not recorded for {node.get('id')!r}: "
+                f"{type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+        if decision.route == routing.ROUTE_ARCHITECT:
+            role = ARCHITECT_ROLE
+        else:
+            role = ROLE_BY_NAME.get(laya_gate.CODER_STANDARD) or next(iter(ROLE_BY_NAME.values()))
         routed = route_or_top(node.get("complexity_score"), node.get("rejection_attempts"))
         # The policy ladder says how strong the work needs the model to be; the bootloader's
         # fallback matrix says which configured endpoint that is. This can refuse the node
@@ -255,7 +287,7 @@ class Swarm:
             # The route, not the model name: the System 2 client expects ``provider:model`` and
             # strips the prefix itself. The whole decision travels so the child can log *why*.
             model=endpoint["route"],
-            routing={**routed, **endpoint},
+            routing={**routed, **endpoint, "classifier": routing.decision_payload(decision)},
             # What the node says it needs, also hydrated by the dispatch query. The child scopes
             # its session to exactly this, so an empty declaration is enforced as "no tools".
             capabilities=node.get("required_capabilities") or [],

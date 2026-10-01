@@ -17,8 +17,10 @@ later investigation recovers -- without making the database grow with the output
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 # A receipt is written by a child while the orchestrator may be writing task state to the same
@@ -46,6 +48,35 @@ TELEMETRY_DDL = """
                     ON execution_telemetry(recorded_at);
 """
 
+# The routing ledger (Phase 19): one append-only row per *agent* decision. Deliberately its own
+# table rather than a row in ``execution_telemetry``: a routing decision is not a container
+# execution, and overloading that table's ``execution_id``/``exit_code`` contract with decisions
+# that have neither would make every query on it wrong. Same file, same append-only discipline.
+ROUTING_DDL = """
+                CREATE TABLE IF NOT EXISTS routing_decisions (
+                    decision_id  TEXT PRIMARY KEY,
+                    session_id   TEXT NOT NULL DEFAULT '',
+                    plan_id      TEXT NOT NULL DEFAULT '',
+                    task_id      TEXT NOT NULL DEFAULT '',
+                    intent       TEXT NOT NULL DEFAULT '',
+                    domain       TEXT NOT NULL DEFAULT '',
+                    complexity   TEXT NOT NULL DEFAULT '',
+                    route        TEXT NOT NULL DEFAULT '',
+                    confidence   REAL NOT NULL DEFAULT 0.0,
+                    fault        TEXT NOT NULL DEFAULT '',
+                    engine       TEXT NOT NULL DEFAULT '',
+                    evidence     TEXT NOT NULL DEFAULT '[]',
+                    decided_at   REAL NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_routing_session
+                    ON routing_decisions(session_id);
+                CREATE INDEX IF NOT EXISTS idx_routing_task
+                    ON routing_decisions(plan_id, task_id);
+                CREATE INDEX IF NOT EXISTS idx_routing_recorded
+                    ON routing_decisions(decided_at);
+"""
+
 # New columns go here *and* in the DDL above. ``CREATE TABLE IF NOT EXISTS`` never adds a column to
 # a table that already exists, so a ledger written by an earlier build is upgraded by the guarded
 # ``ALTER`` below rather than silently missing the field.
@@ -64,8 +95,9 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def apply_telemetry_schema(connection: sqlite3.Connection) -> None:
-    """Create the ledger on a caller's connection, so a test can build the real table."""
+    """Create both ledgers on a caller's connection, so a test can build the real tables."""
     connection.executescript(TELEMETRY_DDL)
+    connection.executescript(ROUTING_DDL)
     # ``PRAGMA table_info`` is read positionally on purpose: this is called with a bare connection
     # (no ``row_factory``), and the column name is index 1.
     existing = {row[1] for row in connection.execute("PRAGMA table_info(execution_telemetry)")}
@@ -104,6 +136,74 @@ def record(
                     int(duration_ms), str(stdout_hash), str(stderr_hash), str(outcome), time.time(),
                 ),
             )
+    finally:
+        connection.close()
+
+
+def record_routing_decision(
+    db_path: str,
+    *,
+    route: str,
+    complexity: str = "",
+    intent: str = "",
+    domain: str = "",
+    confidence: float = 0.0,
+    fault: str = "",
+    engine: str = "",
+    evidence: Optional[List[str]] = None,
+    session_id: str = "",
+    plan_id: str = "",
+    task_id: str = "",
+) -> str:
+    """Append one routing decision, returning its id. **Raises** on failure, like :func:`record`.
+
+    A decision the engine cannot write down is a decision it cannot claim to have made; the
+    caller sees the failure rather than a plan that silently ran unrouted.
+    """
+    decision_id = str(uuid.uuid4())
+    connection = _connect(db_path)
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO routing_decisions"
+                " (decision_id, session_id, plan_id, task_id, intent, domain, complexity,"
+                "  route, confidence, fault, engine, evidence, decided_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    decision_id, str(session_id), str(plan_id), str(task_id), str(intent),
+                    str(domain), str(complexity), str(route), float(confidence), str(fault),
+                    str(engine), json.dumps([str(item) for item in (evidence or [])]),
+                    time.time(),
+                ),
+            )
+    finally:
+        connection.close()
+    return decision_id
+
+
+def routing_decisions_for_task(db_path: str, plan_id: str, task_id: str) -> List[Dict[str, Any]]:
+    """Every routing decision recorded for one node, oldest first. Uses ``idx_routing_task``."""
+    connection = _connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT * FROM routing_decisions WHERE plan_id = ? AND task_id = ?"
+            " ORDER BY decided_at, decision_id",
+            (str(plan_id), str(task_id)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def recent_routing_decisions(db_path: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """The newest routing decisions first, bounded by ``limit``. Uses ``idx_routing_recorded``."""
+    connection = _connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT * FROM routing_decisions ORDER BY decided_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         connection.close()
 

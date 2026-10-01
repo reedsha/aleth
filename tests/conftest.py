@@ -22,6 +22,33 @@ from tools import workspace
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _never_loads():
+    raise AssertionError("the deterministic System 1 must never load a checkpoint")
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_system1():
+    """Answer System 1 from the word list, by **injection**, for every test.
+
+    The engine seam is a process global that ``agents.laya_model.classify`` builds once and
+    caches. Left to the ambient environment it is a hidden input: ``env_boot.load_environment``
+    loads ``.env`` with ``override=True``, so a test that imports ``app`` mid-process arms
+    ``LAYA_BACKEND=model`` for every test that runs after it in the same worker. Whether the
+    characterization suite observed the checkpoint or the word list then depended on test
+    ordering -- the flake this replaces. Injecting a resolver here makes the environment
+    irrelevant: a test that wants the model path constructs its own resolver with a fake
+    router, as ``tests/test_laya_model.py`` does.
+    """
+    from agents import laya_model
+
+    previous = laya_model.installed()
+    laya_model.install(laya_model.Resolver(False, _never_loads))
+    try:
+        yield
+    finally:
+        laya_model.install(previous)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_plan_directory():
     original = workspace.PLAN_DIR

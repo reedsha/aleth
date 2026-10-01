@@ -88,12 +88,18 @@ def _announce_route(task_id: str, role_descriptor: Dict[str, Any], model: str) -
     """
     routing = role_descriptor.get("routing") or {}
     capabilities = role_descriptor.get("required_capabilities") or []
+    # The Phase 19 agent decision, reported beside the model route: which brain the classifier
+    # chose, on what band, and whether it faulted. The child applies all of it verbatim.
+    classifier = routing.get("classifier") or {}
     print(
         f"[Worker] {task_id}: model={model or '<none>'} "
         f"endpoint={routing.get('base_url') or '<env>'} "
         f"tier={routing.get('tier', '?')} "
         f"complexity={routing.get('complexity_score')!r} "
         f"rejections={routing.get('rejection_attempts')!r} "
+        f"agent={classifier.get('route', '?')} "
+        f"band={classifier.get('complexity', '?')} "
+        f"fault={classifier.get('fault') or '-'} "
         f"capabilities={list(capabilities)!r}",
         file=sys.stderr,
     )

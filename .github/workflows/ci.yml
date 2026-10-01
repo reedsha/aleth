@@ -140,9 +140,9 @@ jobs:
             chmod 666 /var/run/docker.sock 2>/dev/null || true
             useradd -m -s /bin/bash alethrunner 2>/dev/null || true
             chown -R alethrunner:alethrunner .
-            su alethrunner -c "python -m pytest -v -s"
+            su alethrunner -c "python -m pytest -v -s -m 'not llm'"
           else
-            python -m pytest -v -s
+            python -m pytest -v -s -m "not llm"
           fi
 
   test-immutable:

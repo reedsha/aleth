@@ -69,6 +69,8 @@ __all__ = [
     "Resolver",
     "active_engine",
     "classify",
+    "install",
+    "installed",
     "questions",
     "reset",
     "warm_up",
@@ -375,6 +377,33 @@ def classify(
     return _resolver().classify(text, context)
 
 
+def installed() -> Optional[Resolver]:
+    """The resolver currently answering the seam, or ``None`` when it has not been built.
+
+    Reported rather than inferred so a caller can save and restore the seam around a scope:
+    the test suite injects a deterministic engine for the length of a test and puts back
+    exactly what it found, without reaching into this module's globals.
+    """
+    return _RESOLVER
+
+
+def install(resolver: Optional[Resolver]) -> Optional[Resolver]:
+    """Replace the engine answering the seam, returning the previous one.
+
+    This is the **dependency-injection** seam. :func:`classify` answers from whatever resolver
+    is installed; reading ``LAYA_BACKEND`` is only how the *default* resolver is built
+    (:meth:`Resolver.from_env`). A caller that wants a different engine -- a test with a fake,
+    an embedding program with its own -- installs one here rather than mutating the process
+    environment and hoping every later decision reads it the same way. ``install(None)``
+    forgets it, so the next decision rebuilds the default from the environment.
+    """
+    global _RESOLVER
+    with _RESOLVER_LOCK:
+        previous = _RESOLVER
+        _RESOLVER = resolver
+        return previous
+
+
 def warm_up() -> None:
     """Loads the checkpoint ahead of the first decision. A no-op unless the gate is on.
 
@@ -411,6 +440,4 @@ def active_engine() -> str:
 
 def reset() -> None:
     """Forgets the resolved backend, so the gate is re-read on the next decision."""
-    global _RESOLVER
-    with _RESOLVER_LOCK:
-        _RESOLVER = None
+    install(None)
