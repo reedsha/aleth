@@ -70,5 +70,5 @@ test = [
 [tool.setuptools]
 # The app is run from source rather than installed, but a manifest that could not be built would
 # be a manifest nobody can use. These are the importable packages and top-level modules.
-packages = ["agents", "core", "orchestration", "storage", "tools"]
+packages = ["agents", "api", "core", "orchestration", "storage", "tools"]
 py-modules = ["app", "bridge_bus", "env_boot", "main", "registry"]

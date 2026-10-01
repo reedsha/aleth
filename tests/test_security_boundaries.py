@@ -136,7 +136,7 @@ class NoImportTimeToolCatalogTests(unittest.TestCase):
     execution shape the container perimeter replaced. Neither may quietly return.
     """
 
-    _PACKAGE_DIRS = ("agents", "core", "orchestration", "storage", "tools")
+    _PACKAGE_DIRS = ("agents", "api", "core", "orchestration", "storage", "tools")
     _TOP_LEVEL_MODULES = ("app.py", "bridge_bus.py", "env_boot.py", "main.py", "registry.py")
 
     def _production_sources(self):

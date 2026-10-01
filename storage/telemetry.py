@@ -42,6 +42,8 @@ TELEMETRY_DDL = """
                     ON execution_telemetry(session_id);
                 CREATE INDEX IF NOT EXISTS idx_telemetry_tool
                     ON execution_telemetry(target_tool);
+                CREATE INDEX IF NOT EXISTS idx_telemetry_recorded
+                    ON execution_telemetry(recorded_at);
 """
 
 # New columns go here *and* in the DDL above. ``CREATE TABLE IF NOT EXISTS`` never adds a column to
@@ -137,5 +139,22 @@ def count(db_path: str) -> int:
     try:
         row = connection.execute("SELECT COUNT(*) AS n FROM execution_telemetry").fetchone()
         return int(row["n"] if row is not None else 0)
+    finally:
+        connection.close()
+
+
+def recent(db_path: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """The newest receipts first, bounded by ``limit``. Uses ``idx_telemetry_recorded``.
+
+    This is the read the API gateway serves (``GET /api/telemetry``): a bounded window, ordered
+    by the index, so a long-lived ledger cannot turn one HTTP request into a full scan.
+    """
+    connection = _connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT * FROM execution_telemetry ORDER BY recorded_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         connection.close()

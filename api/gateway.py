@@ -1,0 +1,213 @@
+"""Routing: a request in, a response out, with no socket in sight.
+
+Everything about *what the API answers* lives here, and nothing about *how it is carried*. That
+split is what makes the contract testable without binding a port: a test builds a
+:class:`Request` and asserts on the :class:`Response`, and the same handlers serve the real
+socket in ``api.server``.
+
+The router is deliberately small and explicit. A path is matched by a compiled pattern against a
+table of ``(method, pattern, handler)``; there is no framework, no dependency injection and no
+decorator magic, so the whole surface of the API is one list a reader can check.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import re
+from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+
+from pydantic import ValidationError
+
+from api import reads
+from api.events import EventHub
+from api.intents import IntentQueue, IntentQueueFull
+from api.schemas import (
+    ErrorResponse,
+    HealthResponse,
+    IntentAccepted,
+    IntentRequest,
+    PlanListResponse,
+    PlanView,
+    TelemetryListResponse,
+    TelemetryReceiptView,
+)
+
+SERVICE_NAME = "aleth-api"
+SERVICE_VERSION = "1.0"
+
+JSON_CONTENT_TYPE = "application/json; charset=utf-8"
+
+
+@dataclasses.dataclass(frozen=True)
+class Request:
+    """One inbound request, already parsed out of its socket."""
+
+    method: str
+    path: str
+    query: Mapping[str, Sequence[str]] = dataclasses.field(default_factory=dict)
+    body: bytes = b""
+
+
+@dataclasses.dataclass(frozen=True)
+class Response:
+    """A complete, in-memory response."""
+
+    status: int
+    body: bytes
+    content_type: str = JSON_CONTENT_TYPE
+
+
+@dataclasses.dataclass(frozen=True)
+class StreamResponse:
+    """A response the *server* streams (server-sent events).
+
+    The gateway decides that a route streams; it never builds the bytes, because a stream has no
+    end. ``api.server`` owns the loop that turns the hub's subscribers into a wire.
+    """
+
+
+Handler = Callable[[Request, "Gateway", re.Match], Union[Response, StreamResponse]]
+
+
+def _json(status: int, model) -> Response:
+    return Response(status=status, body=model.model_dump_json().encode("utf-8"))
+
+
+def _error(status: int, error: str, detail: str = "") -> Response:
+    return _json(status, ErrorResponse(error=error, detail=detail))
+
+
+def _first(query: Mapping[str, Sequence[str]], name: str) -> Optional[str]:
+    values = query.get(name)
+    return values[0] if values else None
+
+
+# -- handlers ---------------------------------------------------------------------
+def _health(request: Request, gateway: "Gateway", match: re.Match) -> Response:
+    return _json(
+        200,
+        HealthResponse(
+            service=SERVICE_NAME,
+            version=SERVICE_VERSION,
+            loopback_only=True,
+            # The gateway is read-only *except* for the intent queue, and saying so in the
+            # handshake is cheaper than a caller discovering it by trying.
+            read_only=False,
+            subscribers=gateway.hub.subscriber_count,
+            active_plan_id=reads.active_plan_id(),
+        ),
+    )
+
+
+def _plans(request: Request, gateway: "Gateway", match: re.Match) -> Response:
+    return _json(200, reads.plans_view())
+
+
+def _active_plan(request: Request, gateway: "Gateway", match: re.Match) -> Response:
+    plan = reads.plan_view(reads.active_plan_id())
+    if plan is None:
+        return _error(404, "no active plan in the store", reads.active_plan_file())
+    return _json(200, plan)
+
+
+def _plan_by_id(request: Request, gateway: "Gateway", match: re.Match) -> Response:
+    plan = reads.plan_view(match.group("plan_id"))
+    if plan is None:
+        return _error(404, "unknown plan", match.group("plan_id"))
+    return _json(200, plan)
+
+
+def _telemetry(request: Request, gateway: "Gateway", match: re.Match) -> Response:
+    raw_limit = _first(request.query, "limit")
+    try:
+        limit = int(raw_limit) if raw_limit else 50
+    except (TypeError, ValueError):
+        return _error(400, "limit must be an integer", str(raw_limit))
+    session_id = _first(request.query, "session_id")
+    return _json(200, reads.telemetry_view(session_id=session_id, limit=limit))
+
+
+def _receipt(request: Request, gateway: "Gateway", match: re.Match) -> Response:
+    receipt = reads.receipt_view(match.group("execution_id"))
+    if receipt is None:
+        return _error(404, "unknown execution", match.group("execution_id"))
+    return _json(200, receipt)
+
+
+def _intent_status(request: Request, gateway: "Gateway", match: re.Match) -> Response:
+    return _json(200, gateway.queue.status())
+
+
+def _submit_intent(request: Request, gateway: "Gateway", match: re.Match) -> Response:
+    """The one mutation. Validated here, queued here, executed by the orchestrator.
+
+    A malformed body is a 400 (``extra="forbid"``: an undocumented key is refused, not ignored);
+    a full queue is a 429. Neither case starts anything, which is the property that matters --
+    a request from a page can only ever *ask*.
+    """
+    try:
+        parsed = IntentRequest.model_validate_json(request.body or b"{}")
+    except ValidationError as error:
+        return _error(400, "invalid intent", error.json(include_url=False))
+    try:
+        intent = gateway.queue.submit(parsed)
+    except IntentQueueFull as error:
+        return _error(429, "intent queue is full", str(error))
+    return _json(202, IntentAccepted(intent_id=intent.id, position=gateway.queue.depth))
+
+
+def _events(request: Request, gateway: "Gateway", match: re.Match) -> StreamResponse:
+    """Hand the connection to the SSE loop; the gateway has nothing else to say about it."""
+    return StreamResponse()
+
+
+ROUTES: Tuple[Tuple[str, str, Handler], ...] = (
+    ("GET", r"^/api/health$", _health),
+    ("GET", r"^/api/plans$", _plans),
+    ("GET", r"^/api/plan$", _active_plan),
+    ("GET", r"^/api/plan/(?P<plan_id>[A-Za-z0-9_.\-]+)$", _plan_by_id),
+    ("GET", r"^/api/telemetry$", _telemetry),
+    ("GET", r"^/api/telemetry/(?P<execution_id>[A-Za-z0-9_.\-]+)$", _receipt),
+    ("GET", r"^/api/intents$", _intent_status),
+    ("GET", r"^/api/events$", _events),
+    ("POST", r"^/api/intent/execute$", _submit_intent),
+)
+
+
+class Gateway:
+    """The router: one queue, one hub, one table of routes."""
+
+    def __init__(self, queue: Optional[IntentQueue] = None, hub: Optional[EventHub] = None):
+        self.queue = queue or IntentQueue()
+        self.hub = hub or EventHub()
+        self._routes = [
+            (method, re.compile(pattern), handler) for method, pattern, handler in ROUTES
+        ]
+
+    def dispatch(self, request: Request) -> Union[Response, StreamResponse]:
+        """Route one request. Always answers; never raises for a bad request."""
+        path = request.path or "/"
+        matched_method = False
+        for method, pattern, handler in self._routes:
+            match = pattern.match(path)
+            if match is None:
+                continue
+            if method != request.method.upper():
+                matched_method = True
+                continue
+            return handler(request, self, match)
+        if matched_method:
+            # The path exists but not for this verb: 405 says so, where 404 would send a reader
+            # looking for a typo in the path they got right.
+            return _error(405, "method not allowed", f"{request.method} {path}")
+        return _error(404, "no such endpoint", path)
+
+
+__all__ = [
+    "Gateway",
+    "Request",
+    "Response",
+    "StreamResponse",
+    "ROUTES",
+    "JSON_CONTENT_TYPE",
+]

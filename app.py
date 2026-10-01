@@ -220,6 +220,9 @@ class BridgeAPI:
         self._bus = BridgeBus(WebviewTransport(lambda: self._window))
         self._execution_thread = None
         self._tagging_thread = None
+        # The local API gateway (Phase 14). Built on demand by ``start_api`` -- the test suite
+        # constructs this bridge constantly and must not bind a socket doing it.
+        self._api = None
         # The swarm, built on first use -- never in ``__init__``. Constructing the bridge must not
         # spawn a process pool or dispatch a node: the test suite builds one constantly, and a cold
         # tick there would fire the swarm at fixtures that have no planner.
@@ -643,6 +646,67 @@ class BridgeAPI:
         server-side home for that flag.
         """
         return {"running": bool(self._execution_thread and self._execution_thread.is_alive())}
+
+    # -------------------------------------------------------------
+    # The API gateway: the frontend's door to state (Phase 14)
+    # -------------------------------------------------------------
+    def _run_intent(self, intent):
+        """Run one queued intent, and wait for it.
+
+        The queue is serial because the engine is: this blocks until the run it started has
+        genuinely ended, so the next intent is taken only then -- not when a thread was merely
+        launched. A refusal (a run already live) is raised, so the intent is recorded as failed
+        with the reason instead of vanishing.
+        """
+        result = self.start_execution(
+            intent.message, intent.action_type, dict(intent.action_params)
+        )
+        if not result.get("success"):
+            raise RuntimeError(str(result.get("error") or "the run was refused"))
+        thread = self._execution_thread
+        if thread is not None:
+            thread.join()
+
+    def start_api(self, ui_origin: str = ""):
+        """Bind the local gateway, with this bridge as its intent executor. Idempotent.
+
+        ``ui_origin`` is the origin the window was actually loaded from; it is the only origin
+        the gateway will accept a state-changing request from, so the allow-list is the app's own
+        origin rather than a guess.
+        """
+        if self._api is not None:
+            return {"success": True, "base_url": self._api.base_url, "already_running": True}
+        try:
+            from api.server import start_gateway
+
+            self._api = start_gateway(
+                on_intent=self._run_intent,
+                allowed_origins=[ui_origin] if ui_origin else [],
+            )
+        except Exception as error:
+            print(
+                f"[api] the gateway could not start: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+            return {"success": False, "error": str(error)}
+        print(f"[api] gateway bound to {self._api.base_url} (loopback only)", flush=True)
+        return {"success": True, "base_url": self._api.base_url}
+
+    def get_api_base(self):
+        """Where the gateway is bound, so the frontend reaches it without guessing a port."""
+        if self._api is None:
+            return {"running": False, "base_url": ""}
+        return {"running": True, "base_url": self._api.base_url}
+
+    def stop_api(self):
+        """Release the socket, the subscribers and the intent worker. Idempotent."""
+        api, self._api = self._api, None
+        if api is not None:
+            try:
+                api.stop()
+            except Exception as error:
+                print(f"[api] shutdown failed: {type(error).__name__}: {error}", file=sys.stderr)
+        return {"success": True}
 
     def audit_codebase_sync(self):
         """Audits discrepancies between workspace files and plan.json."""
@@ -1206,8 +1270,13 @@ def main(argv=None):
     # has no virtual-host mapping.
     if install_asset_host(dist, ASSET_HOST, index_path):
         ui_url = f"https://{ASSET_HOST}/index.html"
+        ui_origin = f"https://{ASSET_HOST}"
     else:
         ui_url = index_path
+        # A file:// document has the opaque origin "null". The gateway allows exactly that when
+        # the app itself is running unmapped, because the alternative is an app whose own UI
+        # cannot reach its own API on the platforms without the virtual-host mapping.
+        ui_origin = "null"
 
     window = webview.create_window(
         title="Aleth • Plan Orchestrator Studio",
@@ -1220,7 +1289,13 @@ def main(argv=None):
     )
 
     api.set_window(window)
-    webview.start(debug=debug)
+    # The gateway comes up before the window is shown, so the first request the UI makes finds it
+    # already listening; it is torn down when the window closes, which is the only exit path.
+    api.start_api(ui_origin=ui_origin)
+    try:
+        webview.start(debug=debug)
+    finally:
+        api.stop_api()
 
 
 if __name__ == "__main__":

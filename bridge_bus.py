@@ -73,14 +73,28 @@ class WebviewTransport:
 
 
 class BridgeBus:
-    """Validates and dispatches outbound events to a transport."""
+    """Validates and dispatches outbound events to a transport, and to local listeners."""
 
     def __init__(self, transport: Transport):
         self._transport = transport
+        # Local observers: the API gateway's SSE hub is one. They are *in-process* consumers of
+        # the same validated event the transport carries, which is what keeps a browser client and
+        # the desktop window from being two renderings that can drift.
+        self._listeners: List[Callable[[Dict[str, Any]], None]] = []
 
     def set_transport(self, transport: Transport) -> None:
         """Repoint the bus at a different transport (the app binds the webview one)."""
         self._transport = transport
+
+    def add_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
+        """Observe every dispatched event. Idempotent."""
+        if listener not in self._listeners:
+            self._listeners.append(listener)
+
+    def remove_listener(self, listener: Callable[[Dict[str, Any]], None]) -> None:
+        """Stop observing. Idempotent."""
+        if listener in self._listeners:
+            self._listeners.remove(listener)
 
     def dispatch(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """Validate ``event``, deliver it to the sink, and return it unchanged.
@@ -89,9 +103,18 @@ class BridgeBus:
         ``TypeError`` (a value that is not JSON-serialisable) at the boundary rather
         than swallowing it. The event is returned unchanged so a caller keeps the exact
         dict it built -- its key order is part of the wire contract.
+
+        Listeners are notified **after** the transport and can never change the answer: one that
+        raises is not allowed to break the emit that reached it, because the emitter is the
+        workflow thread and the listener is an observer.
         """
         validated_bus_event(event)
         self._transport.send(json.dumps(event, ensure_ascii=True, separators=(",", ":")))
+        for listener in list(self._listeners):
+            try:
+                listener(event)
+            except Exception:
+                pass
         return event
 
 
@@ -111,6 +134,16 @@ _bus = BridgeBus(_NullTransport())
 def set_transport(transport: Transport) -> None:
     """Point the process-wide bus at ``transport``."""
     _bus.set_transport(transport)
+
+
+def add_listener(listener: Callable[[Dict[str, Any]], None]) -> None:
+    """Observe every event on the process-wide bus (the API gateway's SSE hub)."""
+    _bus.add_listener(listener)
+
+
+def remove_listener(listener: Callable[[Dict[str, Any]], None]) -> None:
+    """Stop observing the process-wide bus."""
+    _bus.remove_listener(listener)
 
 
 def emit(event: Dict[str, Any]) -> Dict[str, Any]:

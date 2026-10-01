@@ -1,0 +1,420 @@
+"""The loopback HTTP server: sockets, the security guard, and the SSE transport.
+
+The gateway decides *what* the API answers; this module decides *who may ask*. Four checks stand
+between a request and a handler, and each closes a different hole:
+
+1. **The socket binds ``127.0.0.1``** -- not ``0.0.0.0``. An engine that owns a container runtime
+   must not be reachable from the network, so the bind is the boundary and the rest is belt to
+   its braces.
+2. **The peer must be loopback.** A request that somehow arrives from a routable address is
+   refused before it is parsed.
+3. **The ``Host`` header must name a loopback host.** This is the DNS-rebinding guard: a page on
+   ``evil.com`` whose domain resolves to ``127.0.0.1`` reaches this socket, but it sends
+   ``Host: evil.com``, which is not a name this server answers to.
+4. **A state-changing request's ``Origin`` must be one the app itself served.** A cross-site
+   ``POST`` is the one request a hostile page *can* aim at loopback, so the intent endpoint
+   refuses any other origin.
+
+Server-sent events get their own loop here because a stream has no end: the gateway returns a
+:class:`~api.gateway.StreamResponse` marker and this module turns the hub's subscriber into a
+wire, heartbeating so a quiet stream does not look dead and ending the connection the moment the
+client goes away.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import os
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from urllib.parse import parse_qs, urlsplit
+
+from api.events import HEARTBEAT_FRAME, EventHub
+from api.gateway import Gateway, Request, Response, StreamResponse
+from api.intents import IntentQueue, run_worker
+from api.schemas import ErrorResponse
+
+LOOPBACK_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
+PORT_ENV = "ALETH_API_PORT"
+
+# A request body is an intent, not an upload. Bounding it here means a hostile Content-Length
+# cannot make the server allocate before the gateway ever sees the bytes.
+MAX_BODY_BYTES = 256 * 1024
+
+# How long a streaming thread waits before writing a heartbeat, and the longest a single stream
+# is held open. The cap exists so a client that connects and then stops reading cannot pin a
+# thread for the life of the process.
+SSE_HEARTBEAT_SECONDS = 15.0
+SSE_MAX_SECONDS = 3600.0
+
+_LOOPBACK_HOSTNAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def default_port() -> int:
+    """The configured port, or :data:`DEFAULT_PORT` when it is unset or nonsense."""
+    raw = (os.environ.get(PORT_ENV) or "").strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_PORT
+    return value if 0 <= value <= 65535 else DEFAULT_PORT
+
+
+def is_loopback_address(address: str) -> bool:
+    """Whether a peer address is loopback. ``127.0.0.0/8``, ``::1`` and its v4 mapping."""
+    value = (address or "").strip().lower()
+    if not value:
+        return False
+    if value in ("::1", "localhost"):
+        return True
+    if value.startswith("::ffff:"):
+        value = value[len("::ffff:"):]
+    return value.startswith("127.")
+
+
+def _host_name(host_header: str) -> str:
+    """The name part of a ``Host`` header, without the port and without brackets."""
+    value = (host_header or "").strip()
+    if value.startswith("["):
+        return value.split("]", 1)[0][1:].lower()
+    if ":" in value:
+        return value.rsplit(":", 1)[0].lower()
+    return value.lower()
+
+
+def host_allowed(host_header: str) -> bool:
+    """Whether the server answers to this ``Host``. The DNS-rebinding guard."""
+    return _host_name(host_header) in _LOOPBACK_HOSTNAMES
+
+
+def loopback_origins(port: int) -> Set[str]:
+    """The origins a page served *by this server* would carry."""
+    return {
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+        f"http://[::1]:{port}",
+    }
+
+
+def origin_allowed(origin: str, port: int, extra: Iterable[str] = ()) -> bool:
+    """Whether a request's ``Origin`` may reach a state-changing endpoint.
+
+    An **absent** origin is allowed: a non-browser client (a test, curl, the app's own probe)
+    sends none, and it is already behind the loopback and ``Host`` checks. A present origin must
+    be one the app serves -- its own asset origin, or this server's own loopback origin.
+    """
+    value = (origin or "").strip()
+    if not value:
+        return True
+    return value in set(extra) or value in loopback_origins(port)
+
+
+class _ThreadingServer(ThreadingHTTPServer):
+    """The socket, plus the three things a handler needs to answer a request."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address, handler, *, gateway: Gateway, allowed_origins: Set[str], stop_event: threading.Event):
+        super().__init__(address, handler)
+        self.gateway = gateway
+        self.allowed_origins = allowed_origins
+        self.stop_event = stop_event
+
+
+class _Handler(BaseHTTPRequestHandler):
+    """One connection. Parses nothing it has not already been allowed to parse."""
+
+    protocol_version = "HTTP/1.1"
+    server_version = "aleth-api"
+
+    # -- logging ---------------------------------------------------------------
+    def log_message(self, fmt: str, *args) -> None:
+        print(f"[api] {self.address_string()} {fmt % args}", file=sys.stderr)
+
+    # -- helpers ---------------------------------------------------------------
+    @property
+    def _server(self) -> _ThreadingServer:
+        return self.server  # type: ignore[return-value]
+
+    def _denied(self, status: int, error: str, detail: str = "") -> None:
+        body = ErrorResponse(error=error, detail=detail).model_dump_json().encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _cors(self) -> Dict[str, str]:
+        """The CORS headers, emitted only for an origin the app itself served."""
+        origin = self.headers.get("Origin", "")
+        headers = {"Vary": "Origin"}
+        if origin and origin_allowed(origin, self._server.server_port, self._server.allowed_origins):
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            headers["Access-Control-Allow-Headers"] = "Content-Type"
+            headers["Access-Control-Max-Age"] = "600"
+        return headers
+
+    def _guard(self, *, state_changing: bool) -> bool:
+        """The boundary. Returns True when the request may proceed; answers it otherwise."""
+        peer = self.client_address[0] if self.client_address else ""
+        if not is_loopback_address(peer):
+            self._denied(403, "not loopback", str(peer))
+            return False
+        if not host_allowed(self.headers.get("Host", "")):
+            self._denied(403, "unrecognised host", str(self.headers.get("Host", "")))
+            return False
+        if state_changing and not origin_allowed(
+            self.headers.get("Origin", ""), self._server.server_port, self._server.allowed_origins
+        ):
+            self._denied(403, "cross-site request refused", str(self.headers.get("Origin", "")))
+            return False
+        return True
+
+    def _read_body(self) -> Optional[bytes]:
+        """The request body, or ``None`` when it is too large (already answered)."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            self._denied(400, "bad Content-Length")
+            return None
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._denied(413, "request body too large", str(length))
+            return None
+        return self.rfile.read(length) if length else b""
+
+    def _write(self, response: Response) -> None:
+        self.send_response(response.status)
+        self.send_header("Content-Type", response.content_type)
+        self.send_header("Content-Length", str(len(response.body)))
+        for name, value in self._cors().items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(response.body)
+
+    def _stream(self) -> None:
+        """Server-sent events: the hub's subscriber, framed onto the wire until the client goes."""
+        hub = self._server.gateway.hub
+        subscriber = hub.subscribe()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            # Framing by connection close: a stream has no Content-Length, and chunked encoding
+            # buys nothing a local client needs.
+            self.send_header("Connection", "close")
+            for name, value in self._cors().items():
+                self.send_header(name, value)
+            self.end_headers()
+            # A comment and a retry hint: both valid SSE, neither a bus event, so the data frames
+            # stay exactly the vocabulary the frontend already validates.
+            self.wfile.write(b": connected\n\nretry: 1000\n\n")
+            self.wfile.flush()
+
+            deadline = time.monotonic() + SSE_MAX_SECONDS
+            while not self._server.stop_event.is_set() and time.monotonic() < deadline:
+                frame = subscriber.next_frame(timeout=SSE_HEARTBEAT_SECONDS)
+                self.wfile.write((frame or HEARTBEAT_FRAME).encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            hub.unsubscribe(subscriber)
+
+    # -- verbs ----------------------------------------------------------------
+    def do_OPTIONS(self) -> None:  # noqa: N802 - the base class names it
+        if not self._guard(state_changing=True):
+            return
+        self.send_response(204)
+        for name, value in self._cors().items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self) -> None:  # noqa: N802
+        if not self._guard(state_changing=False):
+            return
+        self._dispatch(b"")
+
+    def do_POST(self) -> None:  # noqa: N802
+        if not self._guard(state_changing=True):
+            return
+        body = self._read_body()
+        if body is None:
+            return
+        self._dispatch(body)
+
+    def _dispatch(self, body: bytes) -> None:
+        parts = urlsplit(self.path)
+        request = Request(
+            method=self.command,
+            path=parts.path,
+            query=parse_qs(parts.query, keep_blank_values=True),
+            body=body,
+        )
+        answer = self._server.gateway.dispatch(request)
+        if isinstance(answer, StreamResponse):
+            self._stream()
+            return
+        self._write(answer)
+
+
+@dataclasses.dataclass
+class ApiServer:
+    """The bound socket, the intent worker, and the hub's attachment to the event bus."""
+
+    gateway: Gateway
+    host: str = LOOPBACK_HOST
+    port: int = DEFAULT_PORT
+    allowed_origins: Set[str] = dataclasses.field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        self.stop_event = threading.Event()
+        self._httpd: Optional[_ThreadingServer] = None
+        self._thread: Optional[threading.Thread] = None
+        self._worker: Optional[threading.Thread] = None
+        self._worker_stop: Optional[threading.Event] = None
+        self._bus_listener = None
+
+    # -- lifecycle ------------------------------------------------------------
+    def attach_bus(self) -> None:
+        """Broadcast every bus event to this hub, so SSE clients see what the window sees.
+
+        The bus is the engine's one outbound seam (``bridge_bus``); the hub is a second consumer
+        of it rather than a parallel notification path, which is what keeps the two clients from
+        drifting.
+        """
+        if self._bus_listener is not None:
+            return
+        import bridge_bus
+
+        listener = self.gateway.hub.publish
+        bridge_bus.add_listener(listener)
+        self._bus_listener = listener
+
+    def detach_bus(self) -> None:
+        if self._bus_listener is None:
+            return
+        import bridge_bus
+
+        bridge_bus.remove_listener(self._bus_listener)
+        self._bus_listener = None
+
+    def start_intent_worker(self, handler) -> None:
+        """Start the background orchestrator loop that drains the intent queue."""
+        if self._worker is not None:
+            return
+        self._worker_stop = threading.Event()
+        self._worker = threading.Thread(
+            target=run_worker,
+            args=(self.gateway.queue, handler, self._worker_stop),
+            name="aleth-intent-worker",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def _bind(self, port: int) -> _ThreadingServer:
+        return _ThreadingServer(
+            (self.host, port),
+            _Handler,
+            gateway=self.gateway,
+            allowed_origins=set(self.allowed_origins),
+            stop_event=self.stop_event,
+        )
+
+    def start(self) -> str:
+        """Bind and serve. Returns the base URL. Falls back to an ephemeral port when busy."""
+        try:
+            self._httpd = self._bind(self.port)
+        except OSError:
+            if self.port == 0:
+                raise
+            print(
+                f"[api] port {self.port} is taken; binding an ephemeral one instead",
+                file=sys.stderr,
+            )
+            self._httpd = self._bind(0)
+        self._thread = threading.Thread(
+            target=self._httpd.serve_forever, name="aleth-api", daemon=True
+        )
+        self._thread.start()
+        return self.base_url
+
+    def stop(self) -> None:
+        """Stop serving, release subscribers, and stop the worker. Idempotent, never raises."""
+        self.stop_event.set()
+        if self._worker_stop is not None:
+            self._worker_stop.set()
+            self.gateway.queue.wake()
+        self.gateway.hub.close_all()
+        httpd, self._httpd = self._httpd, None
+        if httpd is not None:
+            try:
+                httpd.shutdown()
+                httpd.server_close()
+            except Exception:
+                pass
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=5)
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.join(timeout=5)
+        self.detach_bus()
+
+    # -- addressing -----------------------------------------------------------
+    @property
+    def bound_port(self) -> int:
+        return int(self._httpd.server_address[1]) if self._httpd is not None else int(self.port)
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.host}:{self.bound_port}"
+
+
+def start_gateway(
+    *,
+    port: Optional[int] = None,
+    host: str = LOOPBACK_HOST,
+    allowed_origins: Sequence[str] = (),
+    on_intent=None,
+    capacity: int = 32,
+) -> ApiServer:
+    """Build the queue, hub and router; attach the bus; optionally start the worker; bind.
+
+    This is the one function the app calls. Everything it wires is real from the first request:
+    the hub is attached to the bus before the socket opens, so an event emitted the moment the
+    server is up reaches a client that connected for it.
+    """
+    gateway = Gateway(queue=IntentQueue(capacity=capacity), hub=EventHub())
+    server = ApiServer(
+        gateway=gateway,
+        host=host,
+        port=default_port() if port is None else int(port),
+        allowed_origins=set(allowed_origins),
+    )
+    server.attach_bus()
+    if on_intent is not None:
+        server.start_intent_worker(on_intent)
+    server.start()
+    return server
+
+
+__all__ = [
+    "ApiServer",
+    "start_gateway",
+    "default_port",
+    "is_loopback_address",
+    "host_allowed",
+    "origin_allowed",
+    "loopback_origins",
+    "LOOPBACK_HOST",
+    "DEFAULT_PORT",
+    "PORT_ENV",
+]
