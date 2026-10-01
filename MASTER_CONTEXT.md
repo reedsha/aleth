@@ -19,9 +19,9 @@
 
 ## 2. Immutable Ground Truth (Current Codebase State)
 
-**Status: Phases 5, 6, 6.5, 7, 7.5, 8, 8.1, 9, 10, 11, 12, 13, 14, 15, 16, 17 and 18 complete and verified.**
+**Status: Phases 5, 6, 6.5, 7, 7.5, 8, 8.1, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 and 19 complete and verified.**
 
-**Test gate:** `python -m pytest` → **1099 passed, 18 skipped, 233 subtests** on Windows (no daemon there, so the container-backed tests skip); the Linux CI runner, where they actually run, is the authority. `tools/verify_immutable_install.sh` passes: the wheel installs, the application tree is `chmod -R a-w`, and the kernel boots and runs a plan with nothing added or changed.
+**Test gate:** `python -m pytest` → **1122 passed, 18 skipped, 233 subtests** on Windows (no daemon there, so the container-backed tests skip); CI runs `-m "not llm"`, which deselects the one live-checkpoint test. The Linux CI runner, where the daemon-backed tests actually run, is the authority. `tools/verify_immutable_install.sh` passes: the wheel installs, the application tree is `chmod -R a-w`, and the kernel boots and runs a plan with nothing added or changed.
 Run from the `aleth/` directory; `pytest.ini` has `addopts = -q -n auto` (16 xdist workers).
 UI gate: `npm run lint` → depcruise clean (33 modules, 173 dependencies); `npm run build`; `npx playwright test` → **62 passed** against the built `dist/`. All three run in CI (`lint`, `test-ui`).
 
@@ -36,6 +36,10 @@ Verified: the Rust canonicaliser (`deepagents_core.prepare_plan_state`) preserve
 
 **Router (`orchestration/model_router.py`) — Phase 7 infrastructure.**
 `route(complexity, rejections)` is pure and abstract. `resolve_endpoint(routed, config=None, *, refuse=True)` applies the fallback matrix: exact tier, else CRITICAL + strongest configured tier **at or below**; but tier_2 required with only tier_0 configured → `TaskUnroutable`. `Swarm.tick()` catches that and fails the node with the reason instead of dispatching it.
+
+**Agent routing gateway (`orchestration/routing.py`) — Phase 19.** The *agent* decision — System 2's Architect or a System 1 Coder — is a typed, injectable, auditable step, not an implicit consequence of a title. `classify_task(text, tag=, classifier=)` **never raises**: a classifier that fails, times out or answers off-contract routes to the **Architect** with `CLASSIFIER_FAULT` logged at `CRITICAL`, never a silent downgrade to a Coder. High complexity is an administrative intent **or** a `core` domain; everything else is a Coder. The classifier is a parameter, not a global lookup — the default is `agents.laya_model.classify`, and a test injects a fake. `Swarm._descriptor_for` calls it on the **parent** side of the pool boundary (so a plain callable is safe), appends the decision to the `routing_decisions` ledger (`storage/telemetry.py`; its own append-only table and indexes — a routing decision is not a container execution, so it does not overload `execution_telemetry`'s `execution_id`/`exit_code` contract), and ships the decision to the child in the descriptor. A ledger write failure is reported on stderr and dispatch continues. The **model** tier stays `model_router`'s authority — a classifier band is a second, independent input, and collapsing them would put two owners on the model choice.
+
+**The System 1 seam is injectable (`agents/laya_model.py`) — Phase 19.** `install(resolver)`/`installed()` are the dependency-injection seam: `classify` answers from whatever resolver is installed, and reading `LAYA_BACKEND` is only how the *default* resolver is built. This closes a real latent flake: `env_boot.load_environment()` loads `.env` with `override=True`, so a test that imported `app` mid-process re-armed `LAYA_BACKEND=model` for every later test in that worker — the characterization suite's answer then depended on ordering, not on the test. `tests/conftest.py` now injects a deterministic word-list resolver per test (`autouse`), so the ambient environment is irrelevant; the one test that needs the live checkpoint is `tests/test_laya_live.py`, marked `llm`, and CI runs `-m "not llm"`.
 
 **Transport — the tier's endpoint is used.** `resolve_endpoint` routes to `execute_node` → `plan_task(base_url=, api_key=)` → `_from_llm` → `system2.complete` / `complete_with_tools`, which build the client from the **tier's** endpoint. A keyless local tier gets `LOCAL_ENDPOINT_KEY`.
 
@@ -119,6 +123,7 @@ Established and **done**:
 | 16 | UI resilience: promises throw, fatal screen, connection-aware triggers | **Complete** |
 | 17 | State reconciliation & idempotency: durable intent ledger, boot reconcile, failure gate | **Complete** |
 | 18 | Unattended autonomous execution: unified intent surface, DAG loop, circuit breaker | **Complete** |
+| 19 | Deterministic AI routing & handoff: typed classifier gateway, injectable System 1 seam, `routing_decisions` ledger, `llm` marker | **Complete** |
 
 #### Phase 7.5: Skill Injection Engine & Deterministic Test Verification Gate
 *The Playbook and the Gatekeeper. Naked JSON schemas cause hallucinations; unverified text completions cause state corruption.*
@@ -170,7 +175,7 @@ Established and **done**:
 
 ## 4. The Sealed Ledger & The Active Objective
 
-> **Phases 5 through 18 are sealed and verified in the native Linux and WSL environments. The active objective is Phase 19.** Phase 18 closed the autonomous loop: the engine drives a plan's DAG itself, stopping only at the artifact approval gate and at the hard circuit breaker outside the agent.
+> **Phases 5 through 19 are sealed and verified in the native Linux and WSL environments. There is no open objective; the next phase awaits the Architect's directive.** Phase 19 made the agent-routing decision typed, injectable and auditable — the System 1/System 2 handoff no longer depends on a title or on the ambient environment.
 
 **Phase 8 — Absolute Sandbox Isolation — sealed.** The exec server runs each command in a container (`tools/docker_sandbox.py`): the workspace is the only OCI bind mount and the container's working directory; `--network=none`; `--user <uid>:<gid>` maps the host identity so local file permissions are not mangled; CPU/memory/pids are capped; `--cap-drop=ALL` + `no-new-privileges`; and the process tree is owned by the named, `--rm` container, force-removed on timeout. The exec server's cwd is forced to the resolved workspace root, path traversal is refused before anything runs, and `execute_restricted_command` keeps the Architect's allow-list.
 * **No native terminal fallback remains.** An unreachable daemon or a missing `docker` client is a **refusal** (`SandboxError`), never a host run. `tools/sandbox.py` is deleted.
@@ -197,4 +202,6 @@ Established and **done**:
 
 **Phase 18 — Unattended Autonomous Execution — sealed.** The intent surface is unified into `api/operations.py` (the side-band `GET /api/intents` and `POST /api/intent/execute` gateway routes are gone; `get_intent_status` / `submit_intent` are operations, and the frontend table maps 1:1). `orchestration/autonomy.py` drives a plan's DAG on an `execute_plan` intent: one aggregate query per transition, an approved node executed, a runnable node planned, a review stop at `planned`. `CircuitBreaker` (25 transitions / 900 s) is enforced outside the agent; a trip fails the intent and the ledger gate locks the UI. `tests/test_autonomy.py` proves the loop with fakes and a fake clock; the Playwright suite proves the frontend submits `execute_plan` for the plan-wide request and `next_step` for a targeted one.
 
-**Definition of done through Phase 18 — met.** `python -m pytest` → **1099 passed, 18 skipped, 233 subtests** on Windows; the Linux CI runner (where the daemon-backed isolation, chaos, telemetry and OOM tests actually run) is the authority. `npm run lint` clean (33 modules, 173 dependencies, 0 violations); `npx playwright test` → **62 passed**; the legacy-catalog grep at zero (pinned by `tests/test_security_boundaries.py::NoImportTimeToolCatalogTests`); no native-execution path (no `shell=True` in any production module; `tools/sandbox.py` deleted and `tools/test_runner.py` containerized).
+**Phase 19 — Deterministic AI Routing & Handoff — sealed.** The agent decision is a typed gateway (`orchestration/routing.py`): `classify_task` is total — any classifier failure or malformed verdict routes to the Architect with `CLASSIFIER_FAULT` — and every decision is appended to the `routing_decisions` ledger. The classifier is injected, so the characterization suite is order-independent; the root cause of the reported "transient" flake was found, not excused: `env_boot` loads `.env` with `override=True`, arming `LAYA_BACKEND=model` mid-process. The one live-checkpoint test is `@pytest.mark.llm` and CI runs `-m "not llm"`. `tests/test_routing.py`, `tests/test_swarm.py::TestRoutingGateway` and `tests/test_laya_live.py` cover both halves.
+
+**Definition of done through Phase 19 — met.** `python -m pytest` → **1122 passed, 18 skipped, 233 subtests** on Windows; the Linux CI runner (where the daemon-backed isolation, chaos, telemetry and OOM tests actually run) is the authority. `npm run lint` clean (33 modules, 173 dependencies, 0 violations); `npx playwright test` → **62 passed**; the legacy-catalog grep at zero (pinned by `tests/test_security_boundaries.py::NoImportTimeToolCatalogTests`); no native-execution path (no `shell=True` in any production module; `tools/sandbox.py` deleted and `tools/test_runner.py` containerized).

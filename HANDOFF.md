@@ -13,6 +13,35 @@
 
 ---
 
+## ⚡ 0. Current State at This Handoff (Phase 19)
+
+- **Phases 5 → 19 are complete and CI-green.** Phase 19 (deterministic AI routing &
+  handoff) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only
+  points at what changed most recently.
+- **Agent routing is a typed gateway.** `orchestration/routing.py::classify_task` picks
+  System 2 (the Architect) vs System 1 (a Coder). It **never raises**: a classifier
+  failure or a malformed verdict routes to the Architect with `CLASSIFIER_FAULT`
+  (logged `CRITICAL`). High complexity = an administrative intent **or** a `core`
+  domain. The classifier is injected; the default is `agents.laya_model.classify`.
+- **Every decision is audited.** `storage/telemetry.py::routing_decisions` is its own
+  append-only table. `Swarm._descriptor_for` classifies on the **parent** side of the
+  pool boundary, records the decision, and ships it to the child in the descriptor. A
+  ledger write failure is reported on stderr and dispatch continues.
+- **The System 1 seam is injectable** (`agents/laya_model.install` / `installed`).
+  `tests/conftest.py` injects a deterministic word-list resolver per test, so the
+  ambient `LAYA_BACKEND` can no longer change a test's outcome. The one test that needs
+  the live checkpoint is `tests/test_laya_live.py`, marked `llm`; CI runs
+  `-m "not llm"`.
+- **The model tier is unchanged.** `orchestration/model_router.py` still owns the model
+  choice (Phase 7); the Phase 19 band is a second, independent input. Do not collapse
+  the two authorities.
+- **Corrections to stale notes below.** `plan.json` no longer exists — machine state is
+  `aleth_state.db` under `~/.aleth/state/<project_id>/` (Phase 11); `PLAN.md` stays in the
+  repository. The project is `aleth`, not `deepagents`, except the `deepagents` PyPI
+  framework and the `deepagents_core` Rust crate, which keep their names.
+
+---
+
 ## 📌 1. Executive Summary & Objective
 
 **Project Name:** Aleth Desktop UI & Multi-Agent Orchestrator Studio
@@ -20,8 +49,9 @@
 **HTML5/CSS3**, and **vanilla JavaScript**, styled as an off-code development IDE:
 neutral high-contrast dark greys, 1px pane borders, monospaced technical data, and
 colour reserved for state rather than decoration. It coordinates multi-agent software
-engineering workflows anchored in a dynamic markdown plan file (`PLAN.md`) plus its
-machine-state twin (`plan.json`).
+engineering workflows anchored in a dynamic markdown plan file (`PLAN.md`); its machine
+state lives outside the repository, in `~/.aleth/state/<project_id>/aleth_state.db`
+(the legacy `plan.json` twin was removed in Phase 11).
 
 ### The Problem It Solves
 
@@ -1296,14 +1326,14 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | not clean: 41 M, 3 D, 20 untracked (see §10.7) |
-| Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 cycles** (29 modules, 150 dependencies) |
-| Build | `npm run build` | 47 modules in 1.78 s; `index-rS0jBvnq.js` 155.49 kB, `index-C8ZTfYXR.css` 81.14 kB, map 547.15 kB |
-| UI tests | `npx playwright test` | **30 passed** in 17.3 s |
-| Backend | `./venv/Scripts/python.exe -m pytest` | **980 passed, 2 skipped, 218 subtests** in 93.05 s (`-n auto`) |
-| Rust core | `cargo test` (in crate) | **39 passed** in 0.04 s |
-| Isolation | `tests/test_docker_sandbox.py` | **48 passed, 1 skipped** — argv contract, timeout/force-remove, fail-closed refusal, image contract, WSL path translation, and the daemon-backed mount/ownership tests against the live engine |
-| State invariant | `tools/check_ui_state.py` | passes: 239 fields single-writer (with the `Set` caveat in §11.4) |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `9cc9d3e` (Phase 19) |
+| Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
+| Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.79 kB |
+| UI tests | `npx playwright test` | **62 passed** in 23.4 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1122 passed, 18 skipped, 233 subtests** in 92.19 s (`-n auto`; CI adds `-m "not llm"`) |
+| Rust core | `cargo test` (in crate) | not re-run this pass |
+| Isolation | `tests/test_docker_sandbox.py` | daemon-backed tests skip on Windows (no docker client); the Linux CI runner is the authority |
+| State invariant | `tools/check_ui_state.py` | not re-run this pass |
 
 > Note: the cycle gate uses `eslint-plugin-import-x` (the maintained fork), whose peer range
 > includes eslint 10 — so `npm install`/`npm ci` resolve with no `legacy-peer-deps` bypass.
