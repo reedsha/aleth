@@ -71,6 +71,11 @@ Schema:
                                    //             ONLY when the work genuinely needs egress
                                    //             (fetching a URL, calling an API, installing a
                                    //             package). Everything else runs with no network.
+                                   //   "heavy" -- a larger hardware budget for the shell (4 GB
+                                   //             and 2 CPUs instead of 512 MB and 1). Baseline
+                                   //             is bounded: name this ONLY when the work
+                                   //             genuinely needs the room (training, a large
+                                   //             build). Every container is capped either way.
                                    // A task that touches the workspace must name what it needs:
                                    // this list is exactly the tool set the worker is given, so an
                                    // empty list hands it no tools at all. Empty is correct only for
