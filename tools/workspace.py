@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import uuid
+from typing import Optional
 
 # Default workspace directory. Resolved from the environment, because the workspace is a path
 # *in the filesystem the Docker daemon sees*: a container bind-mounts it, and a container write
@@ -60,6 +61,20 @@ os.makedirs(PROJECT_DIR, exist_ok=True)
 # Mutable so the test suite can point it at a throwaway directory: the suite must never
 # read or write the real roadmap.
 PLAN_DIR = PROJECT_ROOT
+
+# Where *execution* writes land, as opposed to where the user's project is read from.
+#
+# ``PROJECT_DIR`` is the live working tree: the plan, the file explorer, the preview, the source
+# spans and the agent listing all read it, and they must keep reading the user's real files while
+# a run is in flight. An *agent's* writes are a different question. Phase 20 puts them in a shadow
+# copy of the tree so a hallucinating Coder cannot overwrite or delete the user's uncommitted work;
+# this pointer is what selects that copy. It is ``None`` -- and every write path resolves to
+# ``PROJECT_DIR`` -- except for the duration of one staged run.
+#
+# A process-global, like the pointers above, and for the same reason: the alternative is threading
+# a root through a dozen call sites that already reach this module. Runs are serialized by the
+# server-side run lock, so there is never a second staged run to collide with.
+EXECUTION_DIR: Optional[str] = None
 
 # Where the *machine* state lives, keyed by the project it describes. Deliberately outside the
 # user's repository.
@@ -272,6 +287,24 @@ def get_project_dir() -> str:
     """Return the absolute path of the current project workspace."""
     global PROJECT_DIR
     return os.path.abspath(PROJECT_DIR)
+
+
+def get_execution_dir() -> str:
+    """Where execution writes land: the staging root while a run is staged, else the project.
+
+    Every *write* the agent can cause -- the MCP filesystem server's root, the container's bind
+    mount, the approved artifact's apply target, the test runner's working directory -- resolves
+    through this. Every *read* of the user's own code keeps ``get_project_dir``.
+    """
+    global EXECUTION_DIR
+    return os.path.abspath(EXECUTION_DIR or PROJECT_DIR)
+
+
+def set_execution_dir(path: Optional[str]) -> Optional[str]:
+    """Point execution at ``path`` for the duration of one staged run, or clear it with ``None``."""
+    global EXECUTION_DIR
+    EXECUTION_DIR = os.path.abspath(path) if path else None
+    return EXECUTION_DIR
 
 
 def set_project_dir(new_path: str) -> str:

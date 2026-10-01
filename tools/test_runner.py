@@ -36,7 +36,7 @@ from pydantic import ValidationError
 
 from tools import docker_sandbox
 from tools.payloads import TestRunResult, validated, validated_backup_meta
-from tools.workspace import BACKUP_SUBDIR, get_project_dir
+from tools.workspace import BACKUP_SUBDIR, get_execution_dir, get_project_dir
 
 # A runaway suite must not hold the result view; the bridge call is synchronous, so this
 # is what keeps "open the diff" from becoming "hang the window".
@@ -135,7 +135,7 @@ def test_files_for_task(task_key: str) -> List[str]:
     if not recorded:
         return []
 
-    base_dir = get_project_dir()
+    base_dir = get_execution_dir()
     found: List[str] = []
     for name in recorded:
         if name.lower().endswith(".py") and _TEST_NAME_RE.search(os.path.basename(name)):
@@ -281,7 +281,7 @@ def run_task_tests(task_id: str) -> Dict[str, Any]:
             "summary": "No test file was recorded for this task.",
         })
 
-    base_dir = get_project_dir()
+    base_dir = get_execution_dir()
     tests = [_run_one(base_dir, rel) for rel in files]
     totals = {key: sum(test[key] for test in tests) for key in _EMPTY_TOTALS}
     verdict = _aggregate_verdict([test["verdict"] for test in tests])

@@ -19,7 +19,7 @@ from orchestration.mcp_session import MCPSessionContext
 from orchestration.workflow import actions_admin, actions_impl, events, execution
 from agents.model_routing import architect_model
 from orchestration.workflow.context import WorkflowContext
-from tools.file_tools import get_active_plan_filename, get_project_dir, load_plan_state
+from tools.file_tools import get_active_plan_filename, get_execution_dir, load_plan_state
 
 # Action tags the UI appends to a generic message to request a specific intent.
 # Order is significant: the first matching tag wins.
@@ -100,7 +100,7 @@ def run_agent_workflow(
         # context manager reaps them on every exit path -- a clean return, an early halt, or
         # an exception -- so a failed run leaves no child process behind. Process management
         # lives in orchestration.mcp_session, not here.
-        with MCPSessionContext(get_project_dir()) as mcp_session:
+        with MCPSessionContext(get_execution_dir()) as mcp_session:
             # Kernel warm-up, once per run and off the planning path: the semantic embedder is
             # fetched/loaded on a background thread, and the vector index is reconciled against
             # the relational graph. Both are best-effort -- a deployment cost or a repair must

@@ -34,6 +34,9 @@ export const OPERATIONS = {
   get_preview_source: { verb: "GET", path: "/api/preview", args: ["filename"] },
   extract_plan_steps: { verb: "GET", path: "/api/plan/steps", args: ["filename"] },
   get_source_span: { verb: "GET", path: "/api/artifact/span", args: ["file_path", "start", "end"] },
+  // The merge boundary's read side: the delta between the run's shadow workspace and the live
+  // host tree. Asking applies nothing.
+  workspace_diff: { verb: "GET", path: "/api/workspace/diff", args: ["intent_id"] },
   // -- mutations ---------------------------------------------------------------
   save_system_prompt: { verb: "POST", path: "/api/agent/prompt", args: ["agent_id", "new_prompt", "is_custom_only"] },
   select_workspace: { verb: "POST", path: "/api/workspace/select", args: [] },
@@ -50,6 +53,8 @@ export const OPERATIONS = {
   run_task_tests: { verb: "POST", path: "/api/task/tests", args: ["task_id"] },
   save_settings: { verb: "POST", path: "/api/settings", args: ["values"] },
   approve_artifact: { verb: "POST", path: "/api/artifact/approve", args: ["task_id", "plan_id"] },
+  // The merge boundary's write side: apply the staged delta (approve=true) or discard it.
+  workspace_merge: { verb: "POST", path: "/api/workspace/merge", args: ["intent_id", "approve"] },
   reject_artifact: { verb: "POST", path: "/api/artifact/reject", args: ["task_id", "feedback", "plan_id"] },
   add_task_dependency: { verb: "POST", path: "/api/plan/dependency", args: ["parent_id", "child_id", "plan_id"] },
   update_artifact_target: { verb: "POST", path: "/api/artifact/target", args: ["task_id", "index", "content", "plan_id"] },

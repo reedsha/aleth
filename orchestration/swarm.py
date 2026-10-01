@@ -213,6 +213,15 @@ class Swarm:
         self._outcomes: Dict[str, NodeOutcome] = {}
 
     # -- helpers -----------------------------------------------------------------
+    def set_workspace(self, workspace_dir: str) -> None:
+        """Point dispatch at a new execution root.
+
+        Phase 20 stages each run in its own shadow, so the root a node's descriptor carries moves
+        between runs. The pool and the in-flight set are unaffected; only the path snapshotted into
+        the next descriptor changes, which is exactly when it must.
+        """
+        self.workspace_dir = str(workspace_dir)
+
     def _connection(self) -> sqlite3.Connection:
         """A read connection to the plan database.
 

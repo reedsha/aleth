@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 import threading
@@ -464,18 +465,24 @@ class EngineService:
         must obey the same lock and the same threading discipline as a user launch.
         """
         def target_runner():
-            try:
-                registry.run_agent_workflow(
-                    (user_message or "").strip(),
-                    self.emit_event,
-                    action_type=action_type or "custom",
-                    action_params=action_params or {}
-                )
-            finally:
-                # The run has ended, so whatever it completed has unblocked its children. The tick
-                # is deliberately *outside* the run: the artifact was written to disk by the pass,
-                # and no SQLite transaction is held across that I/O or across this dispatch.
-                self._tick_swarm()
+            # Every run executes against a shadow of the workspace (Phase 20). A run launched
+            # inside the autonomous loop finds the loop's shadow already active and reuses it; a
+            # run launched on its own -- a manual approval -- gets one of its own. The `finally`
+            # tick runs while that shadow is still the execution root, so a dispatch it triggers
+            # also lands in the shadow.
+            with self._staged_execution(""):
+                try:
+                    registry.run_agent_workflow(
+                        (user_message or "").strip(),
+                        self.emit_event,
+                        action_type=action_type or "custom",
+                        action_params=action_params or {}
+                    )
+                finally:
+                    # The run has ended, so whatever it completed has unblocked its children. The
+                    # tick is deliberately *outside* the run: the artifact was written to disk by
+                    # the pass, and no SQLite transaction is held across that I/O or this dispatch.
+                    self._tick_swarm()
 
         self._execution_thread = threading.Thread(target=target_runner, daemon=True)
         self._execution_thread.start()
@@ -596,13 +603,18 @@ class EngineService:
         Two shapes of work reach here. ``execute_plan`` is the autonomous loop (Phase 18): the
         engine drives the DAG itself, so the loop owns the whole outcome. Every other intent is one
         workflow pass, whose terminal event is its answer.
+
+        Either shape runs against a shadow copy of the workspace (Phase 20): the same intent wraps
+        every pass the loop makes, so an earlier pass's writes are visible to a later one and none
+        of them touch the user's live tree.
         """
-        if str(intent.action_type) == "execute_plan":
-            return self._drive_plan(intent)
-        outcome = self._run_blocking(
-            intent.message, intent.action_type, dict(intent.action_params)
-        )
-        self._settle_from_outcome(intent, outcome)
+        with self._staged_execution(str(intent.id)):
+            if str(intent.action_type) == "execute_plan":
+                return self._drive_plan(intent)
+            outcome = self._run_blocking(
+                intent.message, intent.action_type, dict(intent.action_params)
+            )
+            self._settle_from_outcome(intent, outcome)
 
     # -------------------------------------------------------------
     # The autonomous loop: drive the DAG to the human gate (Phase 18)
@@ -947,20 +959,143 @@ class EngineService:
         return result
 
     # -------------------------------------------------------------
+    # Phase 20: the shadow workspace and the merge boundary
+    # -------------------------------------------------------------
+    def _active_plan_id(self) -> str:
+        """The plan the engine is working on right now, in one call."""
+        from storage.db import plan_id_for
+        from tools.workspace import get_active_plan_filename
+
+        return plan_id_for(get_active_plan_filename())
+
+    @contextlib.contextmanager
+    def _staged_execution(self, intent_id: str):
+        """Run the block against a shadow copy of the workspace, not the live tree.
+
+        The shadow is what the container mounts and what every execution write targets, so a
+        hallucinating Coder can damage a scratch copy and nothing else. The block is the run: the
+        module-level execution root is set on entry and cleared on exit, on every path.
+
+        A nested call reuses the active shadow rather than staging again. The autonomous loop
+        drives several workflow passes under one ``execute_plan`` intent, and each pass has to see
+        what the previous one wrote -- a second copy would silently discard it.
+
+        Staging is a hard requirement, not a best effort: if the shadow cannot be made, the run
+        is refused rather than allowed to fall back onto the user's files.
+        """
+        from tools import staging
+        from tools.workspace import get_execution_dir, get_project_dir, set_execution_dir
+
+        if get_execution_dir() != get_project_dir():
+            # An outer run already staged this workspace; every pass lands in its shadow.
+            yield None
+            return
+        try:
+            shadow = staging.create_staging(
+                get_project_dir(), intent_id=str(intent_id or ""), plan_id=self._active_plan_id()
+            )
+        except staging.StagingError as error:
+            # Announced so the UI settles instead of hanging on a run that never started.
+            self.emit_event({
+                "type": "workflow_complete", "status": "error",
+                "message": f"The workspace could not be staged, so nothing was executed: {error}",
+            })
+            raise
+        set_execution_dir(shadow.path)
+        try:
+            yield shadow
+        finally:
+            set_execution_dir(None)
+
+    def workspace_diff(self, intent_id=None):
+        """The staged delta for review: what a merge would change on the host, and nothing else.
+
+        With no id the most recently staged shadow for the active plan answers, so the review
+        view can ask the question without knowing the run's identifier.
+        """
+        from tools import staging
+
+        shadow = staging.find_staging(
+            intent_id=intent_id or None, plan_id=self._active_plan_id()
+        )
+        if shadow is None:
+            return {
+                "success": True, "staged": False, "clean": True,
+                "added": [], "modified": [], "deleted": [],
+                "counts": {"added": 0, "modified": 0, "deleted": 0}, "patch": "",
+            }
+        return {"success": True, "staged": True, **staging.compute_diff(shadow)}
+
+    def workspace_merge(self, intent_id=None, approve=True):
+        """Apply the staged delta to the host, or purge it. The merge gate.
+
+        An approve is refused unless the plan is finished -- every task completed. A plan that is
+        still awaiting an approval, or still running, is not a plan whose work is ready to touch
+        the user's tree. A rejection discards the shadow and leaves the host untouched.
+        """
+        from orchestration import autonomy
+        from storage.db import get_store
+        from tools import staging
+
+        shadow = staging.find_staging(
+            intent_id=intent_id or None, plan_id=self._active_plan_id()
+        )
+        if shadow is None:
+            return {"success": False, "error": "There are no staged changes to merge."}
+
+        if not approve:
+            purged = staging.purge_staging(shadow.staging_id)
+            self.emit_event({
+                "type": "log", "agent": "software-architect", "log_type": "decision",
+                "text": f"[STAGING] rejected and purged {shadow.staging_id}",
+            })
+            return {
+                "success": True, "rejected": True, "purged": purged,
+                "staging_id": shadow.staging_id, "intent_id": shadow.intent_id,
+            }
+
+        plan_id = shadow.plan_id or self._active_plan_id()
+        progress = autonomy.plan_progress(get_store().path, plan_id)
+        if not progress.finished:
+            return {
+                "success": False, "staging_id": shadow.staging_id,
+                "error": "The plan is not complete; refusing to merge staged changes.",
+                "progress": {
+                    "total": progress.total, "completed": progress.completed,
+                    "failed": progress.failed, "planned": progress.planned,
+                    "in_progress": progress.in_progress, "pending": progress.pending,
+                },
+            }
+
+        result = staging.merge_staging(shadow)
+        staging.purge_staging(shadow.staging_id)
+        self.emit_event({
+            "type": "log", "agent": "software-architect", "log_type": "decision",
+            "text": f"[STAGING] merged {shadow.staging_id} into {shadow.host_root}",
+        })
+        return {"success": True, **result}
+
+    # -------------------------------------------------------------
     # The swarm: reactive dispatch, driven by events
     # -------------------------------------------------------------
     def _ensure_swarm(self):
         """The swarm, built on first use. It owns the pool and the in-flight set."""
+        from tools.workspace import get_active_plan_filename, get_execution_dir
+
         if self._swarm is None:
             from orchestration.swarm import Swarm
             from storage.db import get_store, plan_id_for
-            from tools.workspace import get_active_plan_filename, get_project_dir
 
             self._swarm = Swarm(
                 db_path=get_store().path,
                 plan_id=plan_id_for(get_active_plan_filename()),
-                workspace_dir=get_project_dir(),
+                workspace_dir=get_execution_dir(),
             )
+        else:
+            # Each run stages its own shadow, so the root a node's descriptor should carry moves
+            # between runs. The cached swarm must follow it, or a node would be dispatched into
+            # the previous run's stale copy.
+            self._swarm.set_workspace(get_execution_dir())
         return self._swarm
 
     def _tick_swarm(self) -> list:

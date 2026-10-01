@@ -25,7 +25,7 @@ from typing import Any, Callable, List, Mapping, Optional
 
 from agents.model_routing import coder_model
 from orchestration.workflow.context import assemble_coder_context, slice_task_context
-from tools.workspace import get_project_dir
+from tools.workspace import get_execution_dir
 
 # A deliverable is written where the *task* says it belongs, not where a template happens
 # to put it. Tasks name their file in backticks -- "Upgrade AST parser
@@ -305,7 +305,7 @@ def generate_deliverable(
     task_title = str(task.get("title") or "")
     task_key = str(task.get("id") or task_title)
     if system2.is_enabled():
-        context_text = assemble_coder_context(plan, task_key, workspace_dir=get_project_dir())
+        context_text = assemble_coder_context(plan, task_key, workspace_dir=get_execution_dir())
     else:
         context_text = slice_task_context(plan, task_key)
     return generate_code(

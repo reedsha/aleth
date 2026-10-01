@@ -35,7 +35,7 @@ from orchestration.workflow.events import tool_call, tool_result
 from tools.file_tools import compile_plan_json_to_markdown, load_plan_state
 from tools.shell_result import command_failed
 from tools.test_runner import run_task_tests
-from tools.workspace import get_active_plan_filename, get_project_dir
+from tools.workspace import get_active_plan_filename, get_execution_dir
 from storage.db import get_store, plan_id_for
 
 # The executor is not a router. An approval applies the plan a human read; deriving an agent
@@ -340,7 +340,7 @@ def run_approved_artifact(
         f"Applying the approved plan to {', '.join(targets) or 'its targets'}",
     ))
     time.sleep(0.3)
-    applied = executor.execute_approved(plan_id, task_id, workspace_dir=get_project_dir())
+    applied = executor.execute_approved(plan_id, task_id, workspace_dir=get_execution_dir())
     ctx.emit_fn(tool_result(
         EXECUTOR_AGENT, "apply_artifact",
         f"Applied {len(applied.applied)} target(s)" if applied.success else applied.error,

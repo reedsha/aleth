@@ -75,8 +75,13 @@ class WorkspaceTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="aleth_testrunner_")
-        self._real = test_runner.get_project_dir
+        # The runner resolves test files against the *execution* root (the shadow while a run is
+        # staged, the project otherwise) and the backup metadata against the *project* root. Both
+        # are redirected here so the throwaway workspace stands in for each.
+        self._real_project = test_runner.get_project_dir
+        self._real_execution = test_runner.get_execution_dir
         test_runner.get_project_dir = lambda: self.tmp
+        test_runner.get_execution_dir = lambda: self.tmp
         # pytest runs in a container now; point the runtime at the double so the path is real
         # without needing a daemon.
         env_patcher = mock.patch.dict(os.environ, FAKE_DOCKER_ENV)
@@ -84,7 +89,8 @@ class WorkspaceTests(unittest.TestCase):
         self.addCleanup(env_patcher.stop)
 
     def tearDown(self):
-        test_runner.get_project_dir = self._real
+        test_runner.get_project_dir = self._real_project
+        test_runner.get_execution_dir = self._real_execution
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_no_metadata_reports_no_tests(self):

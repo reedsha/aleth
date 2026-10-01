@@ -144,6 +144,21 @@ class ConsoleLineRequest(BaseModel):
     text: str = ""
 
 
+class WorkspaceStagingRequest(BaseModel):
+    """Which shadow to read the delta of. Empty resolves the active plan's most recent one."""
+
+    model_config = _STRICT
+    intent_id: Optional[str] = None
+
+
+class WorkspaceMergeRequest(BaseModel):
+    """Apply the shadow, or (``approve=False``) discard it and leave the host untouched."""
+
+    model_config = _STRICT
+    intent_id: Optional[str] = None
+    approve: bool = True
+
+
 # -- the table -----------------------------------------------------------------------
 @dataclasses.dataclass(frozen=True)
 class Operation:
@@ -184,6 +199,9 @@ OPERATIONS: tuple = (
     Operation("get_preview_source", "GET", "/api/preview", PreviewRequest, _invoke("get_preview_source")),
     Operation("extract_plan_steps", "GET", "/api/plan/steps", PlanFileRequest, _invoke("extract_plan_steps")),
     Operation("get_source_span", "GET", "/api/artifact/span", SpanRequest, _invoke("get_source_span")),
+    # The merge boundary's read side: the delta between the run's shadow workspace and the live
+    # host tree. Nothing is applied by asking; this is what a person reviews before approving.
+    Operation("workspace_diff", "GET", "/api/workspace/diff", WorkspaceStagingRequest, _invoke("workspace_diff")),
     # -- mutations ---------------------------------------------------------------
     Operation("save_system_prompt", "POST", "/api/agent/prompt", AgentPromptRequest, _invoke("save_system_prompt")),
     Operation("select_workspace", "POST", "/api/workspace/select", _Empty, _invoke("select_workspace")),
@@ -200,6 +218,9 @@ OPERATIONS: tuple = (
     Operation("run_task_tests", "POST", "/api/task/tests", TaskIdRequest, _invoke("run_task_tests")),
     Operation("save_settings", "POST", "/api/settings", SaveSettingsRequest, _invoke("save_settings")),
     Operation("approve_artifact", "POST", "/api/artifact/approve", ArtifactApproveRequest, _invoke("approve_artifact")),
+    # The merge boundary's write side. It is the *only* way a staged run's changes reach the
+    # user's files, and it verifies the plan is finished before it does.
+    Operation("workspace_merge", "POST", "/api/workspace/merge", WorkspaceMergeRequest, _invoke("workspace_merge")),
     Operation("reject_artifact", "POST", "/api/artifact/reject", ArtifactRejectRequest, _invoke("reject_artifact")),
     Operation("add_task_dependency", "POST", "/api/plan/dependency", DependencyRequest, _invoke("add_task_dependency")),
     Operation("update_artifact_target", "POST", "/api/artifact/target", ArtifactTargetRequest, _invoke("update_artifact_target")),

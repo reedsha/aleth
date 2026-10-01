@@ -38,7 +38,7 @@ from tools.file_tools import (
 )
 from tools.shell_result import command_failed
 from tools.task_tags import UI_TAG
-from tools.workspace import get_active_plan_filename, get_project_dir
+from tools.workspace import get_active_plan_filename, get_execution_dir
 from storage.db import plan_id_for
 # Imported directly rather than through the ``tools.file_tools`` façade: the test runner is
 # its own lower-layer tool (stdlib subprocess + pytest), not a file operation.
@@ -355,7 +355,7 @@ def fix_bug_action(
     applied = executor.execute_approved(
         plan_id_for(get_active_plan_filename()),
         str(directive_task.get("id")),
-        workspace_dir=get_project_dir(),
+        workspace_dir=get_execution_dir(),
     )
     if not applied.success:
         raise RuntimeError(
@@ -669,7 +669,7 @@ def next_step_action(
     applied = executor.execute_approved(
         plan_id_for(get_active_plan_filename()),
         str(target_task.get("id")),
-        workspace_dir=get_project_dir(),
+        workspace_dir=get_execution_dir(),
     )
     if not applied.success:
         raise RuntimeError(
@@ -1022,7 +1022,7 @@ def custom_action(
     applied = executor.execute_approved(
         plan_id_for(get_active_plan_filename()),
         str(directive_task.get("id")),
-        workspace_dir=get_project_dir(),
+        workspace_dir=get_execution_dir(),
     )
     if not applied.success:
         raise RuntimeError(
