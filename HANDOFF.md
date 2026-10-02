@@ -13,11 +13,33 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 24)
+## ⚡ 0. Current State at This Handoff (Phase 25)
 
-- **Phases 5 → 24 are complete and CI-green.** Phase 24 (vestige removal & identity atomicity) is
-  the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
-  most recently.
+- **Phases 5 → 25 are complete and CI-green.** Phase 25 (dead-code purge & project-level
+  concurrency) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
+  what changed most recently.
+- **The last unused writer is deleted (Phase 25).** `tools/execution_io.overwrite_source` is gone
+  from the module, from the `tools/file_tools` façade and its `__all__`, and from the tests whose
+  subject it was. It had no production caller — the executor publishes through the MCP filesystem
+  server — so it was a second writer with a second set of rules and nothing to use it. The façade
+  test now asserts its **absence**, so re-introducing it fails a test.
+- **One intent runs per project, enforced by the ledger (Phase 25).** `IntentLedger.claim` is a
+  single conditional `UPDATE`: `status = 'queued'` plus `NOT EXISTS (… status = 'running' …)`. No
+  project column and no second lock file, because the database is *already* per project
+  (`<state_dir>/<project_id>/aleth_state.db`) — so "nothing else is running in this ledger" *is*
+  "nothing else is running in this project". `IntentQueue.take` claims **before** it pops, so an
+  intent that cannot claim stays queued at the head.
+- **A busy engine defers an intent; it never fails it (Phase 25).** `RunDeferred` (the refusal is
+  machine-readable as `reason: "busy"`) sends the intent back to `queued` via `queue.release`
+  rather than settling it as a failure — a concurrency condition is a reason to wait, not an
+  outcome. `_run_intent` checks the run state *before* staging, so a deferred intent leaves no
+  shadow behind.
+- **The engine cleans its own containers on the way out (Phase 25).** `purge_managed_containers`
+  removes every `aleth.managed` container **regardless of owner** — the boot sweep spares a live
+  owner, which is exactly wrong at shutdown — and `install_shutdown_sweep` arms it on `atexit`
+  **and** SIGINT/SIGTERM, re-delivering the signal so the process still exits with the expected
+  status. It asks the daemon, because a container is a child of `dockerd` and process-group
+  scoping never reached it.
 - **The uncalled writer is gone (Phase 24).** `orchestration/workflow/actions_impl._write_checked`
   had no production caller — `executor.apply_artifact` writes through the **MCP filesystem server**
   (`client.write_file`), whose root is the shadow. It and `WorkflowWriteGuardTests` are deleted:
@@ -28,8 +50,6 @@
   **different project** and orphan the whole state directory silently. It now goes through
   `tools.atomic_io`. `_ignore_identity_file`'s append is deliberately left alone (harmless,
   self-correcting).
-- **`overwrite_source` now has no production caller either.** Recorded, not acted on: it survives
-  as the façade-pinned engine primitive with `FileOpTests` coverage and the Phase 23 shadow binding.
 - **The container reaper is no longer killable by the kill it exists for (Phase 24).** The exec
   server's SIGTERM handler removed its in-flight containers with `docker rm -f` — a child of the
   very process group the MCP client SIGKILLs when its 5 s grace expires. The removal's own budget
@@ -1424,12 +1444,14 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `94a153b` (Phase 24, first commit) before the reaper fix |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `7695466` (Phase 24) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
-| UI tests | `npx playwright test` | **63 passed** in 22.1 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1187 passed, 18 skipped, 233 subtests** in 94.51 s (`-n auto`; CI adds `-m "not llm"`) — the count *fell* by one net from Phase 23: `WorkflowWriteGuardTests` (2) deleted, the torn-mint test (1) added, the removal-contract tests (3) added |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n2` in WSL | **1199 passed, 5 skipped** in 123.17 s — the container-backed tests actually run here, which is why this is the leg that can see the reaper race |
+| UI tests | `npx playwright test` | **63 passed** in 22.0 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1194 passed, 19 skipped, 232 subtests** in 89.26 s (`-n auto`; CI adds `-m "not llm"`) — up 7 from Phase 24: the writer's subject tests (3) deleted, the mutex tests (7) and the teardown tests (4) added, the boot-wiring pin rewritten |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1207 passed, 5 skipped** in 94.94 s — the container-backed tests actually run here. `-n4`, not `-n auto`: this VM has 7.8 GB and 16 workers is what OOM-killed an earlier run |
+| Project mutex | `tests/test_intent_ledger.py::ProjectExecutionMutexTests` | **7 passed** — a second intent (and a second *engine* over the same database) cannot claim a project that is executing; the slot frees on settle; a release is not an outcome; a repeated claim cannot re-take it; a blocked intent stays queued at the head; a deferred intent is retried, not failed |
+| Engine teardown | `tests/test_docker_sandbox.py::ShutdownSweepTests` + `tests/test_chaos.py::ContainerLifecycleTests::test_the_shutdown_sweep_removes_a_container_whose_owner_is_alive` | **4 + 1 passed** — atexit **and** both signals registered, the registered callable is the sweep, ownership is ignored (detached), and on a live daemon the shutdown sweep removes a container the boot sweep is right to spare |
 | Container reaper | `tests/test_chaos.py::ContainerLifecycleTests` in WSL | **8/8 iterations passed** (3 tests each); durations ~3.5–3.8 s, down from a 5.17 s outlier that was hitting the client's grace |
 | Removal contract | `tests/test_docker_sandbox.py::ContainerRemovalContractTests` | **3 passed** — detached ⇒ `start_new_session` and no pipes; plain ⇒ captured and awaited; the purge passes the mode through |
 | Identity atomicity | `tests/test_state_identity.py::MintedIdentityTests::test_a_torn_mint_cannot_become_a_different_project` | **passed** — a refused rename leaves no partial token and no scratch file |
