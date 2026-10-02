@@ -13,30 +13,31 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 25)
+## ⚡ 0. Current State at This Handoff (Phase 26)
 
-- **Phases 5 → 25 are complete and CI-green.** Phase 25 (dead-code purge & project-level
-  concurrency) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
-  what changed most recently.
-- **The last unused writer is deleted (Phase 25).** `tools/execution_io.overwrite_source` is gone
-  from the module, from the `tools/file_tools` façade and its `__all__`, and from the tests whose
-  subject it was. It had no production caller — the executor publishes through the MCP filesystem
-  server — so it was a second writer with a second set of rules and nothing to use it. The façade
-  test now asserts its **absence**, so re-introducing it fails a test.
-- **One intent runs per project, enforced by the ledger (Phase 25).** `IntentLedger.claim` is a
-  single conditional `UPDATE`: `status = 'queued'` plus `NOT EXISTS (… status = 'running' …)`. No
-  project column and no second lock file, because the database is *already* per project
-  (`<state_dir>/<project_id>/aleth_state.db`) — so "nothing else is running in this ledger" *is*
-  "nothing else is running in this project". `IntentQueue.take` claims **before** it pops, so an
-  intent that cannot claim stays queued at the head.
-- **A busy engine defers an intent; it never fails it (Phase 25).** `RunDeferred` (the refusal is
-  machine-readable as `reason: "busy"`) sends the intent back to `queued` via `queue.release`
-  rather than settling it as a failure — a concurrency condition is a reason to wait, not an
-  outcome. `_run_intent` checks the run state *before* staging, so a deferred intent leaves no
-  shadow behind.
+- **Phases 5 → 26 are complete and CI-green.** Phase 26 (teardown precision & LLM loop bounding)
+  is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
+  most recently.
+- **The shutdown sweep is scoped to the engine's own process tree (Phase 26).** Phase 25's version
+  matched the `aleth.managed` label alone, so an engine exiting killed the in-flight containers of
+  *any* other engine on the host. `purge_managed_containers` now checks each candidate's owner with
+  `_is_our_child`, which walks `/proc`'s parent chain. **Descendants, not `os.getpid()` alone:** the
+  engine never creates a container itself — `run_isolated` runs inside the exec server *child* — so
+  a sweep matching only its own pid would remove nothing.
+- **The model has a step ceiling, and hitting it is a fault (Phase 26).** `MAX_AGENT_STEPS = 30` in
+  `orchestration/workflow/agent_loop.py`; exhausting it records a row and raises
+  `AgentStepLimitExceeded("Exceeded maximum execution steps")`. It used to return an empty answer,
+  which is a blank plan that looks like a decision. `planner._from_llm` re-raises it explicitly so
+  the broad `except Exception` cannot degrade it to "no plan", and the run fails the intent with
+  that message.
+- **Every tool result is capped at 16 KB (Phase 26).** `tools/result_budget.py`;
+  `mcp_fs_server.read_file` and the exec server's stdout/stderr block both go through it.
+  Middle-truncated — a head-only slice would cut away the traceback — with the dropped byte count
+  stated so the model reaches for `grep`. `execution_io.read_source` is deliberately exempt: its
+  caller writes the content back.
 - **The engine cleans its own containers on the way out (Phase 25).** `purge_managed_containers`
-  removes every `aleth.managed` container **regardless of owner** — the boot sweep spares a live
-  owner, which is exactly wrong at shutdown — and `install_shutdown_sweep` arms it on `atexit`
+  removes every `aleth.managed` container **it is responsible for** — scoped in Phase 26 to its own
+  process tree — and `install_shutdown_sweep` arms it on `atexit`
   **and** SIGINT/SIGTERM, re-delivering the signal so the process still exits with the expected
   status. It asks the daemon, because a container is a child of `dockerd` and process-group
   scoping never reached it.
@@ -1444,12 +1445,15 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `7695466` (Phase 24) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `1ee5c32` (Phase 25) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.0 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1194 passed, 19 skipped, 232 subtests** in 89.26 s (`-n auto`; CI adds `-m "not llm"`) — up 7 from Phase 24: the writer's subject tests (3) deleted, the mutex tests (7) and the teardown tests (4) added, the boot-wiring pin rewritten |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1207 passed, 5 skipped** in 94.94 s — the container-backed tests actually run here. `-n4`, not `-n auto`: this VM has 7.8 GB and 16 workers is what OOM-killed an earlier run |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1198 passed, 22 skipped, 232 subtests** in 82.89 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1214 passed, 5 skipped** in ~95 s, and **0 containers left behind** — `-n4`, not `-n auto`: this VM has 7.8 GB |
+| Teardown scope | `tests/test_docker_sandbox.py::ShutdownSweepTests` + `tests/test_chaos.py::…leaves_a_neighbours_container_alone` | **passed** — the sweep takes only its own tree; on a live daemon an `owner_pid=1` neighbour's container survives |
+| Loop ceiling | `tests/test_mcp.py::ToolLoopTests::test_the_step_ceiling_is_a_fault_not_an_answer` + `…recorded_in_the_telemetry` | **passed** — raises `AgentStepLimitExceeded("Exceeded maximum execution steps")` and writes an `agent_faults` row (kind, role, detail, steps) |
+| Tool-result budget | `tests/test_mcp.py::ToolResultBudgetTests` | **4 passed** — a small result is untouched, an oversized one keeps head *and* tail with the marker, and both the file read and the exec block stay ≤ 16 KB |
 | Project mutex | `tests/test_intent_ledger.py::ProjectExecutionMutexTests` | **7 passed** — a second intent (and a second *engine* over the same database) cannot claim a project that is executing; the slot frees on settle; a release is not an outcome; a repeated claim cannot re-take it; a blocked intent stays queued at the head; a deferred intent is retried, not failed |
 | Engine teardown | `tests/test_docker_sandbox.py::ShutdownSweepTests` + `tests/test_chaos.py::ContainerLifecycleTests::test_the_shutdown_sweep_removes_a_container_whose_owner_is_alive` | **4 + 1 passed** — atexit **and** both signals registered, the registered callable is the sweep, ownership is ignored (detached), and on a live daemon the shutdown sweep removes a container the boot sweep is right to spare |
 | Container reaper | `tests/test_chaos.py::ContainerLifecycleTests` in WSL | **8/8 iterations passed** (3 tests each); durations ~3.5–3.8 s, down from a 5.17 s outlier that was hitting the client's grace |
