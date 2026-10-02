@@ -211,6 +211,10 @@ export async function openApp(page, options = {}) {
     };
     window.__alethFetchLog = [];
     window.__alethFetchBodies = [];
+    // The same object the gateway mock reads, exposed so a test can change what an operation
+    // answers *mid-run* -- e.g. a run that paused while the window was disconnected. It is a
+    // reference, not a copy, so mutating it here changes what the next request is told.
+    window.__alethApiReturns = data.apiReturns;
 
     // The stream. Tests drive it with `window.__alethStream`: `drop()` models the backend dying
     // (every attempt fails, as it would against a dead port) and `open()` models it coming back.

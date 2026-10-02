@@ -19,6 +19,11 @@ import { DOM, setConsolePinned, state } from "./store.js";
 
 const CONSOLE_MAX_LINES = 400;
 
+// The share of the intent's token budget at which the live burn counter turns amber. The ceiling
+// itself is the event's own `limit` (the engine's configured `MAX_INTENT_TOKENS`), so the UI never
+// hard-codes a number the engine owns.
+const BURN_WARN_RATIO = 0.8;
+
 let consoleLineCount = 0;
 
 // A parallel copy of the transcript, so the console can be detached into a second window
@@ -83,6 +88,69 @@ function consoleToolText(event) {
   return event.description ? `${head} — ${event.description}` : head;
 }
 
+// -- the live run's own telemetry (Phase 34) -----------------------------------------
+//
+// The agent loop streams its thoughts and tool executions as they happen. These are more granular
+// than the `log`/`tool_call`/`tool_result` events the workflow branches emit, so they read as the
+// model's own narration rather than the workflow's.
+
+function consoleThoughtText(event) {
+  const text = String(event.text || "").trim();
+  const calls = Array.isArray(event.tool_calls) ? event.tool_calls.filter(Boolean) : [];
+  const step = event.step || "?";
+  if (text && calls.length) return `step ${step}: ${text} \u2192 ${calls.join(", ")}`;
+  if (text) return `step ${step}: ${text}`;
+  if (calls.length) return `step ${step}: calling ${calls.join(", ")}`;
+  return `step ${step}: thinking`;
+}
+
+function consoleExecText(event) {
+  const args = event.arguments || {};
+  const detail = args.path || args.filename || args.command || "";
+  return detail ? `${event.tool || "tool"} ${detail}` : (event.tool || "tool");
+}
+
+function consoleExecResult(event) {
+  // A tool result can be up to 16 KB on the wire; the transcript shows the head of it and keeps
+  // the window readable. The full result is the model's, not the operator's.
+  const result = String(event.result || "").replace(/\s+/g, " ").trim();
+  if (!result) return "done";
+  return result.length > 200 ? `${result.slice(0, 200)}\u2026` : result;
+}
+
+function formatCount(value) {
+  const number = Number(value) || 0;
+  return String(number).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// The live burn counter: tokens spent against the intent's budget, with a visual alert as the
+// breaker's ceiling approaches. It is the one readout that turns "the agent is thinking" into "the
+// agent is spending", which is the number that matters to the person paying for the run.
+function renderTokenBurn(event) {
+  const element = DOM.tokenBurn;
+  if (!element) return;
+  const spent = Number(event.spent) || 0;
+  const limit = Number(event.limit) || 0;
+  element.hidden = false;
+  element.textContent = limit > 0
+    ? `${formatCount(spent)} / ${formatCount(limit)} tok`
+    : `${formatCount(spent)} tok`;
+  const ratio = limit > 0 ? spent / limit : 0;
+  element.classList.toggle("burn-warn", ratio >= BURN_WARN_RATIO && ratio < 1);
+  element.classList.toggle("burn-over", ratio >= 1);
+  element.title = limit > 0
+    ? `This run has spent ${spent} of ${limit} tokens`
+    : `This run has spent ${spent} tokens`;
+}
+
+export function clearTokenBurn() {
+  const element = DOM.tokenBurn;
+  if (!element) return;
+  element.hidden = true;
+  element.textContent = "";
+  element.classList.remove("burn-warn", "burn-over");
+}
+
 // One line per event, chosen so the transcript reads like a shell session: commands that
 // started a phase, output the agents produced, and the exit line that closed it.
 export function echoAgentEvent(event) {
@@ -140,6 +208,31 @@ export function echoAgentEvent(event) {
       consoleDetached = false;
       appendConsoleLine("error", `console detach failed: ${event.error || "unknown error"}`);
       showToast("Could not detach the console", "error");
+      break;
+
+    // The live run's own telemetry (Phase 34). `token_budget_update` carries no line of its own --
+    // it would be one per step and say nothing the burn counter does not -- so it drives the
+    // readout instead of the transcript.
+    case "agent_thought":
+      appendConsoleLine("think", consoleThoughtText(event));
+      break;
+    case "tool_execution_start":
+      appendConsoleLine("tool", consoleExecText(event));
+      break;
+    case "tool_execution_complete":
+      appendConsoleLine("ok", consoleExecResult(event));
+      break;
+    case "token_budget_update":
+      renderTokenBurn(event);
+      break;
+    case "intent_paused":
+      appendConsoleLine("pause", "run paused \u2014 awaiting your steering");
+      break;
+    case "intent_steered":
+      appendConsoleLine("steer", `steering: ${event.correction || ""}`);
+      break;
+    case "intent_resumed":
+      appendConsoleLine("cmd", `resumed with ${event.corrections || 0} correction(s)`);
       break;
   }
 }

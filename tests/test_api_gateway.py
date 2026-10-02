@@ -500,6 +500,48 @@ class BoundaryTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:8765", loopback_origins(8765))
 
 
+class IntentStreamFilterTests(unittest.TestCase):
+    """Phase 34: what a per-run stream delivers, decided by one function.
+
+    The rule has two halves, and both are load-bearing: a frame naming a *different* intent is
+    dropped (the filter), and an untagged lifecycle frame is delivered (or a client following one
+    run would never be told it ended).
+    """
+
+    @staticmethod
+    def _frame(payload):
+        return sse_frame(payload)
+
+    def test_a_frame_for_this_intent_is_delivered(self):
+        from api.server import _frame_for_intent
+
+        self.assertTrue(
+            _frame_for_intent(self._frame({"type": "agent_thought", "intent_id": "i-1"}), "i-1")
+        )
+
+    def test_a_frame_for_another_intent_is_dropped(self):
+        from api.server import _frame_for_intent
+
+        self.assertFalse(
+            _frame_for_intent(self._frame({"type": "agent_thought", "intent_id": "i-2"}), "i-1")
+        )
+
+    def test_an_untagged_lifecycle_frame_is_delivered(self):
+        from api.server import _frame_for_intent
+
+        self.assertTrue(
+            _frame_for_intent(
+                self._frame({"type": "workflow_complete", "status": "finished"}), "i-1"
+            )
+        )
+
+    def test_a_frame_that_is_not_a_data_frame_or_is_unparseable_is_dropped(self):
+        from api.server import _frame_for_intent
+
+        self.assertFalse(_frame_for_intent(": keepalive\n\n", "i-1"))
+        self.assertFalse(_frame_for_intent("data: not json\n\n", "i-1"))
+
+
 class LiveServerTests(GatewayTestCase):
     """The same routes, over a real socket, with the boundary in front of them."""
 
@@ -629,10 +671,12 @@ class LiveServerTests(GatewayTestCase):
         self.assertEqual(received, [_LOG_EVENT])
 
     def test_the_per_intent_stream_delivers_only_that_intent(self):
-        """A client following one run must not see a neighbour's events.
+        """A client following one run must not see a neighbour's events -- and must see its own
+        run's untagged lifecycle events, or it would never be told the run ended (Phase 34).
 
-        Two frames are published on the bus; only the one naming the requested intent reaches the
-        wire. The other is dropped by the server, not by the client -- the filter is the boundary.
+        Three frames are published on the bus: a neighbour's tagged event (dropped), this run's
+        tagged event, and an untagged terminal event (both delivered). The filter is the server's,
+        not the client's -- it is the boundary.
         """
         received = []
         ready = threading.Event()
@@ -644,13 +688,14 @@ class LiveServerTests(GatewayTestCase):
                 response = connection.getresponse()
                 ready.set()
                 deadline = time.monotonic() + 10
-                while time.monotonic() < deadline:
+                # Two frames are expected (this run's event, then the untagged terminal); stop as
+                # soon as both have arrived rather than waiting out a deadline.
+                while len(received) < 2 and time.monotonic() < deadline:
                     line = response.readline()
                     if not line:
                         break
                     if line.startswith(b"data: "):
                         received.append(json.loads(line[len(b"data: "):]))
-                        return
             except Exception:
                 pass
             finally:
@@ -668,9 +713,12 @@ class LiveServerTests(GatewayTestCase):
                          "step": 1, "text": "not yours"})
         bridge_bus.emit({"type": "agent_thought", "intent_id": "i-want",
                          "step": 2, "text": "yours"})
+        # An untagged lifecycle event: it belongs to the one run this project is executing.
+        bridge_bus.emit({"type": "workflow_complete", "status": "finished", "message": "done"})
         thread.join(timeout=10)
 
-        self.assertEqual([event["intent_id"] for event in received], ["i-want"])
+        self.assertEqual([event["type"] for event in received], ["agent_thought", "workflow_complete"])
+        self.assertEqual(received[0]["intent_id"], "i-want")
 
     def test_the_bus_listener_is_detached_when_the_server_stops(self):
         self.server.stop()

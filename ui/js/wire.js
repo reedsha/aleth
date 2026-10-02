@@ -25,6 +25,7 @@ import { initSidebars, openPlansTab, renderSidebarPlans, setSidebarTab, switchAc
 import { DOM, setAgentCardOpen, state, unresolvedElements } from "./store.js";
 import { simulateWorkflow } from "./visuals.js";
 import { closeDagPanel, toggleDagPanel } from "./dag.js";
+import { dismissSteering, interruptActiveRun, submitSteering } from "./live-run.js";
 import { editTaskInWorkbench, handleWorkbenchDiscard, handleWorkbenchEdit, handleWorkbenchInput, handleWorkbenchShowDag, handleWorkbenchShowRaw, handleWorkbenchShowTree, initWorkbench, refreshWorkbenchChrome, renderPlanDocument, syncWorkbenchGutterScroll } from "./workbench.js";
 import { closeAuditModal, closeRollbackModal, closeWorkspaceFilesModal, handleAuditResolution, handleConfirmRollback, openAuditModal, openPlanSummaryPanel, openRollbackModal, openWorkspaceFilesModal, renderFilteredWorkspaceFiles } from "./workspace.js";
 
@@ -137,6 +138,22 @@ function initEventListeners() {
 
   // Run Stop, now in the top bar (it used to sit in the dock's status row).
   if (DOM.btnStopRun) DOM.btnStopRun.addEventListener("click", handleStopClick);
+
+  // The steering wheel (Phase 34). Interrupt holds the run; the overlay's two buttons release it --
+  // with the operator's correction, or without one (the run carries on unsteered).
+  if (DOM.btnInterruptRun) DOM.btnInterruptRun.addEventListener("click", interruptActiveRun);
+  if (DOM.btnSteerSubmit) DOM.btnSteerSubmit.addEventListener("click", submitSteering);
+  if (DOM.btnSteerCancel) DOM.btnSteerCancel.addEventListener("click", dismissSteering);
+  if (DOM.steerInput) {
+    // Ctrl/Cmd+Enter submits, the convention every other composer in the app uses. A bare Enter
+    // stays a newline: a steering directive is prose, not a shell command.
+    DOM.steerInput.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        submitSteering();
+      }
+    });
+  }
 
   // Action Drawer Controls
   if (DOM.btnCloseParamModal) DOM.btnCloseParamModal.addEventListener("click", closeActionDrawer);

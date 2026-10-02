@@ -2,18 +2,12 @@
 // ============================================================================
 // Startup: the local API gateway
 // ============================================================================
-import { api, connectEventStream } from "./api-client.js";
+import { api } from "./api-client.js";
 import { beginRunUi } from "./actions.js";
 import { installBus } from "./bridge-bus.js";
-import {
-  CONNECTED,
-  LOST,
-  RECONNECTING,
-  blockOnEngineFailure,
-  initConnectionIndicator,
-  setConnectionState,
-} from "./connection.js";
+import { blockOnEngineFailure, initConnectionIndicator } from "./connection.js";
 import { clearFatalError, showFatalError } from "./fatal.js";
+import { startLiveStream } from "./live-run.js";
 import { renderSidebarAgents } from "./agents.js";
 import { showToast } from "./notify.js";
 import { openCreatePlanModal } from "./plan-modals.js";
@@ -92,23 +86,17 @@ export async function initFromGateway() {
 // The sink is installed first. A frame that arrives before the sink exists is dropped, and the
 // sink is the same strict parser the pywebview push used -- so an event from the stream is
 // validated exactly as an injected one was, and a malformed payload is rejected either way.
+//
+// The stream itself -- its path, its backoff schedule and its reconnect hydration -- belongs to
+// `ui/js/live-run.js` (Phase 34): the window follows one run's stream while a run is live, so the
+// connection is a run concern, not a boot one. This is only the handshake that hands it the sink.
 export function startEventStream() {
   installBus();
   initConnectionIndicator();
-  return connectEventStream({
+  return startLiveStream({
     onMessage: (raw) => {
       const sink = window.__deepAgentsBus;
       if (sink && typeof sink.receive === "function") sink.receive(raw);
-    },
-    onStatus: (status) => {
-      if (!status) return;
-      if (status.unsupported) {
-        // No EventSource at all: the UI has no way to be told anything, so it must not pretend
-        // it can act.
-        setConnectionState(LOST);
-        return;
-      }
-      setConnectionState(status.connected ? CONNECTED : RECONNECTING);
     },
   });
 }

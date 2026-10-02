@@ -211,6 +211,15 @@
             </svg>
             <span>Stop Task</span>
           </button>
+          <!-- Interrupt (Phase 34): hold the run and steer it. Distinct from Stop -- Stop ends the
+               run, Interrupt pauses it so the operator can change its course. -->
+          <button class="btn-stop-run btn-interrupt-run" id="btnInterruptRun" type="button" style="display: none;" title="Pause the run and steer it">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="7" y="6" width="3.5" height="12" rx="1"/>
+              <rect x="13.5" y="6" width="3.5" height="12" rx="1"/>
+            </svg>
+            <span>Interrupt</span>
+          </button>
         </div>
 
         <div class="top-status-right">
@@ -706,6 +715,11 @@
         <div class="dock-logs" id="dockLogs">
           <div class="console-bar">
             <span class="console-title">Console</span>
+            <span class="console-mid">
+              <!-- The run's live state (Phase 34): held for the operator, and what it has spent. -->
+              <span class="console-paused-badge" id="consolePausedBadge" hidden>Paused &mdash; awaiting your steering</span>
+              <span class="token-burn" id="tokenBurn" hidden title="Tokens spent against this run's budget"></span>
+            </span>
             <div class="console-bar-actions">
               <button class="console-clear" id="btnConsoleOverlay" type="button" title="Expand the console over the workbench">⤢</button>
               <button class="console-clear" id="btnConsoleDetach" type="button" title="Detach the console into its own window">⧉</button>
@@ -713,6 +727,23 @@
             </div>
           </div>
           <div class="console-stream" id="consoleStream"></div>
+          <!-- The steering wheel: revealed by an `intent_paused` event, hidden by `intent_resumed`.
+               Submitting sends the correction to POST /api/intent/resume, which the loop injects
+               into the run's context window as a [user] message. -->
+          <div class="steer-overlay" id="steerOverlay" hidden>
+            <div class="steer-card" role="dialog" aria-label="Steer the paused agent">
+              <div class="steer-head">
+                <span class="steer-badge">PAUSED</span>
+                <span class="steer-title">The run is holding. Tell the agent what to change.</span>
+              </div>
+              <textarea class="steer-input" id="steerInput" rows="3"
+                        placeholder="e.g. Stop refactoring the CSS; fix the API endpoint only."></textarea>
+              <div class="steer-actions">
+                <button class="steer-btn steer-cancel" id="btnSteerCancel" type="button">Resume without changes</button>
+                <button class="steer-btn steer-submit" id="btnSteerSubmit" type="button">Resume with directive</button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
       </section>

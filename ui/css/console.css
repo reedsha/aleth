@@ -132,3 +132,191 @@
 .bottom-dock.console-attention .console-bar {
   animation: consoleAttention 1.8s ease-out;
 }
+
+/* --------------------------------------------------------------------------
+   The live run (Phase 34): the burn counter, the paused state, the steering wheel.
+   -------------------------------------------------------------------------- */
+
+/* The middle of the bar: the run's live state -- held for the operator, and what it has spent.
+   The bar is `space-between` over three children, so this group stays centred. */
+.console-mid {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.console-paused-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: var(--accent-amber);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+/* The live burn counter: tokens spent against the intent's budget. Amber as the breaker's
+   ceiling approaches, red at it -- the alert is the number, not a separate banner. */
+.token-burn {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.token-burn.burn-warn {
+  color: var(--accent-amber);
+}
+
+.token-burn.burn-over {
+  color: var(--accent-stop);
+  font-weight: 600;
+}
+
+/* A held run tints the bar, so "the run is waiting for me" is visible without reading it. */
+.bottom-dock.console-paused .console-bar {
+  background: rgba(245, 158, 11, 0.1);
+  border-bottom-color: rgba(245, 158, 11, 0.4);
+}
+
+/* The run's own telemetry, coloured like the rest: what the model thought, and the pause. */
+.console-think .console-text {
+  color: var(--accent-cyan);
+}
+
+.console-pause .console-text,
+.console-steer .console-text {
+  color: var(--accent-amber);
+}
+
+.console-pause .console-text {
+  font-weight: 600;
+}
+
+/* The steering wheel. It covers the transcript while a run is held: the operator's attention
+   belongs on the directive, not on the last tool result. Anchored to .dock-logs (dock.css), so
+   it sits under the console bar and over the stream. */
+.steer-overlay {
+  position: absolute;
+  inset: 24px 0 0 0;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: rgba(18, 18, 18, 0.86);
+}
+
+.steer-overlay[hidden] {
+  display: none;
+}
+
+.steer-card {
+  width: min(620px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.steer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.steer-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: var(--accent-amber);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+}
+
+.steer-title {
+  color: var(--text-main);
+  font-size: 12.5px;
+}
+
+.steer-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 54px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-glass);
+  background: var(--bg-secondary);
+  color: var(--text-main);
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.steer-input:focus {
+  outline: none;
+  border-color: var(--accent-amber);
+}
+
+.steer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.steer-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-glass);
+  background: var(--bg-secondary);
+  color: var(--text-main);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.steer-btn:hover {
+  border-color: var(--accent-amber);
+}
+
+.steer-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.steer-submit {
+  background: var(--accent-amber);
+  border-color: var(--accent-amber);
+  color: #1a1c23;
+  font-weight: 600;
+}
+
+.steer-submit:hover {
+  filter: brightness(1.08);
+}
+
+/* Interrupt sits beside Stop in the top bar and takes the amber of a *hold*, not the red of an
+   end: the run is not being killed, it is being paused. */
+.btn-interrupt-run {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fcd34d;
+}
+
+.btn-interrupt-run:hover {
+  background: #f59e0b;
+  color: #1a1c23;
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.45);
+}

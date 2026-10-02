@@ -13,11 +13,27 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 33)
+## ⚡ 0. Current State at This Handoff (Phase 34)
 
-- **Phases 5 → 33 are complete and CI-green.** Phase 33 (real-time observability and hard
-  interruption) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
+- **Phases 5 → 34 are complete and CI-green.** Phase 34 (the live HITL dashboard and stream
+  resiliency) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
   what changed most recently.
+- **The stream is rendered, not dropped (Phase 34).** `ui/js/console.js` echoes the loop's
+  `agent_thought` / `tool_execution_start` / `tool_execution_complete` / `intent_paused|steered|resumed`
+  into the transcript, and `token_budget_update` drives a live burn counter in the console bar
+  (spent vs the event's own `limit`; amber past 80%, red at the ceiling).
+- **The run is steerable from the screen (Phase 34).** An `Interrupt` control beside Stop posts to
+  `/api/intent/interrupt`; an `intent_paused` event opens a steering overlay whose two buttons
+  release the hold through `/api/intent/resume` (with the correction, or without one). A refused
+  resume keeps the overlay up and says why.
+- **One re-targetable connection (Phase 34).** `ui/js/stream.js` owns the single SSE connection and
+  its path; the window follows `/api/intents/<id>/stream` while a run is live and returns to
+  `/api/events` when it ends. The server filter passes *this intent's* frames and untagged lifecycle
+  frames, so the terminal event is never dropped.
+- **Reconnect hydrates from the ledger (Phase 34).** `live-run.hydrateRunState` shows the hold for a
+  paused run, finalizes a run that ended during the outage, and adopts the live run on a reload --
+  from the durable ledger alone, never `get_run_state` (the thread lags a fresh launch). No replay,
+  so no duplicated lines.
 - **The run streams itself (Phase 33).** The agent loop emits `agent_thought`,
   `tool_execution_start`/`_complete` and `token_budget_update` through an injected `emit` threaded
   from `EngineService.emit_event` down to `run_tool_loop`; each is a member of the strict bus union
@@ -1533,12 +1549,14 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `c4314b6` (Phase 32) before this pass |
-| Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
-| Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 169.25 kB |
-| UI tests | `npx playwright test` | **64 passed** in 13.7 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1273 passed, 23 skipped, 243 subtests** in 79.45 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1291 passed, 5 skipped**, and **0 containers left behind** |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `9f18ddf` (Phase 33) before this pass |
+| Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
+| Build | `npm run build` | 59 modules; `dist/index.html` 68.50 kB, `index-*.css` 94.38 kB, `index-*.js` 174.31 kB |
+| UI tests | `npx playwright test` | **73 passed** in 22.1 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1277 passed, 23 skipped, 243 subtests** in 99.41 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1295 passed, 5 skipped**, and **0 containers left behind** |
+| Live rendering | `tests/ui/live-run.spec.mjs` | **9 passed** — the loop's thoughts and tool executions reach the console; the burn counter tracks the budget and warns at the cap; Interrupt posts the held intent; `intent_paused` opens the overlay and resume sends the correction; a refused resume keeps the hold; the window follows the run's stream and returns on the terminal event; a reconnect and a reload both hydrate the hold from the ledger |
+| Stream filter | `tests/test_api_gateway.py::IntentStreamFilterTests` + the live filter test | **5 passed** — this intent's frames and untagged lifecycle frames are delivered; another intent's and unparseable frames are dropped |
 | Live stream | `tests/test_mcp.py::SteeringAndStreamTests` | **4 passed** — the loop emits `agent_thought`/`token_budget_update`/`tool_execution_start`/`tool_execution_complete` in order and every frame validates against the bus union; an interrupt holds a run and the correction lands as the last `[user]` message; a pause nobody answers raises; and a correction that beats the next gate is still taken |
 | Per-intent stream | `tests/test_api_gateway.py` (route + live filter) + `SteeringOperationTests` | **passed** — the route names its intent, `/api/events` stays unfiltered, a filtered stream delivers only its own frames, and both operations are served with their bodies validated |
 | Steering operations | `tests/test_characterization.py::SteeringBridgeTests` | **5 passed** — interrupt holds a running intent, resume releases it and queues the correction, and both refuse the wrong state |

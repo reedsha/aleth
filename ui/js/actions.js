@@ -5,14 +5,16 @@
 import { handleAgentEvent } from "./agent-events.js";
 import { api } from "./api-client.js";
 import { repaintCodeSurfaces } from "./code-surface.js";
+import { clearTokenBurn } from "./console.js";
 import { engineAvailable } from "./connection.js";
 import { isDockDrawerOpen, setDockDrawerOpen } from "./dock.js";
+import { followActiveRun, leaveRun } from "./live-run.js";
 import { showToast } from "./notify.js";
 import { isUiTask, renderPlanTree, updateBentoStats, updateStrictPlanLock } from "./plan-tree.js";
 import { refreshPreview } from "./preview.js";
 import { resetResultView } from "./result-view.js";
 import { setHtml, setText } from "./safe-dom.js";
-import { DOM, state } from "./store.js";
+import { DOM, setActiveIntentId, state } from "./store.js";
 
 // Focusing a field the drawer just revealed cannot happen in the same task: the panel has
 // no box until layout runs, so a bare focus() is silently dropped. This used to be six
@@ -329,8 +331,12 @@ export async function handleActionParamConfirm() {
 // -- each starts a real backend run, and previously showed "Idle" with no Stop (audit H5/H6/H7).
 export function beginRunUi() {
   state.isExecuting = true;
-  // Reveal Stop in the top bar for the duration of the run
+  // Reveal Stop in the top bar for the duration of the run, and Interrupt beside it: a run that can
+  // be halted but not steered is half a control (Phase 34).
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "inline-flex";
+  if (DOM.btnInterruptRun) DOM.btnInterruptRun.style.display = "inline-flex";
+  // A new run starts a new bill, so the previous run's burn counter goes with it.
+  clearTokenBurn();
   // The bento header's live tile reports the run state, so it moves with it.
   if (typeof updateBentoStats === "function") updateBentoStats();
 
@@ -354,6 +360,10 @@ export function beginRunUi() {
 export function abortRunUi(message) {
   state.isExecuting = false;
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "none";
+  if (DOM.btnInterruptRun) DOM.btnInterruptRun.style.display = "none";
+  // A launch that did not start has no run to follow, so the window returns to the firehose and
+  // drops any run-scoped surface (Phase 34).
+  leaveRun();
   const hasTasks = state.planTree && state.planTree.length > 0;
   updateStrictPlanLock(!hasTasks);
   if (hasTasks) setActionButtonsDisabled(false);
@@ -410,8 +420,13 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
     const res = await api.start_execution(text, actionType, actionParams);
     // The engine answers with the execution id it accepted the run under. The shadow the run
     // writes into is keyed to it (Phase 21), so the UI keeps it to name that run again -- an
-    // approval, or the merge review. A staged change with no id is a change no one can act on.
-    state.activeIntentId = (res && res.intent_id) || null;
+    // approval, the merge review, or an interrupt. A staged change with no id is a change no one
+    // can act on.
+    const intentId = (res && res.intent_id) || null;
+    setActiveIntentId(intentId);
+    // ...and the window now follows *that* run's stream, so the operator sees its thoughts and can
+    // steer it without a second connection to the firehose (Phase 34).
+    followActiveRun(intentId);
   } catch (err) {
     console.error("[Execution] Start failed:", err);
     // A launch that rejected never produced a terminal event, so the lock has to be undone
@@ -456,6 +471,10 @@ export function finalizeWorkflow(status) {
   state.isExecuting = false;
 
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "none";
+  if (DOM.btnInterruptRun) DOM.btnInterruptRun.style.display = "none";
+  // The run is over: the window returns to the firehose and clears the steering surface, so a
+  // later run does not inherit this one's pause (Phase 34).
+  leaveRun();
 
   const hasTasks = state.planTree && state.planTree.length > 0;
   updateStrictPlanLock(!hasTasks);

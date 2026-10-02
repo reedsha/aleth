@@ -66,6 +66,7 @@ import "./dag.js";
 import "./wire.js";
 
 import { connectionState, engineAvailable } from "./connection.js";
+import { streamPath } from "./stream.js";
 import { unresolvedElements } from "./store.js";
 
 // The one thing this bundle publishes to the page. The document's head watchdog is a
@@ -82,5 +83,7 @@ window.Aleth = {
     unresolvedElements: unresolvedElements(),
     connection: connectionState(),
     engineAvailable: engineAvailable(),
+    // Which stream the window is following (Phase 34): the firehose, or one run's own stream.
+    streamPath: streamPath(),
   }),
 };

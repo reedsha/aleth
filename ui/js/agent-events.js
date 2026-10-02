@@ -6,6 +6,7 @@ import { emit } from "./bus.js";
 import { blockOnEngineFailure } from "./connection.js";
 import { echoAgentEvent, hideConsole, revealConsoleForAttention, showConsole } from "./console.js";
 import { escapeHtml } from "./dom.js";
+import { leaveRun, renderPaused, renderResumed, renderSteered } from "./live-run.js";
 import { showToast } from "./notify.js";
 import { applyPlanData, updateBentoStats } from "./plan-tree.js";
 import { mountResultView } from "./result-view.js";
@@ -189,11 +190,36 @@ export function handleAgentEvent(event) {
       // forget a failure.
       revealConsoleForAttention();
       clearAllAgentThinking();
+      // The run is over, so the window stops following its stream (Phase 34). A failure does not
+      // route through `run:finalize` the way a completion does, so it is cleared here too.
+      leaveRun();
       blockOnEngineFailure({
         intent_id: event.intent_id || "",
         action_type: event.action_type || "",
         error: event.error || "the run failed",
       });
+      break;
+
+    // The live run's own telemetry (Phase 34). The transcript line is the console's
+    // (`echoAgentEvent`); what moves here is the card state, and the steering lifecycle.
+    case "agent_thought":
+      setAgentThinking("software-architect", true);
+      break;
+
+    case "intent_paused":
+      // The loop is holding for the user: it is not thinking, it is listening. The overlay and the
+      // paused badge are `live-run`'s to own, so this only stops the pulse.
+      setAgentThinking("software-architect", false);
+      renderPaused(event);
+      break;
+
+    case "intent_steered":
+      renderSteered(event);
+      break;
+
+    case "intent_resumed":
+      setAgentThinking("software-architect", true);
+      renderResumed(event);
       break;
 
     case "workspace_changed":

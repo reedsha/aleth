@@ -37,7 +37,8 @@ export const state = {
   targetTaskTitle: null,
   // The execution id the engine accepted the current run under. The shadow that run writes into
   // is keyed to it (Phase 21), so the UI must hold it to name the run again -- an artifact
-  // approval, or the merge review. Written only by `actions.js` when a launch is confirmed.
+  // approval, the merge review, or an interrupt. Written by `actions.js` when a launch is
+  // confirmed and by `live-run.js` when a reconnect recovers it from the ledger.
   activeIntentId: null,
   // Whether the open action drawer is asking for the plan-wide run (Phase 18) rather than one
   // node. Set by `openActionDrawer` and read by the confirm handler.
@@ -164,6 +165,16 @@ export function capturePlanTreeBeforeUpdate() {
 
 export function clearPlanTreeBeforeUpdate() {
   state.planTreeBeforeUpdate = null;
+}
+
+/** The run the window is following.
+ *
+ * Written by `actions.js` (a confirmed launch) and `live-run.js` (a reconnect that recovered the
+ * id from the ledger, so a reloaded window can still name -- and interrupt -- the run). The shadow
+ * the run writes into is keyed to it (Phase 21), so it has to survive a reload to be actionable.
+ */
+export function setActiveIntentId(intentId) {
+  state.activeIntentId = intentId || null;
 }
 
 // ---------------------------------------------------------------------------

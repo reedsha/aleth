@@ -121,11 +121,17 @@ def origin_allowed(origin: str, port: int, extra: Iterable[str] = ()) -> bool:
 
 
 def _frame_for_intent(frame: str, intent_id: str) -> bool:
-    """Whether an SSE data frame's payload names ``intent_id``. One comparison, one place.
+    """Whether an SSE data frame belongs on the stream for ``intent_id``. One rule, one place.
 
-    A frame that cannot be parsed, or whose payload carries no ``intent_id``, is **not** for the
-    requested run: a filtered stream that guessed would hand a client another run's events, which
-    is exactly what the filter exists to prevent.
+    A frame is delivered when it **names this intent** or **names none**. The untagged case is not
+    a loophole: an event with no ``intent_id`` is a *global* one -- the run's lifecycle
+    (``workflow_started``/``workflow_complete``), a plan or workspace change -- and the engine runs
+    **one intent per project at a time** (the ledger mutex, Phase 25), so an untagged frame on this
+    stream belongs to the run being followed. Dropping them would be the worse bug: a client would
+    follow a run to its last tool call and never be told it ended.
+
+    A frame naming a *different* intent is dropped, and so is one that cannot be parsed: the filter
+    is the boundary, and a boundary that guessed would hand a client another run's events.
     """
     if not frame.startswith(FRAME_PREFIX):
         return False
@@ -136,7 +142,10 @@ def _frame_for_intent(frame: str, intent_id: str) -> bool:
         payload = json.loads(body)
     except ValueError:
         return False
-    return isinstance(payload, dict) and str(payload.get("intent_id") or "") == intent_id
+    if not isinstance(payload, dict):
+        return False
+    named = payload.get("intent_id")
+    return not named or str(named) == intent_id
 
 
 class _ThreadingServer(ThreadingHTTPServer):
@@ -285,10 +294,11 @@ class _Handler(BaseHTTPRequestHandler):
     def _stream(self, intent_id: str = "") -> None:
         """Server-sent events: the hub's subscriber, framed onto the wire until the client goes.
 
-        ``intent_id`` narrows the stream to one run (Phase 33). When it is set, a frame whose
-        payload names a different intent is dropped before it reaches the wire, so a client
-        following one run never sees a neighbour's events. Empty is the firehose, and that path is
-        byte-for-byte what it always was.
+        ``intent_id`` narrows the stream to one run (Phase 33). When it is set, a frame naming a
+        *different* intent is dropped before it reaches the wire, so a client following one run
+        never sees a neighbour's events; an untagged frame (the run's own lifecycle, a plan change)
+        is delivered, because dropping it would leave the client following a run that had ended
+        (Phase 34). Empty is the firehose, and that path is byte-for-byte what it always was.
         """
         hub = self._server.gateway.hub
         subscriber = hub.subscribe()

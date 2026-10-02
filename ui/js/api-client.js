@@ -80,6 +80,17 @@ export const OPERATIONS = {
 export const EVENTS_PATH = "/api/events";
 
 /**
+ * The stream that follows exactly one run (Phase 34).
+ *
+ * The server filters this stream to the intent's own events *and* the run's untagged lifecycle
+ * events (see `api/server.py::_frame_for_intent`), so a client can follow a run end to end from
+ * here without a second connection to the firehose. The id is URL-encoded because it is data.
+ */
+export function intentStreamPath(intentId) {
+  return `/api/intents/${encodeURIComponent(String(intentId || ""))}/stream`;
+}
+
+/**
  * A failed API call. Thrown, never returned.
  *
  * Two things count as a failure and both throw: a **transport** failure (the gateway is down,
@@ -182,13 +193,17 @@ export const api = Object.fromEntries(
  * the caller feeds it to the same sink the pywebview push used
  * (`window.__deepAgentsBus.receive`), so validation stays in one place.
  */
-export function connectEventStream({ onMessage, onStatus } = {}) {
+export function connectEventStream({ path = EVENTS_PATH, onMessage, onStatus } = {}) {
   const BASE_MS = 1000;
   const MAX_MS = 30000;
   let attempt = 0;
   let source = null;
   let timer = null;
   let closed = false;
+  // Which endpoint the stream is on. It is re-targetable: the UI follows one run's stream while a
+  // run is live and returns to the firehose when it ends (Phase 34), without opening a second
+  // connection that would deliver every frame twice.
+  let activePath = path || EVENTS_PATH;
 
   function report(status) {
     if (typeof onStatus === "function") onStatus(status);
@@ -208,10 +223,10 @@ export function connectEventStream({ onMessage, onStatus } = {}) {
       report({ connected: false, unsupported: true });
       return;
     }
-    source = new EventSource(EVENTS_PATH);
+    source = new EventSource(activePath);
     source.onopen = () => {
       attempt = 0;
-      report({ connected: true, attempt: 0 });
+      report({ connected: true, attempt: 0, path: activePath });
     };
     source.onmessage = (event) => {
       if (typeof onMessage === "function") onMessage(event.data);
@@ -224,6 +239,27 @@ export function connectEventStream({ onMessage, onStatus } = {}) {
     };
   }
 
+  /**
+   * Re-targets the stream (a run starts or ends). A path change is a deliberate re-connect, not a
+   * failure, so it drops the old connection and opens the new one at once -- consuming the backoff
+   * schedule here would make a run's first telemetry arrive seconds late for no reason.
+   */
+  function setPath(next) {
+    const wanted = next || EVENTS_PATH;
+    if (wanted === activePath) return;
+    activePath = wanted;
+    attempt = 0;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (source) {
+      source.close();
+      source = null;
+    }
+    open();
+  }
+
   function close() {
     closed = true;
     if (timer) clearTimeout(timer);
@@ -233,5 +269,5 @@ export function connectEventStream({ onMessage, onStatus } = {}) {
   }
 
   open();
-  return { close };
+  return { close, setPath, currentPath: () => activePath };
 }

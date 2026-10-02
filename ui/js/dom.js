@@ -223,6 +223,16 @@ export function initDOMElements() {
   DOM.btnConsoleDetach = document.getElementById("btnConsoleDetach");
   DOM.btnConsoleToggle = document.getElementById("btnConsoleToggle");
 
+  // The live run (Phase 34): the interrupt control, the paused badge, the token burn readout, and
+  // the steering overlay the console reveals while a run is held.
+  DOM.btnInterruptRun = document.getElementById("btnInterruptRun");
+  DOM.consolePausedBadge = document.getElementById("consolePausedBadge");
+  DOM.tokenBurn = document.getElementById("tokenBurn");
+  DOM.steerOverlay = document.getElementById("steerOverlay");
+  DOM.steerInput = document.getElementById("steerInput");
+  DOM.btnSteerSubmit = document.getElementById("btnSteerSubmit");
+  DOM.btnSteerCancel = document.getElementById("btnSteerCancel");
+
   // Live preview (the workspace's generated interface, rendered in place)
   DOM.btnTogglePreview = document.getElementById("btnTogglePreview");
   DOM.previewPane = document.getElementById("previewPane");
