@@ -289,6 +289,8 @@ class ShadowRunTests(unittest.TestCase):
 
         with self.service._staged_execution("intent-refused") as shadow:
             _write(shadow.path, "pkg/mod.py", "value = 5\n")
+        # Verified, so the *plan* gate is the one under test rather than the verification gate.
+        staging.record_verification(shadow, True)
 
         unfinished = autonomy.PlanProgress(total=2, completed=1, failed=0, planned=0,
                                             in_progress=0, pending=1, runnable=1)
@@ -307,6 +309,7 @@ class ShadowRunTests(unittest.TestCase):
         with self.service._staged_execution("intent-merged") as shadow:
             _write(shadow.path, "pkg/mod.py", "value = 8\n")
             _write(shadow.path, "pkg/added.py", "added = True\n")
+        staging.record_verification(shadow, True)
 
         finished = autonomy.PlanProgress(total=1, completed=1, failed=0, planned=0,
                                         in_progress=0, pending=0, runnable=0)
@@ -549,7 +552,7 @@ class MergeGateTests(unittest.TestCase):
         result = self._merge("intent-bad")
 
         self.assertFalse(result["success"])
-        self.assertIn("did not pass", result["error"])
+        self.assertIn("not verified", result["error"])
         self.assertIn("1 failed", result["error"])
         # The host is untouched, and the shadow is *kept* for debugging -- unmergeable, not deleted.
         self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
@@ -565,13 +568,33 @@ class MergeGateTests(unittest.TestCase):
         self.assertTrue(result["success"], result)
         self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 7\n")
 
-    def test_a_project_with_no_suite_is_still_mergeable(self):
-        """``None`` means "nothing was run", which is not "it failed"."""
-        with self.service._staged_execution("intent-nosuite") as shadow:
+    def test_an_unrun_gate_is_not_a_pass(self):
+        """Phase 30 sealed this: ``None`` used to merge, which was the gate's fatal bypass.
+
+        A shadow staged before the gate existed -- or one whose runtime could not be determined --
+        has no verdict, and an unchecked diff must not reach the user's tree.
+        """
+        with self.service._staged_execution("intent-unverified") as shadow:
             _write(shadow.path, "pkg/mod.py", "value = 8\n")
         staging.record_verification(shadow, None)
 
-        self.assertTrue(self._merge("intent-nosuite")["success"])
+        result = self._merge("intent-unverified")
+
+        self.assertFalse(result["success"])
+        self.assertIsNone(result["verified"])
+        self.assertIn("did not run", result["error"])
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
+
+    def test_a_shadow_with_no_verdict_at_all_is_refused(self):
+        """A shadow from an older build has no verdict key, which is also not a pass."""
+        with self.service._staged_execution("intent-legacy") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 3\n")
+
+        result = self._merge("intent-legacy")
+
+        self.assertFalse(result["success"])
+        self.assertIn("not verified", result["error"])
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
 
     def test_a_rejection_is_unaffected_by_the_gate(self):
         """Discarding work is always allowed: the gate guards the *merge*, not the purge."""

@@ -315,6 +315,10 @@ class TestServiceRouting:
         service = EngineService()
         seen = []
         service._drive_plan = lambda intent: seen.append(intent)
+        # The two deterministic phases are not what this test is about: the temp workspace has no
+        # manifests, so the gate would (correctly) refuse the run before the routing was observable.
+        service._run_setup_phase = lambda: None
+        service._verify_shadow = lambda shadow: None
         intent = self._intent("execute_plan")
         service._run_intent(intent)
         assert seen == [intent]
@@ -331,6 +335,8 @@ class TestServiceRouting:
         service._run_blocking = lambda message, action_type, params, intent_id="": {
             "status": "finished", "message": "",
         }
+        service._run_setup_phase = lambda: None
+        service._verify_shadow = lambda shadow: None
         service._run_intent(self._intent("next_step"))
 
     def test_an_unattached_service_refuses_an_intent_rather_than_raising(self):

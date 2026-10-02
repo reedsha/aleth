@@ -685,6 +685,10 @@ class EngineService:
         A failed install **refuses the run**: the LLM loop only begins once setup has succeeded, so
         a missing dependency is reported as itself rather than as a model that wrote code nothing
         could run.
+
+        The execution is **bounded and short by default** (Phase 30): this is the only phase with
+        egress, so a poisoned manifest or a circular dependency must not be able to hold the intent
+        queue's only worker. A timeout kills the container, which takes its network with it.
         """
         from tools import project_phases
 
@@ -709,12 +713,15 @@ class EngineService:
         )
 
     def _verify_shadow(self, shadow) -> None:
-        """The automated merge gate (Phase 29): the project's own suite decides.
+        """The automated merge gate: the project's own suite, or its syntax check, decides.
 
         Airgapped, over the **shadow** -- the execution root is still the shadow here -- and before
-        the intent can reach a human. A failure fails the intent *and* marks the shadow unmergeable,
-        so the review surface never offers a merge for work that does not run. A project that
-        declares no suite is left ``verified=None``: "nothing was run" is not "it passed".
+        the intent can reach a human. A failure fails the intent *and* marks the shadow unmergeable.
+
+        **There is no free pass (Phase 30).** A project with no test suite gets the runtime's
+        structural check (``compileall``, ``node --check``), and a project whose runtime cannot be
+        determined at all is marked failed rather than left unverified: an unchecked diff must never
+        reach the review surface. The escape hatch is a declared ``verify`` command.
         """
         from tools import project_phases, staging
         from tools.workspace import get_execution_dir
@@ -725,11 +732,16 @@ class EngineService:
         try:
             result = project_phases.run_verification(root)
         except Exception as error:
-            staging.record_verification(shadow, False, f"the gate could not run: {error}")
-            raise RuntimeError(f"the verification gate could not run: {error}") from error
+            detail = f"the gate could not run: {type(error).__name__}: {error}"
+            staging.record_verification(shadow, False, detail)
+            raise RuntimeError(detail) from error
         if result is None:
-            staging.record_verification(shadow, None, "")
-            return
+            detail = (
+                "no verification command could be determined for this project; declare one as "
+                f"\"verify\" in {project_phases.DECLARATION_FILE}"
+            )
+            staging.record_verification(shadow, False, detail)
+            raise RuntimeError(detail)
         if result.returncode == 0:
             staging.record_verification(shadow, True, "")
             print(f"[Verify] {project_phases.detect_verify_command(root)} -> exit 0", flush=True)
@@ -740,10 +752,10 @@ class EngineService:
             "type": "intent_failed",
             "intent_id": shadow.intent_id,
             "action_type": "verify",
-            "error": f"the staged changes do not pass the project's own suite: {detail}",
+            "error": f"the staged changes do not pass the project's own check: {detail}",
         })
         raise RuntimeError(
-            "the staged changes do not pass the project's own suite, so the shadow is "
+            "the staged changes do not pass the project's own check, so the shadow is "
             f"unmergeable: {detail}"
         )
 
@@ -1234,18 +1246,23 @@ class EngineService:
                     "staging_id": shadow.staging_id, "intent_id": shadow.intent_id,
                 }
 
-            # The automated merge gate (Phase 29). A shadow the project's own suite rejected is
-            # refused *here*, so a human is never asked to spot a syntax error in a patch. A
-            # rejection above is unaffected: discarding work is always allowed.
-            if shadow.verified is False:
+            # The automated merge gate (Phase 29), **sealed** in Phase 30: only a shadow the
+            # project's own suite (or its syntax check) actually *passed* may merge. ``None`` means
+            # the gate could not run, which is not a pass -- an unchecked diff is exactly what this
+            # gate exists to keep off the user's tree. A rejection above is unaffected: discarding
+            # work is always allowed.
+            if shadow.verified is not True:
+                reason = shadow.verify_error or (
+                    "the verification gate did not run for this shadow"
+                    if shadow.verified is None
+                    else "the gate reported a failure"
+                )
                 return {
                     "success": False,
                     "staging_id": shadow.staging_id,
                     "intent_id": shadow.intent_id,
-                    "error": (
-                        "the staged changes did not pass the project's own suite; refusing to "
-                        f"merge: {shadow.verify_error or 'the gate reported a failure'}"
-                    ),
+                    "verified": shadow.verified,
+                    "error": f"the staged changes are not verified; refusing to merge: {reason}",
                 }
 
             plan_id = shadow.plan_id or self._active_plan_id()
