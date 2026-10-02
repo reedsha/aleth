@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from tools import workspace
 
@@ -159,6 +160,25 @@ class MintedIdentityTests(IdentityTestCase):
         self.assertRegex(minted, r"^[A-Za-z0-9._-]{1,64}$")
         # Stable from then on: the recorded id is what answers next time.
         self.assertEqual(workspace.project_id(project), minted)
+
+    def test_a_torn_mint_cannot_become_a_different_project(self):
+        """A *prefix* of the token is still a valid id, so this has to be all-or-nothing.
+
+        ``_identity_from_file`` accepts anything matching ``_SAFE_ID_RE``: ``a1b2c3`` is as valid a
+        token as the full 32 hex characters. A write torn by a kill would therefore not fail
+        validation -- it would answer as a *different* project and orphan the state directory
+        silently and permanently. Through ``tools.atomic_io`` the file is the old id or the new
+        one, never a prefix of one.
+        """
+        project = self._dir("torn")
+        with mock.patch("tools.atomic_io.os.replace", side_effect=OSError("killed mid-write")):
+            identity = workspace.project_id(project)
+
+        # No partial token was left behind to be read back as an id, and no scratch file either.
+        self.assertFalse(os.path.exists(os.path.join(project, workspace.IDENTITY_FILE)))
+        self.assertEqual([name for name in os.listdir(project) if name.startswith(".tmp.")], [])
+        # The answer fell through to the path -- the one case the engine reports as unstable.
+        self.assertRegex(identity, r"^[A-Za-z0-9._-]{1,64}$")
 
     def test_a_minted_id_is_added_to_an_existing_gitignore(self):
         project = self._dir("ignored")

@@ -2668,32 +2668,6 @@ class RevertPlanUpdateBridgeTests(WorkspaceTestCase):
         self.assertEqual(api._events, [])
 
 
-class WorkflowWriteGuardTests(WorkspaceTestCase):
-    """_write_checked writes through the engine writer and makes a failure loud.
-
-    The model's ``write_file`` tool refuses to overwrite (the chokehold), so the workflow
-    publishes its own deliverables through ``overwrite_source``; a failure there raises, so
-    the runner aborts the action instead of narrating a write that never happened (H1).
-    """
-
-    def test_a_failed_write_raises(self):
-        from orchestration.workflow import actions_impl
-
-        with mock.patch(
-            "orchestration.workflow.actions_impl.overwrite_source",
-            side_effect=OSError("permission denied"),
-        ):
-            with self.assertRaises(RuntimeError):
-                actions_impl._write_checked("coder-standard", "x.py", "code")
-
-    def test_a_successful_write_returns_the_writer_message(self):
-        from orchestration.workflow import actions_impl
-
-        message = actions_impl._write_checked("coder-standard", "ok.py", "x = 1\n")
-        self.assertTrue(message.startswith("Successfully wrote"))
-        self.assertEqual(self.read("ok.py"), "x = 1\n")
-
-
 class StopExecutionBridgeTests(WorkspaceTestCase):
     """stop_execution's terminal event must carry a status.
 

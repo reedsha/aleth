@@ -18,6 +18,8 @@ import subprocess
 import uuid
 from typing import Optional
 
+from tools import atomic_io
+
 # Default workspace directory. Resolved from the environment, because the workspace is a path
 # *in the filesystem the Docker daemon sees*: a container bind-mounts it, and a container write
 # through a Windows drive (9p DrvFs) destroys the host's permissions, so where the daemon runs on
@@ -221,11 +223,17 @@ def _ignore_identity_file(plan_dir: str) -> None:
 
 
 def _mint_identity(plan_dir: str) -> str:
-    """Tier 3: mint an id, record it beside the plan, and keep it out of git's way."""
+    """Tier 3: mint an id, record it beside the plan, and keep it out of git's way.
+
+    Atomic (Phase 24), and it has to be. ``_identity_from_file`` accepts any prefix of the token
+    that matches ``_SAFE_ID_RE`` -- ``a1b2c3`` is as valid a token as the whole 32 hex characters --
+    so a write torn by a kill would not fail validation, it would *succeed* as a different id. The
+    project's entire state directory would then be orphaned, silently and permanently. Writing
+    through ``tools.atomic_io`` makes the file the old id or the new one and never a prefix of one.
+    """
     token = uuid.uuid4().hex
     try:
-        with open(os.path.join(plan_dir, IDENTITY_FILE), "w", encoding="utf-8") as handle:
-            handle.write(token + "\n")
+        atomic_io.write_text_atomic(os.path.join(plan_dir, IDENTITY_FILE), token + "\n")
     except OSError:
         return ""
     _ignore_identity_file(plan_dir)
