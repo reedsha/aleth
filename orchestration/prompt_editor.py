@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict
 
 import agents.architect as arch_mod
 import agents.coders as coders_mod
+from tools import atomic_io
 
 
 def edit_architect_prompt(
@@ -59,8 +60,7 @@ def edit_architect_prompt(
             else:
                 updated_content = content
 
-        with open(arch_file, "w", encoding="utf-8") as f:
-            f.write(updated_content)
+        atomic_io.write_text_atomic(arch_file, updated_content)
 
         rescan()
         return {"success": True, "message": f"Successfully updated system prompt for {agent_id}"}
@@ -126,8 +126,7 @@ def edit_coder_prompt(
             else:
                 coders_mod.coder_standard.system_prompt = new_prompt
 
-        with open(coder_file, "w", encoding="utf-8") as f:
-            f.write(updated_content)
+        atomic_io.write_text_atomic(coder_file, updated_content)
 
         arch_mod.build_architect_agent()
         rescan()

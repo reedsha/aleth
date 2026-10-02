@@ -710,6 +710,75 @@ class SurgicalToolTests(MCPServerTestCase):
         self.assertIn("Path traversal denied", str(caught.exception))
 
 
+class AtomicFilesystemWriteTests(MCPServerTestCase):
+    """Phase 22: the engine's writer replaces its target, it never truncates one in place.
+
+    The success path runs through the live session, like every other write in this file. The
+    failure path is exercised on the server object directly, because the only honest way to test
+    an interrupted write is to inject the fault into the process doing the writing.
+    """
+
+    def _scratch(self, root):
+        """Scratch files left under ``root``: a temporary that never became its target."""
+        found = []
+        for current, _dirs, files in os.walk(root):
+            for name in files:
+                if name.startswith(".tmp."):
+                    found.append(os.path.relpath(os.path.join(current, name), root))
+        return sorted(found)
+
+    def test_a_write_leaves_no_scratch_file_beside_it(self):
+        with mcp_workspace_client(self.tmp) as client:
+            client.write_file("pkg/mod.py", "value = 1\n")
+
+        self.assertEqual(self._read(os.path.join("pkg", "mod.py")), "value = 1\n")
+        self.assertEqual(sorted(os.listdir(os.path.join(self.tmp, "pkg"))), ["mod.py"])
+
+    def test_a_refused_replace_leaves_the_original_whole_and_no_litter(self):
+        from tools.mcp_fs_server import FilesystemServer
+
+        self._write("mod.py", "original = True\n")
+        server = FilesystemServer(self.tmp)
+
+        with mock.patch("tools.atomic_io.os.replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                server.write_file("mod.py", "replacement = True\n")
+
+        self.assertEqual(self._read("mod.py"), "original = True\n")
+        self.assertEqual(self._scratch(self.tmp), [])
+
+    def test_the_temporary_shares_the_directory_of_its_target(self):
+        """Same directory, so ``os.replace`` is a rename inside one filesystem: a temporary in a
+        system temp directory would be ``EXDEV`` the moment the workspace is a bind mount."""
+        from tools.mcp_fs_server import FilesystemServer
+
+        server = FilesystemServer(self.tmp)
+        seen = []
+        real_replace = os.replace
+
+        def _record(source, target):
+            seen.append((os.path.dirname(source), os.path.dirname(os.path.abspath(target))))
+            return real_replace(source, target)
+
+        with mock.patch("tools.atomic_io.os.replace", _record):
+            server.write_file("deep/pkg/mod.py", "value = 1\n")
+
+        self.assertTrue(seen)
+        for source_dir, target_dir in seen:
+            self.assertEqual(source_dir, target_dir)
+
+    def test_create_file_is_still_create_never_replace(self):
+        """The chokehold survives the atomic path: a refusal writes nothing at all."""
+        from tools.mcp_fs_server import FilesystemServer
+
+        self._write("mod.py", "original = True\n")
+        with self.assertRaises(FileExistsError):
+            FilesystemServer(self.tmp).create_file("mod.py", "replacement = True\n")
+
+        self.assertEqual(self._read("mod.py"), "original = True\n")
+        self.assertEqual(self._scratch(self.tmp), [])
+
+
 class ToolLoopTests(MCPServerTestCase):
     """The agent execution loop: a model's tool call really reaches a server.
 

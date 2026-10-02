@@ -832,7 +832,11 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
             ]}],
         })
 
-        with mock.patch("tools.recovery.shutil.copy2", side_effect=OSError("disk full")):
+        # The seam is the writer the restore goes through (Phase 22 made it atomic), so the
+        # injected fault is the one production would see from a full disk or a locked target.
+        with mock.patch(
+            "tools.recovery.atomic_io.copy_file_atomic", side_effect=OSError("disk full")
+        ):
             res = ft.rollback_task_state("task-1")
 
         self.assertFalse(res["success"])

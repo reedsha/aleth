@@ -391,6 +391,116 @@ class ShadowRunTests(unittest.TestCase):
         self.assertNotIn(f"source={os.path.realpath(self.host)}", joined)
 
 
+class DurableWriteTests(unittest.TestCase):
+    """Phase 22: a write lands whole or not at all -- in the shadow, and on the host.
+
+    The engine severs runs on purpose (the wall-clock TTL, the OOM killer), so a write in flight
+    is a write that gets interrupted. Every test here is the same claim from a different angle:
+    the target ends up as one of its two complete versions, never as a prefix.
+    """
+
+    def setUp(self):
+        self.host = tempfile.mkdtemp(prefix="aleth_durable_host_")
+        self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
+        _write(self.host, "pkg/mod.py", "value = 1\n")
+        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
+
+    @staticmethod
+    def _scratch(root: str):
+        """Scratch files left under ``root``: a temporary that never became its target."""
+        found = []
+        for current, _dirs, files in os.walk(root):
+            for name in files:
+                if name.startswith(".tmp."):
+                    found.append(os.path.relpath(os.path.join(current, name), root))
+        return sorted(found)
+
+    def test_the_temporary_is_a_sibling_of_its_target(self):
+        """``os.replace`` is atomic within one filesystem and ``EXDEV`` across two.
+
+        The shadow lives under the state root and a merge writes into the user's repository, so
+        a temporary in the system temp directory would be a different device in production and
+        the rename would fail outright. Asserted on the real call, not on a convention.
+        """
+        shadow = staging.create_staging(self.host, intent_id="i-sibling")
+        _write(shadow.path, "pkg/mod.py", "value = 5\n")
+        seen = []
+        real_replace = os.replace
+
+        def _record(source, target):
+            seen.append((os.path.dirname(source), os.path.dirname(os.path.abspath(target))))
+            return real_replace(source, target)
+
+        with mock.patch("tools.atomic_io.os.replace", _record):
+            staging.merge_staging(shadow)
+
+        self.assertTrue(seen)
+        for source_dir, target_dir in seen:
+            self.assertEqual(source_dir, target_dir)
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 5\n")
+
+    def test_a_failed_merge_leaves_the_host_file_whole_and_no_litter(self):
+        shadow = staging.create_staging(self.host, intent_id="i-failed-merge")
+        _write(shadow.path, "pkg/mod.py", "value = 7\n")
+
+        with mock.patch("tools.atomic_io.os.replace", side_effect=OSError("boom")):
+            with self.assertRaises(OSError):
+                staging.merge_staging(shadow)
+
+        # The bytes the user had are still the bytes the user has, and the aborted temporary is
+        # gone rather than sitting in their repository as an untracked file.
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
+        self.assertEqual(self._scratch(self.host), [])
+
+    def test_create_staging_leaves_no_scratch_manifest(self):
+        shadow = staging.create_staging(self.host, intent_id="i-manifest-scratch")
+        self.assertEqual(self._scratch(shadow.path), [])
+        self.assertEqual(staging.load_staging(shadow.staging_id).intent_id, "i-manifest-scratch")
+
+
+class OrphanedStagingTests(unittest.TestCase):
+    """Phase 22: a shadow no run can reach any more is collected, and a live one is not."""
+
+    def setUp(self):
+        self.host = tempfile.mkdtemp(prefix="aleth_orphan_host_")
+        self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
+        _write(self.host, "pkg/mod.py", "value = 1\n")
+        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
+
+    def test_a_shadow_awaiting_review_is_kept(self):
+        shadow = staging.create_staging(self.host, intent_id="i-reviewable")
+
+        self.assertEqual(staging.purge_orphaned_stagings({"i-reviewable"}), [])
+
+        self.assertTrue(os.path.isdir(shadow.path))
+
+    def test_a_shadow_whose_intent_is_gone_is_collected(self):
+        shadow = staging.create_staging(self.host, intent_id="i-dead")
+
+        self.assertEqual(staging.purge_orphaned_stagings({"i-live"}), [shadow.staging_id])
+
+        self.assertFalse(os.path.exists(shadow.path))
+
+    def test_a_directory_with_no_manifest_is_collected(self):
+        """A kill between the copy and its manifest leaves exactly this: a copy nothing can
+        resolve, and therefore nothing that would ever have removed it."""
+        orphan = os.path.join(staging.staging_base(), "0123456789ab")
+        _write(orphan, "pkg/mod.py", "value = 1\n")
+
+        self.assertEqual(staging.purge_orphaned_stagings(set()), ["0123456789ab"])
+
+        self.assertFalse(os.path.exists(orphan))
+
+    def test_the_sweep_never_touches_the_host(self):
+        staging.create_staging(self.host, intent_id="i-untouched")
+
+        staging.purge_orphaned_stagings(set())
+
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
+
+
 class ExecutionWiringTests(unittest.TestCase):
     """The execution call sites resolve the shadow, not the live tree."""
 

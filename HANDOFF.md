@@ -13,11 +13,42 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 21)
+## ⚡ 0. Current State at This Handoff (Phase 22)
 
-- **Phases 5 → 21 are complete and CI-green.** Phase 21 (I/O optimization & concurrency
-  mutexes) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only
-  points at what changed most recently.
+- **Phases 5 → 22 are complete and CI-green.** Phase 22 (I/O durability & state bounding) is the
+  latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most
+  recently.
+- **Every durable write lands whole or not at all (Phase 22).** `tools/atomic_io.py` writes a
+  temporary **sibling of its target** and then `os.replace`s it. The sibling is not a style
+  choice: `os.replace` is `rename(2)`, atomic only *within one filesystem* and `EXDEV` across
+  two — and the shadow (`~/.aleth/state/<project>/staging`) and a merge's destination (the user's
+  repository) are frequently two mounts, with `/tmp` a third under WSL. The temporary's name
+  carries the `.tmp` prefix the engine already treats as scratch (`staging._copy_ignore` prunes
+  it from a shadow walk; `workspace_io.list_workspace_files` skips it), and every failure path
+  unlinks it, so a SIGKILL mid-write leaves no litter to mistake for a project file.
+- **The write sites it replaced.** `mcp_fs_server.write_file` truncated in place — the vector the
+  directive named; `staging._apply_one` used `shutil.copy2`, which writes *into* the user's own
+  inode, so a kill mid-merge left half a file where their uncommitted work was; `staging`'s
+  manifest; the three `plan_state` writers (`PLAN.md` is git-tracked); `ast_editor`'s splice;
+  `workspace_io.overwrite_source`; and `recovery`'s revision snapshot, task snapshots,
+  `_meta.json` and rollback restore. `settings._rewrite_env` and `prompt_editor` (the two writers
+  of the engine's own source/`.env`) went too, on the same rule rather than as exceptions.
+- **The engine's own state has a bound (Phase 22).** `storage/retention.py::sweep_state` is wired
+  into `main.py` **immediately after** the container sweep and before the bootloader. It
+  reconciles the intent ledger **first** (so a killed run's shadow is collectable on that boot,
+  not the next), trims `execution_telemetry` / `routing_decisions` / `intent_ledger` to their
+  newest `LEDGER_KEEP_ROWS = 1000` rows with one `rowid`-keyed `DELETE` per table (each answered
+  by the recency index already on it — no ORM, no migration framework), and calls
+  `staging.purge_orphaned_stagings` with the ledger's own answer to which shadows are still
+  owned.
+- **Which shadows survive (Phase 22).** One whose intent is `queued`, `running` or `completed` —
+  in use, or waiting to be reviewed and merged. Everything else is collected, including a
+  directory whose manifest a kill prevented from ever being written. An intent that `failed` or
+  was `stopped` can never be merged (the gate refuses an unfinished plan), so its copy is
+  unreachable by every endpoint in `api/operations.py`.
+- **The sweep is loud and cannot break a boot.** It reports what it collected, zeros included,
+  because a silent collector hides the crash that produced the garbage; and `sweep_state` never
+  raises — a failure is reported as `skipped` and boot continues.
 - **An agent can no longer write to the user's live tree.** Every run copies the
   workspace into a shadow under `<state_root>/staging/<staging_id>` (`tools/staging.py`);
   the agent's MCP servers and the container bind-mount that copy. `tools/workspace.py`
@@ -1355,12 +1386,13 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `b4d279b` (Phase 20) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `d37d3fe` (Phase 21) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
-| UI tests | `npx playwright test` | **63 passed** in 17.8 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1158 passed, 18 skipped, 233 subtests** in 88.06 s (`-n auto`; CI adds `-m "not llm"`) |
-| Staging | `tests/test_staging.py` | **32 passed** — copy, git-filter, delta, merge, purge, the plan-finished gate, the execution-root wiring of `run_approved_artifact` / `test_runner`, strict intent keying, the same-intent reuse, and the held-lock conflict |
+| UI tests | `npx playwright test` | **63 passed** in 22.1 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1178 passed, 18 skipped, 233 subtests** in 95.03 s (`-n auto`; CI adds `-m "not llm"`) |
+| Durability + bounding | `tests/test_retention.py` (new) + `tests/test_staging.py` | **48 passed** — ledger retention per table, a ledger-below-its-bound no-op, a never-created ledger skipped, `ids_with_status`, and the boot sweep end-to-end (a crashed intent failed *and* its shadow collected, a completed one kept, a never-ran project's strays collected, the report line, and a failing sweep reported rather than raised); plus the sibling-temporary assertion, a failed merge leaving the host file whole with no litter, and orphaned/manifest-less shadow collection |
+| Atomic writes | `tests/test_mcp.py::AtomicFilesystemWriteTests` | **4 passed** — no scratch beside a write, a refused `os.replace` leaving the original whole and no litter, the temporary sharing the target's directory, and `create_file` still create-never-replace |
 | Merge boundary | `tests/test_api_gateway.py::WorkspaceBoundaryTests` | **4 passed** — a missing `intent_id` is a 400, a held lock is a **409**, and an accepted merge reaches the service |
 | Rust core | `cargo test` (in crate) | not re-run this pass |
 | Isolation | `tests/test_docker_sandbox.py` | daemon-backed tests skip on Windows (no docker client); the Linux CI runner is the authority |

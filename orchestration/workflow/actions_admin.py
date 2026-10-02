@@ -15,6 +15,7 @@ from orchestration.workflow import reasoning
 from orchestration.workflow.events import tool_call, tool_result
 from agents import laya as laya_gate
 from agents.laya import inferred_ui
+from tools import atomic_io
 from tools.code_metrics import analyze_workspace_metrics
 from tools.file_tools import (
     audit_codebase_plan_sync,
@@ -427,10 +428,8 @@ def _back_up_plan_markdown(filename: str, content: str) -> str:
     switcher does not list, so a reformat is reversible without polluting ``list_plan_files``.
     """
     backup_dir = os.path.join(get_backup_dir(), "plan-normalize")
-    os.makedirs(backup_dir, exist_ok=True)
     backup_path = os.path.join(backup_dir, filename)
-    with open(backup_path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(content)
+    atomic_io.write_text_atomic(backup_path, content)
     return backup_path
 
 

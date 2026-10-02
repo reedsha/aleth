@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 # A receipt is written while the orchestrator may be writing task state to the same file. WAL plus
 # a bounded wait is what keeps a short append from failing under that contention.
@@ -147,6 +147,28 @@ class IntentLedger:
                 (max(1, int(limit)),),
             ).fetchall()
             return [dict(row) for row in rows]
+        finally:
+            connection.close()
+
+    def ids_with_status(self, *statuses: str) -> FrozenSet[str]:
+        """The intent ids currently in one of ``statuses``. One indexed read.
+
+        The staging sweep asks this to learn which shadows a run still owns (Phase 22): the
+        question "may this execution's copy of the workspace be deleted?" is answered by the
+        ledger, not by the shadow, so the query is served by ``idx_intent_status`` and never
+        becomes a scan of every intent ever accepted.
+        """
+        wanted = tuple(str(status) for status in statuses if str(status))
+        if not wanted:
+            return frozenset()
+        placeholders = ", ".join("?" for _ in wanted)
+        connection = _connect(self.path)
+        try:
+            rows = connection.execute(
+                f"SELECT intent_id FROM intent_ledger WHERE status IN ({placeholders})",
+                wanted,
+            ).fetchall()
+            return frozenset(str(row["intent_id"]) for row in rows)
         finally:
             connection.close()
 

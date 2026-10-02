@@ -16,6 +16,15 @@ from tools.docker_sandbox import sweep_orphaned_containers
 
 sweep_orphaned_containers("boot")
 
+# The state sweep runs immediately after, and still before the bootloader, for the same reason: a
+# process that died without unwinding leaves a shadow workspace no run can reach any more and an
+# append-only ledger with no end (Phase 22). ``storage.retention`` fails the unfinished intents,
+# trims the ledgers to their bound and removes the dead shadows -- and says how many of each, so a
+# systemic crash is visible at the next boot rather than absorbed silently.
+from storage.retention import sweep_state
+
+sweep_state()
+
 # And again on the way out. ``atexit`` covers every graceful exit, including a ``sys.exit`` from
 # the bootloader below; a SIGKILL is precisely the case the boot sweep above exists for.
 atexit.register(sweep_orphaned_containers, "shutdown")

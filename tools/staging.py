@@ -16,8 +16,9 @@ The model is deliberately small and path-shaped:
   files, plus a capped unified patch. It is content-addressed, not git-based, so it works in a
   workspace that is not a repository.
 * :func:`merge_staging` applies that delta to the host, once, and only when the caller has
-  verified the plan is finished. :func:`purge_staging` throws the shadow away instead. The apply
-  happens under :func:`merge_lock`, a per-project write lock, so two merges cannot interleave.
+  verified the plan is finished. :func:`purge_staging` throws the shadow away instead, and
+  :func:`purge_orphaned_stagings` throws away the ones no run can reach any more (Phase 22). The
+  apply happens under :func:`merge_lock`, a per-project write lock, so two merges cannot interleave.
 
 Everything is a pure function over paths. There is no global here, no process and no daemon: the
 module is a filesystem transaction, and the run lifecycle (``app.py``) is what decides when to
@@ -35,8 +36,9 @@ import os
 import shutil
 import subprocess
 import uuid
-from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple
 
+from tools import atomic_io
 from tools.workspace import (
     GIT_TIMEOUT_SECONDS,
     IDENTITY_FILE,
@@ -368,8 +370,9 @@ def create_staging(
         host_root=host,
         path=path,
     )
-    with open(os.path.join(path, STAGING_MANIFEST), "w", encoding="utf-8") as handle:
-        json.dump(workspace.to_manifest(), handle, indent=2)
+    atomic_io.write_text_atomic(
+        os.path.join(path, STAGING_MANIFEST), json.dumps(workspace.to_manifest(), indent=2)
+    )
     return workspace
 
 
@@ -467,8 +470,7 @@ def _apply_one(host_root: str, staged_root: str, relative: str, *, copy: bool) -
             pass
         _prune_empty(os.path.dirname(destination), stop=host_root)
         return
-    os.makedirs(os.path.dirname(destination) or host_root, exist_ok=True)
-    shutil.copy2(os.path.join(staged_root, relative), destination)
+    atomic_io.copy_file_atomic(os.path.join(staged_root, relative), destination)
 
 
 def _prune_empty(directory: str, *, stop: str) -> None:
@@ -544,6 +546,49 @@ def purge_staging(staging_id: str) -> bool:
     return True
 
 
+def _staging_directories() -> List[str]:
+    """Every directory under the staging base. Nothing else is ever written there.
+
+    The merge lock lives at ``<state_dir>/merge.lock``, a level up, and a manifest's temporary
+    sibling is created *inside* a shadow -- so an entry here is a shadow, and one whose manifest
+    cannot be read is the residue of a copy that was killed before it could write one.
+    """
+    base = staging_base()
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return []
+    return sorted(name for name in names if os.path.isdir(os.path.join(base, name)))
+
+
+def purge_orphaned_stagings(keep_intent_ids: Iterable[str]) -> List[str]:
+    """Delete every shadow whose intent is not in ``keep_intent_ids``. Returns their ids.
+
+    Which shadows are still meaningful is a *ledger* question, so the caller answers it (Phase 21
+    keys a shadow to the execution that made it, never to a plan):
+
+    * ``queued`` or ``running`` -- the run is using this shadow right now;
+    * ``completed`` -- the delta is finished and waiting for a person to review and merge it.
+
+    Anything else is dead. An intent that ``failed`` or was ``stopped`` can never be merged -- the
+    gate refuses a plan that is not finished -- and one the ledger does not mention at all is what
+    a reset, a deleted database or a killed copy leaves behind. Both are unreachable by every
+    endpoint in ``api.operations``, so keeping them is a copy of the user's repository that only
+    grows.
+
+    Removal is idempotent: a directory that is already gone is not an error, it is the answer.
+    """
+    keep = {str(intent_id) for intent_id in keep_intent_ids if str(intent_id)}
+    purged: List[str] = []
+    for name in _staging_directories():
+        workspace = load_staging(name)
+        if workspace is not None and workspace.intent_id and workspace.intent_id in keep:
+            continue
+        if purge_staging(name):
+            purged.append(name)
+    return purged
+
+
 __all__ = [
     "MAX_DIFF_CHARS",
     "MERGE_LOCK_FILE",
@@ -559,6 +604,7 @@ __all__ = [
     "load_staging",
     "merge_lock",
     "merge_staging",
+    "purge_orphaned_stagings",
     "purge_staging",
     "staging_base",
 ]

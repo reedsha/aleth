@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from tools import atomic_io
 from tools.git_status import workspace_vcs_status
 from tools.workspace import PROJECT_ROOT, get_project_dir, walk_workspace
 
@@ -69,10 +70,7 @@ def overwrite_source(filename: str, content: str) -> str:
     which refuses to overwrite), not on the engine publishing its own artifact.
     """
     filepath = _resolve(filename)
-    if filepath.parent:
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-    with open(filepath, "w", encoding="utf-8", newline="") as handle:
-        handle.write(content)
+    atomic_io.write_text_atomic(str(filepath), content)
     return f"Successfully wrote {len(content)} characters to {filename}."
 
 

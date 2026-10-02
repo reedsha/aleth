@@ -26,6 +26,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from tools import atomic_io
 from tools.payloads import SettingsPayload, validated
 from tools.workspace import PROJECT_ROOT
 
@@ -208,8 +209,7 @@ def _rewrite_env(path: str, updates: Dict[str, str]) -> None:
         if name in updates and name not in written:
             out.append(f"{name}={_quote(updates[name])}")
 
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(out) + "\n")
+    atomic_io.write_text_atomic(path, "\n".join(out) + "\n")
 
 
 def save_settings(values: Dict[str, Any], env_path: Optional[str] = None) -> Dict[str, Any]:

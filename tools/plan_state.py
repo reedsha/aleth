@@ -29,6 +29,7 @@ from storage.db import (
     plan_dict_to_dag,
     plan_id_for,
 )
+from tools import atomic_io
 from tools.payloads import (
     AppendTaskEnvelope,
     PlanPayload,
@@ -184,11 +185,14 @@ def read_plan_markdown() -> str:
 
 
 def write_plan_markdown(content: str) -> str:
-    """Writes the active plan's markdown (the explicit-edit / projection path)."""
+    """Writes the active plan's markdown (the explicit-edit / projection path).
+
+    Atomically, like every durable write: ``PLAN.md`` is git-tracked and human-authored, so a
+    process killed mid-write must not be able to leave a half document where a whole one was.
+    """
     path = get_plan_markdown_path()
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(content)
+        atomic_io.write_text_atomic(path, content)
     except OSError as error:
         raise PlanWriteError(f"Failed writing the plan markdown: {error}") from error
     return path
@@ -209,8 +213,7 @@ def _write_projection(plan_id: str) -> None:
     """Re-render PLAN.md from the store (a projection, never a source of state)."""
     markdown = get_store().render_plan_markdown(plan_id)
     try:
-        with open(get_plan_markdown_path(), "w", encoding="utf-8") as handle:
-            handle.write(markdown)
+        atomic_io.write_text_atomic(get_plan_markdown_path(), markdown)
     except OSError as error:
         print(f"[PlanState] Could not write the markdown projection: {error}")
 
@@ -254,8 +257,7 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as error:
         raise PlanWriteError(f"Failed compiling to PLAN.md: {error}") from error
     try:
-        with open(get_plan_markdown_path(), "w", encoding="utf-8") as handle:
-            handle.write(compiled_md)
+        atomic_io.write_text_atomic(get_plan_markdown_path(), compiled_md)
     except OSError as error:
         raise PlanWriteError(f"Failed writing PLAN.md: {error}") from error
 

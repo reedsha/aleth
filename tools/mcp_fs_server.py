@@ -39,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tools import mcp_stdio
+from tools import atomic_io, mcp_stdio
 
 SERVER_NAME = "aleth-filesystem"
 SERVER_VERSION = "1.0.0"
@@ -117,11 +117,15 @@ class FilesystemServer:
             return handle.read()
 
     def write_file(self, path: str, content: str) -> str:
+        """The engine's writer. Atomic: the target is replaced, never truncated in place.
+
+        A run can be severed mid-flight by the wall-clock TTL or the OOM killer, and a truncating
+        write leaves whatever prefix reached the disk -- which on the shadow a review is about to
+        read is a corrupt file presented as a finished one. Through a temporary sibling and one
+        ``os.replace`` (``tools.atomic_io``) the file is always one of its two complete versions.
+        """
         target = self._resolve(path)
-        if target.parent and not target.parent.exists():
-            target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "w", encoding="utf-8", newline="") as handle:
-            handle.write(content)
+        atomic_io.write_text_atomic(str(target), content)
         return f"Wrote {len(content)} characters to {path}."
 
     def create_file(self, path: str, content: str) -> str:

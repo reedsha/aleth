@@ -21,6 +21,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict
 
+from tools import atomic_io
 from tools.ast_chunker import CodeUnit, chunk_file, parse_has_errors
 
 _STRICT = ConfigDict(extra="forbid", strict=False)
@@ -102,16 +103,6 @@ def splice_bytes(source: str, byte_start: int, byte_end: int, replacement: str) 
     return spliced.decode("utf-8")
 
 
-def _write_atomically(path: str, text: str) -> None:
-    """Write through a temporary file and a rename, so a reader never sees a half file."""
-    temporary = f"{path}.tmp{os.getpid()}"
-    with open(temporary, "w", encoding="utf-8", newline="") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
-
-
 def edit_symbol(
     filepath: str,
     symbol: str,
@@ -191,7 +182,7 @@ def edit_symbol(
         )
 
     try:
-        _write_atomically(filepath, updated)
+        atomic_io.write_text_atomic(filepath, updated)
     except OSError as error:
         return EditResult(success=False, error=str(error), filename=filepath, symbol=symbol)
 

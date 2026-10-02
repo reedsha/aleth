@@ -17,6 +17,7 @@ import shutil
 import time
 from typing import Any, Dict, List, Optional
 
+from tools import atomic_io
 from tools.plan_parser import compile_plan_json_to_markdown
 from tools.plan_state import load_plan_state, save_plan_state
 from storage.db import DB_FILENAME
@@ -70,11 +71,12 @@ def snapshot_plan_revision() -> bool:
     if not (plan.get("steps") or plan.get("sections")):
         return False
     dest = _plan_revision_dir()
-    with open(os.path.join(dest, PLAN_REVISION_JSON), "w", encoding="utf-8") as handle:
-        json.dump(plan, handle, indent=2)
+    atomic_io.write_text_atomic(
+        os.path.join(dest, PLAN_REVISION_JSON), json.dumps(plan, indent=2)
+    )
     markdown_path = get_plan_markdown_path()
     if os.path.isfile(markdown_path):
-        shutil.copy2(markdown_path, os.path.join(dest, os.path.basename(markdown_path)))
+        atomic_io.copy_file_atomic(markdown_path, os.path.join(dest, os.path.basename(markdown_path)))
     return True
 
 
@@ -156,14 +158,15 @@ def backup_file_for_task(task_id: str, filename: str) -> Optional[str]:
             pass
 
     if os.path.exists(filepath):
-        shutil.copy2(filepath, backup_path)
+        # A snapshot exists to be restored *from*, so a half-written one is worse than none:
+        # the file it would replace is the user's, and the copy is all that stands behind it.
+        atomic_io.copy_file_atomic(filepath, backup_path)
         meta[filename] = {"action": "modified", "backup": backup_path, "timestamp": time.time()}
     else:
         meta[filename] = {"action": "created", "backup": None, "timestamp": time.time()}
 
     validated_backup_meta(meta)
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
+    atomic_io.write_text_atomic(meta_path, json.dumps(meta, indent=2))
     return backup_path if os.path.exists(filepath) else None
 
 
@@ -425,7 +428,7 @@ def rollback_task_state(task_id: str) -> Dict[str, Any]:
             target_file = os.path.join(base_dir, fname)
             try:
                 if info.get("action") == "modified" and info.get("backup") and os.path.exists(info["backup"]):
-                    shutil.copy2(info["backup"], target_file)
+                    atomic_io.copy_file_atomic(info["backup"], target_file)
                     restored_files.append(f"{fname} (restored prior version)")
                 elif info.get("action") == "created" and os.path.exists(target_file):
                     archive_path = target_file + ".rollback_bak"
