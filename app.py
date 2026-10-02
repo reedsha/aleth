@@ -63,6 +63,21 @@ def frontend_root() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
 
 
+def _output_tail(result, limit: int = 400) -> str:
+    """The end of a failed command's output, for a refusal message. Never raises.
+
+    The tail rather than the head: a compiler and a test runner both put the verdict at the end,
+    and the head of an install log is progress bars.
+    """
+    try:
+        combined = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    except Exception:  # a result that is not an IsolatedResult (a test double)
+        return str(result)
+    if len(combined) <= limit:
+        return combined
+    return "..." + combined[-limit:]
+
+
 class EngineService:
     """The engine-facing operations, reached over HTTP and never bound into the page.
 
@@ -641,15 +656,96 @@ class EngineService:
         # ``finally`` so it cannot outlive the run that set it.
         set_current_intent(str(intent.id))
         try:
-            with self._staged_execution(str(intent.id)):
+            with self._staged_execution(str(intent.id)) as shadow:
+                # Setup first, and the model is not involved (Phase 29): a project whose
+                # dependencies cannot be installed cannot be verified either, so the run is refused
+                # here rather than after a model has written code nothing can run.
+                self._run_setup_phase()
                 if str(intent.action_type) == "execute_plan":
-                    return self._drive_plan(intent)
-                outcome = self._run_blocking(
-                    intent.message, intent.action_type, dict(intent.action_params), str(intent.id)
-                )
-                self._settle_from_outcome(intent, outcome)
+                    self._drive_plan(intent)
+                else:
+                    outcome = self._run_blocking(
+                        intent.message, intent.action_type, dict(intent.action_params), str(intent.id)
+                    )
+                    self._settle_from_outcome(intent, outcome)
+                # Reached only when the pass did not raise: a run that already failed is its own
+                # answer, and verifying it would only bury the reason.
+                self._verify_shadow(shadow)
         finally:
             set_current_intent(None)
+
+    def _run_setup_phase(self) -> None:
+        """Install the project's dependencies, **with egress**, before the model is involved.
+
+        Deterministic and LLM-free: the command comes from the project's own manifests (or a human's
+        declaration in ``.aleth_phases.json``), and it runs in a container the model never gets. The
+        egress lives for that container's life and dies with its network namespace -- there is no
+        long-lived container to disconnect, because this perimeter is one container per command.
+
+        A failed install **refuses the run**: the LLM loop only begins once setup has succeeded, so
+        a missing dependency is reported as itself rather than as a model that wrote code nothing
+        could run.
+        """
+        from tools import project_phases
+
+        root = get_project_dir()
+        try:
+            result = project_phases.run_setup(root)
+        except Exception as error:
+            raise RuntimeError(
+                f"the project's dependencies could not be installed: "
+                f"{type(error).__name__}: {error}"
+            ) from error
+        if result is None:
+            return
+        if result.returncode != 0:
+            raise RuntimeError(
+                "the project's setup command failed, so nothing that follows could be verified: "
+                + _output_tail(result)
+            )
+        print(
+            f"[Setup] {project_phases.detect_setup_command(root)} -> exit 0 (egress severed)",
+            flush=True,
+        )
+
+    def _verify_shadow(self, shadow) -> None:
+        """The automated merge gate (Phase 29): the project's own suite decides.
+
+        Airgapped, over the **shadow** -- the execution root is still the shadow here -- and before
+        the intent can reach a human. A failure fails the intent *and* marks the shadow unmergeable,
+        so the review surface never offers a merge for work that does not run. A project that
+        declares no suite is left ``verified=None``: "nothing was run" is not "it passed".
+        """
+        from tools import project_phases, staging
+        from tools.workspace import get_execution_dir
+
+        if shadow is None:
+            return
+        root = get_execution_dir()
+        try:
+            result = project_phases.run_verification(root)
+        except Exception as error:
+            staging.record_verification(shadow, False, f"the gate could not run: {error}")
+            raise RuntimeError(f"the verification gate could not run: {error}") from error
+        if result is None:
+            staging.record_verification(shadow, None, "")
+            return
+        if result.returncode == 0:
+            staging.record_verification(shadow, True, "")
+            print(f"[Verify] {project_phases.detect_verify_command(root)} -> exit 0", flush=True)
+            return
+        detail = _output_tail(result)
+        staging.record_verification(shadow, False, detail)
+        self.emit_event({
+            "type": "intent_failed",
+            "intent_id": shadow.intent_id,
+            "action_type": "verify",
+            "error": f"the staged changes do not pass the project's own suite: {detail}",
+        })
+        raise RuntimeError(
+            "the staged changes do not pass the project's own suite, so the shadow is "
+            f"unmergeable: {detail}"
+        )
 
     # -------------------------------------------------------------
     # The autonomous loop: drive the DAG to the human gate (Phase 18)
@@ -1136,6 +1232,20 @@ class EngineService:
                 return {
                     "success": True, "rejected": True, "purged": purged,
                     "staging_id": shadow.staging_id, "intent_id": shadow.intent_id,
+                }
+
+            # The automated merge gate (Phase 29). A shadow the project's own suite rejected is
+            # refused *here*, so a human is never asked to spot a syntax error in a patch. A
+            # rejection above is unaffected: discarding work is always allowed.
+            if shadow.verified is False:
+                return {
+                    "success": False,
+                    "staging_id": shadow.staging_id,
+                    "intent_id": shadow.intent_id,
+                    "error": (
+                        "the staged changes did not pass the project's own suite; refusing to "
+                        f"merge: {shadow.verify_error or 'the gate reported a failure'}"
+                    ),
                 }
 
             plan_id = shadow.plan_id or self._active_plan_id()

@@ -86,21 +86,35 @@ class StagingLocked(StagingError):
 
 @dataclasses.dataclass(frozen=True)
 class StagingWorkspace:
-    """One shadow workspace and the run it belongs to."""
+    """One shadow workspace and the run it belongs to.
+
+    ``verified`` is the automated merge gate's verdict (Phase 29): ``True`` when the project's own
+    suite passed over this shadow, ``False`` when it was run and failed, and ``None`` when the
+    project declares no suite to run. A ``False`` makes the shadow **unmergeable** -- the review
+    surface refuses it -- so a human is never asked to spot a syntax error in a patch.
+    """
 
     staging_id: str
     intent_id: str
     plan_id: str
     host_root: str
     path: str
+    verified: Optional[bool] = None
+    verify_error: str = ""
 
-    def to_manifest(self) -> Dict[str, str]:
+    def to_manifest(self) -> Dict[str, Any]:
         return {
             "staging_id": self.staging_id,
             "intent_id": self.intent_id,
             "plan_id": self.plan_id,
             "host_root": self.host_root,
+            "verified": self.verified,
+            "verify_error": self.verify_error,
         }
+
+    def with_verification(self, ok: Optional[bool], error: str = "") -> "StagingWorkspace":
+        """A copy carrying the verification verdict, written back to the manifest by the caller."""
+        return dataclasses.replace(self, verified=ok, verify_error=str(error or ""))
 
 
 def staging_base() -> str:
@@ -384,13 +398,31 @@ def load_staging(staging_id: str) -> Optional[StagingWorkspace]:
     except (OSError, ValueError):
         return None
     path = os.path.join(staging_base(), str(staging_id))
+    verdict = data.get("verified")
     return StagingWorkspace(
         staging_id=str(data.get("staging_id") or staging_id),
         intent_id=str(data.get("intent_id") or ""),
         plan_id=str(data.get("plan_id") or ""),
         host_root=str(data.get("host_root") or ""),
         path=path,
+        # Absent means "no suite was run", which is not the same as "it passed".
+        verified=None if verdict is None else bool(verdict),
+        verify_error=str(data.get("verify_error") or ""),
     )
+
+
+def record_verification(workspace: StagingWorkspace, ok: Optional[bool], error: str = "") -> StagingWorkspace:
+    """Persist the merge gate's verdict on this shadow. Returns the updated workspace.
+
+    Written to the manifest rather than held in memory, because the *merge* is a later request from
+    the UI: a verdict that lived in the run's process would be gone by then, and the merge would be
+    offered for work that does not run.
+    """
+    updated = workspace.with_verification(ok, error)
+    atomic_io.write_text_atomic(
+        os.path.join(updated.path, STAGING_MANIFEST), json.dumps(updated.to_manifest(), indent=2)
+    )
+    return updated
 
 
 def list_stagings() -> List[StagingWorkspace]:

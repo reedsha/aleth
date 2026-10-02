@@ -733,6 +733,21 @@ class NetworkIsolationTests(unittest.TestCase):
             "--allow-network",
             MCPSessionContext(self.root, capabilities=["exec", "net"])._commands["exec"],
         )
+    def test_a_setup_phase_container_can_reach_the_network(self):
+        """The other half of the toggle (Phase 29): the setup egress is real, not a flag that
+        does nothing.
+
+        The setup phase installs the project's dependencies *before* the model is involved, which
+        is why it may have egress and the tool path may not. Without this half, "the setup phase
+        has the network" would be an untested claim.
+        """
+        result = docker_sandbox.run_isolated(
+            "python -c \"import socket;"
+            " s=socket.create_connection(('1.1.1.1', 53), timeout=5); print('CONNECTED')\"",
+            cwd=self.root, timeout=120, network=docker_sandbox.SETUP_NETWORK,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("CONNECTED", result.stdout)
 
 
 if __name__ == "__main__":

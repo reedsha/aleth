@@ -23,6 +23,15 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONIOENCODING=utf-8
 
+# The toolchains a workspace's own commands need. Node is here because a JavaScript project's
+# setup and verification *are* `npm install` and `npm test` -- without it the two-phase execution
+# this engine performs would be a no-op for half the projects it is pointed at, and an agent that
+# cannot install its dependencies cannot test its own work (Phase 29).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs npm \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version && npm --version
+
 # pytest is what `tools/test_runner.py` drives; pytest-xdist lets a workspace suite parallelise
 # the way this repo's own suite does; pytest-timeout keeps a hung generated test from holding
 # the verdict; the rest are the fundamental test utilities (fixtures, HTTP stubbing, clock

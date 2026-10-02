@@ -506,6 +506,101 @@ class OrphanedStagingTests(unittest.TestCase):
         self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
 
 
+class MergeGateTests(unittest.TestCase):
+    """Phase 29: a shadow that does not pass the project's own suite is unmergeable.
+
+    The verdict is written to the shadow's *manifest*, not held in the run's memory: the merge is a
+    later request from the UI, and a verdict that lived in the process would be gone by then.
+    """
+
+    def setUp(self):
+        from app import EngineService
+
+        self.host = tempfile.mkdtemp(prefix="aleth_gate_host_")
+        self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
+        _write(self.host, "pkg/mod.py", "value = 1\n")
+        self._original_project = workspace.get_project_dir()
+        workspace.set_project_dir(self.host)
+        self.addCleanup(workspace.set_project_dir, self._original_project)
+        self.addCleanup(workspace.set_execution_dir, None)
+        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
+        self.service = EngineService()
+
+    @staticmethod
+    def _finished():
+        from orchestration import autonomy
+
+        return autonomy.PlanProgress(
+            total=1, completed=1, failed=0, planned=0, in_progress=0, pending=0, runnable=0
+        )
+
+    def _merge(self, intent_id):
+        from orchestration import autonomy
+
+        with mock.patch.object(autonomy, "plan_progress", return_value=self._finished()):
+            return self.service.workspace_merge(intent_id=intent_id)
+
+    def test_a_failed_verification_makes_the_shadow_unmergeable(self):
+        with self.service._staged_execution("intent-bad") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 9\n")
+        staging.record_verification(shadow, False, "1 failed, 2 passed")
+
+        result = self._merge("intent-bad")
+
+        self.assertFalse(result["success"])
+        self.assertIn("did not pass", result["error"])
+        self.assertIn("1 failed", result["error"])
+        # The host is untouched, and the shadow is *kept* for debugging -- unmergeable, not deleted.
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
+        self.assertTrue(os.path.exists(shadow.path))
+
+    def test_a_passed_verification_merges(self):
+        with self.service._staged_execution("intent-good") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 7\n")
+        staging.record_verification(shadow, True)
+
+        result = self._merge("intent-good")
+
+        self.assertTrue(result["success"], result)
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 7\n")
+
+    def test_a_project_with_no_suite_is_still_mergeable(self):
+        """``None`` means "nothing was run", which is not "it failed"."""
+        with self.service._staged_execution("intent-nosuite") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 8\n")
+        staging.record_verification(shadow, None)
+
+        self.assertTrue(self._merge("intent-nosuite")["success"])
+
+    def test_a_rejection_is_unaffected_by_the_gate(self):
+        """Discarding work is always allowed: the gate guards the *merge*, not the purge."""
+        with self.service._staged_execution("intent-reject") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 6\n")
+        staging.record_verification(shadow, False, "boom")
+
+        result = self.service.workspace_merge(intent_id="intent-reject", approve=False)
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["rejected"])
+        self.assertFalse(os.path.exists(shadow.path))
+
+    def test_the_verdict_survives_the_process(self):
+        with self.service._staged_execution("intent-durable") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 5\n")
+        staging.record_verification(shadow, False, "a syntax error")
+
+        reloaded = staging.load_staging(shadow.staging_id)
+
+        self.assertIs(reloaded.verified, False)
+        self.assertIn("syntax error", reloaded.verify_error)
+
+    def test_an_unrecorded_shadow_has_no_verdict(self):
+        with self.service._staged_execution("intent-unknown") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 4\n")
+        self.assertIsNone(staging.load_staging(shadow.staging_id).verified)
+
+
 class ExecutionWiringTests(unittest.TestCase):
     """The execution call sites resolve the shadow, not the live tree."""
 
