@@ -506,7 +506,11 @@ class EngineService:
             # a reload, a retry, or the normalize path; refusing here is what actually stops
             # two runs from interleaving their plan writes. Previously the old run was asked
             # to stop and joined for one second -- best-effort, and a second thread ran anyway.
-            return {"success": False, "error": "A run is already in progress."}
+            #
+            # ``reason`` is machine-readable on purpose (Phase 25): the intent loop has to tell
+            # "the engine is busy, come back later" from a real refusal, because only the first
+            # is a reason to keep an intent queued rather than fail it.
+            return {"success": False, "reason": "busy", "error": "A run is already in progress."}
 
         self._launch_run(user_message, action_type, action_params or {}, intent_id)
 
@@ -561,8 +565,9 @@ class EngineService:
 
         The outcome is read from the run's terminal ``workflow_complete`` -- a thread that merely
         finished is not a run that succeeded, and treating it as one is how a failed plan becomes a
-        green UI. A *refused* run (the server-side run lock) raises: the caller turns that into a
-        failed intent, which is what the queue settles and the ledger records.
+        green UI. A *refused* run raises: a busy engine raises :class:`RunDeferred` (the intent keeps
+        its place in the queue), and any other refusal raises, which the caller turns into a failed
+        intent.
         """
         outcome = {"status": "", "message": ""}
         original = self.emit_event
@@ -580,6 +585,10 @@ class EngineService:
             result = self.start_execution(user_message, action_type, dict(action_params or {}),
                                           intent_id=intent_id)
             if not result.get("success"):
+                if result.get("reason") == "busy":
+                    from api.intents import RunDeferred
+
+                    raise RunDeferred(str(result.get("error") or "a run is already in progress"))
                 raise RuntimeError(str(result.get("error") or "the run was refused"))
             thread = self._execution_thread
             if thread is not None:
@@ -615,7 +624,15 @@ class EngineService:
         Either shape runs against a shadow copy of the workspace (Phase 20): the same intent wraps
         every pass the loop makes, so an earlier pass's writes are visible to a later one and none
         of them touch the user's live tree.
+
+        A busy engine is checked **before** the shadow is made, so a deferred intent leaves no copy
+        of the workspace behind (Phase 25). ``_run_blocking`` re-checks it as a backstop: a direct
+        dispatch can win the race between this test and the run actually starting.
         """
+        if self.get_run_state()["running"]:
+            from api.intents import RunDeferred
+
+            raise RunDeferred("a run is already in progress")
         with self._staged_execution(str(intent.id)):
             if str(intent.action_type) == "execute_plan":
                 return self._drive_plan(intent)

@@ -108,7 +108,7 @@ class IntentStatusQueryTests(RetentionTestCase):
         ledger.record(_Intent("i-queued"))
         running = _Intent("i-running")
         ledger.record(running)
-        ledger.mark_running(running)
+        self.assertTrue(ledger.claim(running))
         finished = _Intent("i-done")
         ledger.record(finished)
         finished.status = "completed"
@@ -129,7 +129,7 @@ class SweepStateTests(RetentionTestCase):
         ledger = IntentLedger(self.db_path)
         crashed = _Intent("i-crashed")
         ledger.record(crashed)
-        ledger.mark_running(crashed)  # written, and then the engine stopped
+        self.assertTrue(ledger.claim(crashed))  # written, and then the engine stopped
         shadow = staging.create_staging(self.host, intent_id="i-crashed")
 
         report = retention.sweep_state(self.db_path)
@@ -146,7 +146,7 @@ class SweepStateTests(RetentionTestCase):
         ledger = IntentLedger(self.db_path)
         finished = _Intent("i-finished")
         ledger.record(finished)
-        ledger.mark_running(finished)
+        self.assertTrue(ledger.claim(finished))
         finished.status = "completed"
         ledger.settle(finished)
         shadow = staging.create_staging(self.host, intent_id="i-finished")

@@ -4,13 +4,20 @@ The frontend cannot spawn anything. What it can do is *ask*, and this is where t
 being the frontend's problem: a request that validates is appended here and answered with a
 receipt, and the orchestrator takes it from the queue when it is free.
 
-Two properties are the point:
+Three properties are the point:
 
 * **Bounded.** A queue with no ceiling is a memory leak with a nice name; a client that submits
   faster than runs complete is refused rather than accumulated.
-* **Serialised.** One intent is drained at a time. The engine runs one workflow at a time
-  (``BridgeAPI`` holds the run lock), and a queue that fanned out would turn "two clicks" into
-  two concurrent writers over the same plan.
+* **Serialised.** One intent is drained at a time, and since Phase 25 that is enforced by the
+  **ledger**, not by this object. ``take`` claims the project's execution slot
+  (``IntentLedger.claim``) before it pops anything, so an intent that cannot claim *stays queued at
+  the head*: two intents for one project are a wait, not two runs over one working tree. That also
+  holds **across processes**, which the in-memory queue never could -- and it is why the mutex
+  lives in SQLite rather than in a file lock beside it.
+* **Deferrable.** A concurrency condition is not an outcome. When a run cannot be started because
+  the engine is busy with something that did not come from this queue, the intent is released back
+  to ``queued`` (:class:`RunDeferred`) rather than failed -- failing it would gate the UI on a run
+  the user never asked to fail.
 
 The worker is a plain function over the queue, so it can be driven by a thread in the app and by
 a test with no thread at all.
@@ -35,6 +42,14 @@ DEFAULT_CAPACITY = 32
 
 class IntentQueueFull(Exception):
     """The queue is at capacity. A refusal, not a silent drop."""
+
+
+class RunDeferred(Exception):
+    """A run could not be started because the engine is already busy with another one.
+
+    Not a failure: the intent keeps its place in the queue and the slot goes back. Raised by the
+    run path and caught by :func:`run_worker`, which releases rather than settles.
+    """
 
 
 @dataclasses.dataclass
@@ -97,6 +112,28 @@ class IntentQueue:
                 file=sys.stderr,
             )
 
+    def _claim(self, intent: Intent) -> bool:
+        """Ask the ledger for the project's execution slot. ``True`` when this intent now owns it.
+
+        A queue with no ledger (a test stub) always claims: the queue's own serialisation is then
+        the only guarantee, which is all an in-memory queue can offer.
+
+        A ledger that *errors* also claims, loudly. Refusing to run because the record could not be
+        written would turn a transient SQLite fault into a permanently stalled engine, and the
+        record has always been an observer of the run rather than the run itself.
+        """
+        if self._ledger is None:
+            return True
+        try:
+            return bool(self._ledger.claim(intent))
+        except Exception as error:
+            print(
+                f"[intents] the ledger could not claim the execution slot for {intent.id}: "
+                f"{type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+            return True
+
     def submit(self, request: IntentRequest) -> Intent:
         """Validate-and-append. Raises :class:`IntentQueueFull` when there is no room."""
         with self._condition:
@@ -121,16 +158,39 @@ class IntentQueue:
             return intent
 
     def take(self, timeout: Optional[float] = None) -> Optional[Intent]:
-        """The oldest queued intent, or ``None`` when the wait elapsed."""
+        """The oldest intent this project may run now, or ``None`` when the wait elapsed.
+
+        Nothing is popped until the project's execution slot is held, so an intent that cannot
+        claim stays queued at the head and this returns ``None`` -- the caller waits and comes back.
+        The claim and the dequeue happen under one lock on purpose: they are one decision, and
+        splitting them would let a second caller claim a slot this one is about to take.
+        """
         with self._condition:
             if not self._items:
                 self._condition.wait(timeout)
             if not self._items:
                 return None
-            intent = self._items.popleft()
+            intent = self._items[0]
+            if not self._claim(intent):
+                # The project is executing. Leave it at the head; the slot is not ours yet.
+                return None
+            self._items.popleft()
             intent.status = "running"
-        self._write("mark_running", intent)
-        return intent
+            return intent
+
+    def release(self, intent: Intent) -> None:
+        """Put a deferred intent back at the head of the queue and give the slot back.
+
+        For the one case :meth:`take` cannot resolve by itself: the intent owns the project's
+        execution slot but the run never started, because the engine was busy with a run that did
+        not come from this queue.
+        """
+        with self._condition:
+            intent.status = "queued"
+            if not any(item is intent for item in self._items):
+                self._items.appendleft(intent)
+            self._condition.notify_all()
+        self._write("release", intent)
 
     def settle(self, intent: Intent, *, error: str = "") -> None:
         """Mark a drained intent finished, or failed with the reason. **Never retried.**
@@ -250,6 +310,10 @@ def run_worker(
     A handler that raises fails *its* intent and no other: the loop is the thing that must not
     die, because a dead loop turns every later submission into a receipt for work that never
     runs.
+
+    ``RunDeferred`` is the exception to that rule, and the only one: it says the run was never
+    started, so the intent is handed back to the queue instead of being failed. A busy engine is a
+    reason to wait, not an outcome to record.
     """
     while not stop_event.is_set():
         intent = queue.take(timeout=poll_seconds)
@@ -257,6 +321,9 @@ def run_worker(
             continue
         try:
             handler(intent)
+        except RunDeferred:
+            queue.release(intent)
+            continue
         except Exception as error:  # the loop outlives any one intent
             queue.settle(intent, error=f"{type(error).__name__}: {error}")
             continue

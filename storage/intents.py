@@ -15,6 +15,14 @@ outcome is not the same question as "did the thread finish":
 The ledger is also the thing the UI reads to decide whether it may accept new work. A failed
 intent that has not been acknowledged is a gate: the user must see it and say they have.
 
+**It is also the project's execution mutex (Phase 25).** One intent may be ``running`` per project
+at a time, and that is enforced here rather than in the queue, because the queue is in memory and
+dies with the process while the ledger is shared by every engine on the project. The claim is a
+single conditional ``UPDATE`` -- see :meth:`IntentLedger.claim` -- and it needs no project column
+and no second lock file, because this database is *already* per project: its path is
+``<state_dir>/<project_id>/aleth_state.db``. "No other intent in this ledger is running" therefore
+*is* "no other intent of this project is running".
+
 Raw SQL on purpose -- the same reasoning as ``storage.telemetry``. This is a handful of columns
 and two indexed reads, and it is written from the API process while the workflow writes task
 state to the same file, so it is short transactions and WAL, not an ORM.
@@ -104,10 +112,47 @@ class IntentLedger:
             ),
         )
 
-    def mark_running(self, intent: Any) -> None:
-        """The intent has been taken off the queue and handed to the engine."""
+    def claim(self, intent: Any) -> bool:
+        """Take the project's execution slot for ``intent``. ``True`` when it now owns it.
+
+        The mutex, and it is one statement. This ledger is **per project** -- its path is
+        ``<state_dir>/<project_id>/aleth_state.db``, and the state directory is keyed by the
+        project id -- so "no other intent in this ledger is running" *is* "no other intent of this
+        project is running". No project column, and no second lock file to keep in step with it.
+
+        Atomic on purpose: the ``NOT EXISTS`` and the ``UPDATE`` are one statement inside one
+        transaction, so two engines draining the same project cannot both observe "nothing is
+        running" and both proceed. The subquery is served by ``idx_intent_status``. Conditional on
+        ``status = 'queued'`` so a repeated claim cannot take the slot twice.
+
+        A ``False`` is not a failure -- it is "wait your turn", and the caller leaves the intent
+        queued rather than settling it.
+        """
+        connection = _connect(self.path)
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE intent_ledger SET status = 'running', updated_at = ?"
+                    " WHERE intent_id = ? AND status = 'queued'"
+                    " AND NOT EXISTS (SELECT 1 FROM intent_ledger"
+                    "                 WHERE status = 'running' AND intent_id <> ?)",
+                    (time.time(), str(intent.id), str(intent.id)),
+                )
+                return int(cursor.rowcount or 0) == 1
+        finally:
+            connection.close()
+
+    def release(self, intent: Any) -> None:
+        """Give the project's execution slot back **without** settling the intent.
+
+        Only the claim is undone: the row returns to ``queued`` so this engine -- or another one --
+        may take it later. Used when a run could not be started at all, because a concurrency
+        condition is not an outcome: recording one would fail an intent the user never asked to
+        fail, and would gate the UI on it.
+        """
         self._write(
-            "UPDATE intent_ledger SET status = 'running', updated_at = ? WHERE intent_id = ?",
+            "UPDATE intent_ledger SET status = 'queued', updated_at = ?"
+            " WHERE intent_id = ? AND status = 'running'",
             (time.time(), str(intent.id)),
         )
 

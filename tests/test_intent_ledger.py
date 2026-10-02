@@ -21,7 +21,7 @@ import time
 import unittest
 
 from api.gateway import Gateway, Request
-from api.intents import Intent, IntentQueue, run_worker
+from api.intents import Intent, IntentQueue, RunDeferred, run_worker
 from api.schemas import IntentRequest
 from api.server import start_gateway
 from storage.intents import IntentLedger
@@ -72,7 +72,7 @@ class LedgerTests(unittest.TestCase):
         queued, running, done = _intent("q"), _intent("r"), _intent("d")
         for intent in (queued, running, done):
             self.ledger.record(intent)
-        self.ledger.mark_running(running)
+        self.assertTrue(self.ledger.claim(running))
         done.status = "completed"
         self.ledger.settle(done)
 
@@ -178,6 +178,125 @@ class QueueIdempotencyTests(unittest.TestCase):
         self.assertIsNone(self.ledger.pending_failure())
 
 
+class ProjectExecutionMutexTests(unittest.TestCase):
+    """Phase 25: one intent runs per project, and a second is a wait -- never a second run.
+
+    The mutex is the **ledger's**, not the queue's: the queue is in memory and dies with the
+    process, while the ledger is shared by every engine on the project. The database is already
+    per project -- its path is ``<state_dir>/<project_id>/aleth_state.db`` -- so "nothing else is
+    running in this ledger" is the whole of "nothing else is running in this project", with no
+    project column and no second lock file to keep in step.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aleth_mutex_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.db_path = os.path.join(self.tmp, "state.db")
+        self.ledger = IntentLedger(self.db_path)
+
+    def _statuses(self):
+        return {row["intent_id"]: row["status"] for row in self.ledger.recent(20)}
+
+    def test_a_second_intent_cannot_claim_a_project_that_is_executing(self):
+        first, second = _intent("first"), _intent("second")
+        for intent in (first, second):
+            self.ledger.record(intent)
+
+        self.assertTrue(self.ledger.claim(first))
+        self.assertFalse(self.ledger.claim(second))
+
+        self.assertEqual(self._statuses(), {"first": "running", "second": "queued"})
+
+    def test_a_second_engine_over_the_same_project_cannot_claim_either(self):
+        """Two processes, one project: the ledger is the only thing they share."""
+        other = IntentLedger(self.db_path)
+        first, second = _intent("first"), _intent("second")
+        for intent in (first, second):
+            other.record(intent)
+
+        self.assertTrue(other.claim(first))
+        # A second handle is a second engine as far as SQLite is concerned.
+        self.assertFalse(self.ledger.claim(second))
+
+    def test_the_slot_frees_when_the_holder_settles(self):
+        first, second = _intent("first"), _intent("second")
+        for intent in (first, second):
+            self.ledger.record(intent)
+        self.assertTrue(self.ledger.claim(first))
+        self.assertFalse(self.ledger.claim(second))
+
+        first.status = "completed"
+        self.ledger.settle(first)
+
+        self.assertTrue(self.ledger.claim(second))
+
+    def test_a_released_slot_is_not_an_outcome(self):
+        intent = _intent("i1")
+        self.ledger.record(intent)
+        self.assertTrue(self.ledger.claim(intent))
+
+        self.ledger.release(intent)
+
+        self.assertEqual(self.ledger.recent(1)[0]["status"], "queued")
+        self.assertIsNone(self.ledger.pending_failure())
+        # ...and the slot is free again, so the same intent can take it.
+        self.assertTrue(self.ledger.claim(intent))
+
+    def test_a_claim_cannot_be_taken_twice(self):
+        intent = _intent("i1")
+        self.ledger.record(intent)
+        self.assertTrue(self.ledger.claim(intent))
+        self.assertFalse(self.ledger.claim(intent), "a repeated claim must not re-take the slot")
+
+    def test_the_queue_leaves_a_blocked_intent_queued_at_the_head(self):
+        queue = IntentQueue(capacity=4, ledger=self.ledger)
+        first = queue.submit(IntentRequest(action_type="custom", message="first"))
+        queue.submit(IntentRequest(action_type="custom", message="second"))
+
+        # Another engine holds the project's slot for the head of this queue.
+        self.assertTrue(self.ledger.claim(first))
+
+        self.assertIsNone(queue.take(timeout=0.05))
+        self.assertEqual(queue.depth, 2, "nothing may be popped while the slot is held")
+        self.assertEqual(self._statuses()[first.id], "running")
+
+        # Handing the slot back lets the head through, in order.
+        self.ledger.release(first)
+        taken = queue.take(timeout=0.05)
+        self.assertEqual(taken.id, first.id)
+        self.assertEqual(queue.depth, 1)
+
+    def test_a_deferred_intent_is_re_queued_rather_than_failed(self):
+        """A busy engine is a reason to wait, not an outcome to record."""
+        queue = IntentQueue(capacity=4, ledger=self.ledger)
+        stop = threading.Event()
+        attempts = {"count": 0}
+
+        def handler(intent):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RunDeferred("a run is already in progress")
+            intent.status = "completed"
+
+        queue.submit(IntentRequest(action_type="custom", message="go"))
+        worker = threading.Thread(target=run_worker, args=(queue, handler, stop), daemon=True)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and queue.status().completed < 1:
+                time.sleep(0.02)
+        finally:
+            stop.set()
+            queue.wake()
+            worker.join(timeout=5)
+
+        status = queue.status()
+        self.assertEqual(status.completed, 1)
+        self.assertEqual(status.failed, 0, "a deferral must not be recorded as a failure")
+        self.assertEqual(attempts["count"], 2, "the intent must be retried, not dropped")
+        self.assertIsNone(self.ledger.pending_failure())
+
+
 class _StubService:
     """The smallest service the intent operations can call.
 
@@ -266,7 +385,7 @@ class GatewayLedgerTests(unittest.TestCase):
         """The intent was written, then the process died. The next boot is what fails it."""
         intent = _intent("orphan")
         self.ledger.record(intent)
-        self.ledger.mark_running(intent)
+        self.assertTrue(self.ledger.claim(intent))
 
         # A fresh gateway over the same ledger is the restart.
         second = start_gateway(port=0, ledger=self.ledger, service=_StubService(ledger=self.ledger))
