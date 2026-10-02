@@ -155,9 +155,9 @@ def execute_node(
     capabilities = [str(name) for name in (role_descriptor.get("required_capabilities") or [])]
     _announce_route(task_id, role_descriptor, model)
 
-    connection = sqlite3.connect(db_path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys=ON")
+    from storage.connection import connect
+
+    connection = connect(db_path)
     try:
         task = _task_for(connection, f"{plan_id}::{node_id}")
 
@@ -199,6 +199,9 @@ def execute_node(
                 # child records has to be joinable to the intent the parent is executing, and the
                 # child has no other way to know it.
                 intent_id=str(role_descriptor.get("intent_id") or ""),
+                # ...and the database the parent's ledger lives in, which this process cannot
+                # derive: its own plan directory is not the parent's (Phase 28).
+                ledger_path=str(db_path or ""),
             )
     finally:
         connection.close()

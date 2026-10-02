@@ -92,6 +92,9 @@ class IntentQueue:
         self._accepted = 0
         self._completed = 0
         self._failed = 0
+        # The intent handed out by ``take`` and not yet settled. The authority on "what is
+        # running" for a caller that is not on the run's thread -- see ``current``.
+        self._current: Optional[Intent] = None
 
     def _write(self, action: str, intent: Intent) -> None:
         """One ledger transition. A lost write is reported, never swallowed.
@@ -176,6 +179,7 @@ class IntentQueue:
                 return None
             self._items.popleft()
             intent.status = "running"
+            self._current = intent
             return intent
 
     def release(self, intent: Intent) -> None:
@@ -189,6 +193,8 @@ class IntentQueue:
             intent.status = "queued"
             if not any(item is intent for item in self._items):
                 self._items.appendleft(intent)
+            if self._current is intent:
+                self._current = None
             self._condition.notify_all()
         self._write("release", intent)
 
@@ -207,12 +213,26 @@ class IntentQueue:
                 if intent.status != "stopped":
                     intent.status = "completed"
                 self._completed += 1
+            if self._current is intent:
+                self._current = None
         self._write("settle", intent)
 
     def wake(self) -> None:
         """Release a waiter (used by shutdown so the worker leaves promptly)."""
         with self._condition:
             self._condition.notify_all()
+
+    @property
+    def current(self) -> Optional[Intent]:
+        """The intent this queue handed out and has not settled, or ``None``.
+
+        The authority on "what is running" for a caller **not on the run's thread**. The Stop
+        endpoint is the case that matters: it runs on the API thread, and the run's context
+        variable is invisible from there by design (Phase 28) -- so asking the queue is how it
+        learns which intent to abort.
+        """
+        with self._condition:
+            return self._current
 
     @property
     def depth(self) -> int:

@@ -941,19 +941,24 @@ class EngineService:
         workflow layer's liveness gate reads that row, so a run that is deep inside an agent loop
         finds out that it has been aborted and drops the operation instead of finishing work whose
         result nobody will accept. A flag can only be seen by the thread that holds it.
+
+        Which intent to abort comes from the **queue**, not from the run context (Phase 28): this
+        runs on the API thread, and the run's context variable is deliberately invisible across
+        threads. The queue is the authority on what it has handed out and not settled.
         """
         registry.stop_workflow()
-        if self._ledger is not None:
-            running = get_current_intent()
-            if running:
-                try:
-                    self._ledger.abort(running, "stopped by the user")
-                except Exception as error:  # the flag above is what actually stops the run
-                    print(
-                        f"[engine] could not record the abort of intent {running}: "
-                        f"{type(error).__name__}: {error}",
-                        file=sys.stderr,
-                    )
+        running = None
+        if self._intent_queue is not None:
+            running = self._intent_queue.current
+        if self._ledger is not None and running is not None:
+            try:
+                self._ledger.abort(running.id, "stopped by the user")
+            except Exception as error:  # the flag above is what actually stops the run
+                print(
+                    f"[engine] could not record the abort of intent {running.id}: "
+                    f"{type(error).__name__}: {error}",
+                    file=sys.stderr,
+                )
         if not (self._execution_thread and self._execution_thread.is_alive()):
             self.emit_event({
                 "type": "workflow_stopped",
@@ -1185,10 +1190,25 @@ class EngineService:
         undone by the pool being unavailable.
         """
         try:
-            return self._ensure_swarm().tick(intent_id=get_current_intent())
+            return self._ensure_swarm().tick(intent_id=self._running_intent_id())
         except Exception as error:
             print(f"[Swarm] tick skipped: {type(error).__name__}: {error}", file=sys.stderr)
             return []
+
+    def _running_intent_id(self) -> str:
+        """The intent a tick belongs to: the run context, else whatever the queue has in flight.
+
+        The context variable is right when the tick is on the run's own thread (the run's trailing
+        tick), and empty when it is not -- an API-thread tick during a live run. The queue is the
+        authority in both cases, so it is the fallback rather than the primary (Phase 28).
+        """
+        resolved = get_current_intent()
+        if resolved:
+            return resolved
+        if self._intent_queue is None:
+            return ""
+        current = self._intent_queue.current
+        return str(current.id) if current is not None else ""
 
     def start_swarm(self):
         """Cold start: bring the pool up and take one tick.

@@ -208,16 +208,22 @@ def _skills_for(capabilities: Optional[Sequence[str]]) -> str:
         return ""
 
 
-def _intent_ledger(intent_id: str) -> Any:
+def _intent_ledger(intent_id: str, db_path: str = "") -> Any:
     """The ledger the loop's liveness gate reads, or ``None`` when there is no intent to gate on.
 
-    Built from the same store the plan state comes from, so it is the right database in whichever
-    process is planning -- parent or swarm child.
+    ``db_path`` is the plan database the caller already knows. A swarm **child** is handed it in its
+    descriptor, and ``get_store()`` there would resolve against the child's own idea of the plan
+    directory -- a *different file* -- so the gate would read a ledger with no rows in it and abort
+    every pass. Falling back to the store is right for the in-process callers, which are the ones
+    that have no path to pass.
     """
     if not str(intent_id or "").strip():
         return None
-    from storage.db import get_store
     from storage.intents import IntentLedger
+
+    if str(db_path or "").strip():
+        return IntentLedger(str(db_path))
+    from storage.db import get_store
 
     return IntentLedger(get_store().path)
 
@@ -236,6 +242,7 @@ def _from_llm(
     role: str = DEFAULT_PLANNER_ROLE,
     capabilities: Optional[Sequence[str]] = None,
     intent_id: str = "",
+    ledger_path: str = "",
 ) -> Optional[ImplementationPlanArtifact]:
     """Ask System 2 for the artifact, or ``None`` when it cannot be produced.
 
@@ -274,13 +281,22 @@ def _from_llm(
     skills = _skills_for(capabilities)
 
     if session is not None:
-        from orchestration.workflow.agent_loop import AgentStepLimitExceeded, run_tool_loop
+        from orchestration.workflow.agent_loop import (
+            AgentStepLimitExceeded,
+            RunAborted,
+            run_tool_loop,
+        )
 
         def _loop_completer(*, system: str, messages: List[Any], tools: List[Any]) -> Any:
             return system2.complete_with_tools(
                 model=model, base_url=base_url, api_key=api_key,
                 system=system, messages=messages, tools=tools, skills=skills,
             )
+
+        # Built *outside* the ``try`` below on purpose: a ledger that cannot be constructed is a
+        # fault of the engine, and the broad handler there means "the model did not return a plan".
+        # Swallowing this into ``PlanningUnavailable`` would report an engine fault as a model one.
+        ledger = _intent_ledger(intent_id, ledger_path)
 
         try:
             text, _transcript = run_tool_loop(
@@ -296,12 +312,16 @@ def _from_llm(
                 # *child* process, where ``default_db_path()`` would resolve against the child's
                 # own idea of the plan directory rather than the parent's.
                 intent_id=intent_id,
-                ledger=_intent_ledger(intent_id),
+                ledger=ledger,
             )
         except AgentStepLimitExceeded:
             # A model that ran away is a fault, not a planner that returned nothing. Letting it fall
             # into the broad handler below would degrade the ceiling into a silent "no plan", which
             # is exactly the failure the ceiling exists to make loud (Phase 26).
+            raise
+        except RunAborted:
+            # ...and the same for an abort: a run that was stopped underneath this pass is not a
+            # model that failed to answer, and reporting it as one hides the stop (Phase 28).
             raise
         except Exception:
             return None
@@ -370,6 +390,7 @@ def plan_task(
     role: Optional[str] = None,
     capabilities: Optional[Sequence[str]] = None,
     intent_id: str = "",
+    ledger_path: str = "",
 ) -> ImplementationPlanArtifact:
     """The artifact for a task, produced by System 2. Raises when it cannot be planned.
 
@@ -399,6 +420,7 @@ def plan_task(
         model=resolved_model, base_url=base_url, api_key=api_key,
         completer=completer, session=session, role=str(role or DEFAULT_PLANNER_ROLE),
         capabilities=capabilities, intent_id=str(intent_id or ""),
+        ledger_path=str(ledger_path or ""),
     )
     if planned is None:
         raise PlanningUnavailable(

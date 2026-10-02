@@ -225,6 +225,57 @@ class TestReactiveTick:
         finally:
             swarm.close()
 
+    def test_a_dead_worker_is_recorded_by_the_parent(self, workspace):
+        """A dying child cannot write its own autopsy; the supervisor does (Phase 28).
+
+        A worker that OOMs, segfaults or is SIGKILLed takes its interpreter with it, and a child
+        that *does* raise reports into a ``Future`` the parent owns. So the row is written where the
+        failure is observed, and joined to the intent the tick belongs to.
+        """
+        from storage import telemetry
+
+        store, build, _, _ = workspace
+        build([("a", "pending", [])])
+        swarm = _swarm(workspace, max_workers=1,
+                       planner_spec="tests.stub_planner:does_not_exist")
+        try:
+            assert swarm.tick(intent_id="i-swarm") == ["a"]
+            _wait_idle(swarm)
+        finally:
+            swarm.close()
+
+        rows = telemetry.agent_faults(store.path, intent_id="i-swarm")
+        assert len(rows) == 1, rows
+        assert rows[0]["kind"] == "WORKER_TERMINATED"
+        assert rows[0]["detail"] == "Worker terminated unexpectedly"
+
+    def test_a_successful_worker_records_no_fault(self, workspace):
+        """The other half: the row means a worker died, not that a node was planned."""
+        from api.intents import Intent
+        from storage import telemetry
+        from storage.intents import IntentLedger
+
+        store, build, _, _ = workspace
+        build([("a", "pending", [])])
+        # A real run always has a ``running`` intent row before it starts -- the queue records it at
+        # submit and claims it before dispatching -- and the workflow layer's liveness gate reads
+        # exactly that. A tick with an id nothing recorded would be aborted, correctly.
+        ledger = IntentLedger(store.path)
+        intent = Intent(id="i-ok", action_type="execute_plan", message="go",
+                        action_params={}, enqueued_at=0.0)
+        ledger.record(intent)
+        assert ledger.claim(intent)
+
+        swarm = _swarm(workspace, max_workers=1)
+        try:
+            assert swarm.tick(intent_id="i-ok") == ["a"]
+            _wait_idle(swarm)
+        finally:
+            swarm.close()
+
+        assert telemetry.agent_faults(store.path, intent_id="i-ok") == [], \
+            getattr(swarm.outcome_for("a"), "error", "")
+
     def test_committing_halts_the_node_for_approval(self, workspace):
         store, build, _, _ = workspace
         build([("a", "pending", [])])

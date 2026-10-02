@@ -4,15 +4,18 @@ A fault, a log line or a stack trace that cannot be joined to the work that prod
 This module is the one place that answers "which intent is this process executing right now?", and
 the one place that installs the handler which puts that answer into an unhandled-exception report.
 
-Deliberately a module global, like ``tools.workspace.EXECUTION_DIR`` and for the same reason: the
-engine runs one workflow at a time per process, and the alternative is threading an identity through
-every log call site in the codebase. It is *set* by the run loop and cleared in a ``finally``, so it
-cannot outlive the run that set it.
+Deliberately a **``ContextVar``**, and the difference from a module global is not academic: the
+engine runs a thread per run and installs a ``threading.excepthook``, so a global set by thread B
+while thread A is crashing files A's stack trace under B's intent. That is worse than no
+correlation at all -- it is confidently wrong. A context variable is isolated per thread *and* per
+asyncio task, and the hook reads back whichever context is actually running.
 
 The ``intent_id`` threaded explicitly through the workflow layer is the same value, and it is what
-the *telemetry* uses. This global exists for the paths that have no arguments to thread -- an
-interpreter-level exception handler being the one that matters, because it is handed nothing but the
-exception.
+the *telemetry* uses. This variable exists for the paths that have no arguments to thread -- an
+interpreter-level exception handler being the one that matters, because it is handed nothing but
+the exception. Anything that is *not* on the run's own thread (the Stop endpoint, which runs on the
+API thread) must not use this: it asks the intent queue what is running instead, because a context
+variable is invisible across threads by design.
 """
 
 from __future__ import annotations
@@ -20,22 +23,27 @@ from __future__ import annotations
 import sys
 import threading
 import traceback
+from contextvars import ContextVar
 from typing import Any, Optional
 
-# The intent this process is executing, or "" when it is idle.
-CURRENT_INTENT = ""
+# The intent the *current execution context* is running, or "" when it is idle.
+_CURRENT_INTENT: ContextVar[str] = ContextVar("aleth_current_intent", default="")
 
 
 def get_current_intent() -> str:
-    """The intent this process is executing, or ``""`` when it is idle."""
-    return CURRENT_INTENT
+    """The intent this execution context is running, or ``""`` when it is idle."""
+    return _CURRENT_INTENT.get()
 
 
 def set_current_intent(intent_id: Optional[str]) -> str:
-    """Point the process at ``intent_id`` for one run, or clear it with ``None``."""
-    global CURRENT_INTENT
-    CURRENT_INTENT = str(intent_id or "")
-    return CURRENT_INTENT
+    """Point *this execution context* at ``intent_id`` for one run, or clear it with ``None``.
+
+    The value does not leak to another thread or to a sibling asyncio task, which is the property
+    the whole module exists for.
+    """
+    resolved = str(intent_id or "")
+    _CURRENT_INTENT.set(resolved)
+    return resolved
 
 
 def install_exception_logging() -> None:

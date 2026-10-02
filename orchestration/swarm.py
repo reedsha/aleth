@@ -230,9 +230,9 @@ class Swarm:
         file in production. ``get_store()`` is used for the writes so the Artifact Gate's own lock
         and transaction discipline apply.
         """
-        connection = sqlite3.connect(self.db_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
+        from storage.connection import connect
+
+        connection = connect(self.db_path)
         return connection
 
     def _descriptor_for(self, node: Dict[str, Any], *, intent_id: str = "") -> Dict[str, Any]:
@@ -359,8 +359,14 @@ class Swarm:
                 self.db_path,
             )
             self._in_flight.add(node_id)
-            # Bound by default argument: the callback fires long after this loop has moved on.
-            future.add_done_callback(lambda done, nid=node_id: self._on_worker_complete(nid, done))
+            # Bound by default argument: the callback fires long after this loop has moved on. The
+            # run identity rides the same way (Phase 28) -- the callback runs on the pool's thread,
+            # where the run's context variable is invisible, so the id is captured at dispatch.
+            future.add_done_callback(
+                lambda done, nid=node_id, iid=intent_id: self._on_worker_complete(
+                    nid, done, intent_id=iid
+                )
+            )
             dispatched.append(node_id)
         return dispatched
 
@@ -380,7 +386,7 @@ class Swarm:
         except Exception:
             pass
 
-    def _on_worker_complete(self, node_id: str, future: Future) -> None:
+    def _on_worker_complete(self, node_id: str, future: Future, *, intent_id: str = "") -> None:
         """A worker finished. Runs on the **parent's** thread, which is why it can emit.
 
         This is the only place a finished artifact is announced, and the announcement is a side
@@ -408,7 +414,7 @@ class Swarm:
             if outcome.ok:
                 self.commit(outcome)
             else:
-                self._handle_failure(node_id, outcome)
+                self._handle_failure(node_id, outcome, intent_id=intent_id)
         except Exception as error:
             print(
                 f"[Swarm] outcome for {node_id} could not be applied: "
@@ -433,7 +439,9 @@ class Swarm:
                 file=sys.stderr,
             )
 
-    def _handle_failure(self, node_id: str, outcome: NodeOutcome) -> None:
+    def _handle_failure(
+        self, node_id: str, outcome: NodeOutcome, *, intent_id: str = ""
+    ) -> None:
         """A worker failed. Whether that is the machine's fault decides what happens next.
 
         **The machine failing is not the work being wrong.** A broken pipe, a timeout, an OOM or an
@@ -447,7 +455,14 @@ class Swarm:
         A failure that is *not* system-level (a contract violation, a planner refusal) is the work's
         problem, not the environment's, and is marked ``failed`` immediately: retrying it would just
         reproduce it.
+
+        Either way the **parent** records the fault (Phase 28). A dying worker cannot write its own
+        autopsy -- an OOM, a segfault or a SIGKILL takes the interpreter with it, and the child that
+        does report an exception is reporting it into a ``Future`` the parent owns. A supervisor does
+        not trust its children to clean up after themselves, so the row is written here, where the
+        failure is observed and the run identity is known.
         """
+        self._record_worker_fault(outcome, intent_id=intent_id)
         from storage.db import get_store
 
         store = get_store()
@@ -481,6 +496,33 @@ class Swarm:
             )
         except Exception:
             pass
+
+    def _record_worker_fault(self, outcome: NodeOutcome, *, intent_id: str = "") -> None:
+        """Write the child's failure to the fault ledger, joined to the run. Never raises.
+
+        ``detail`` is the fixed string the supervisor can search for, and the *reason* is not
+        duplicated here: it is already on the node (``Planning failed: …`` or ``System failure N
+        times: …``), so the fault row says "a worker died" and the task says why. Two ledgers
+        holding the same sentence is two places to disagree.
+        """
+        from storage import telemetry
+        from storage.db import get_store
+
+        try:
+            telemetry.record_agent_fault(
+                get_store().path,
+                intent_id=intent_id,
+                kind="WORKER_TERMINATED",
+                detail="Worker terminated unexpectedly",
+            )
+        except Exception as error:
+            # A lost fault record is reported, never fatal: the node's own failure below is what
+            # the run depends on, and a telemetry write must not take that with it.
+            print(
+                f"[Swarm] worker fault for {outcome.node_id} could not be recorded: "
+                f"{type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
 
     # -- the human gate ----------------------------------------------------------
     def commit(self, outcome: NodeOutcome) -> bool:
