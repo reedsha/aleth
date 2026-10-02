@@ -1,4 +1,3 @@
-import atexit
 import sys
 
 from env_boot import load_environment
@@ -12,7 +11,7 @@ for _shadowed in load_environment():
 # bypasses the exec server's SIGTERM handler, so those containers are still running, still
 # burning CPU and still holding their file locks; the next boot is the only thing that will ever
 # collect them. It reports what it found, because a silent collector hides a systemic crash.
-from tools.docker_sandbox import sweep_orphaned_containers
+from tools.docker_sandbox import install_shutdown_sweep, sweep_orphaned_containers
 
 sweep_orphaned_containers("boot")
 
@@ -25,9 +24,12 @@ from storage.retention import sweep_state
 
 sweep_state()
 
-# And again on the way out. ``atexit`` covers every graceful exit, including a ``sys.exit`` from
-# the bootloader below; a SIGKILL is precisely the case the boot sweep above exists for.
-atexit.register(sweep_orphaned_containers, "shutdown")
+# And on every way out (Phase 25): ``atexit`` for a normal return or a ``sys.exit`` from the
+# bootloader below, and SIGINT/SIGTERM for a kill from a terminal, a supervisor or a service
+# manager. This one removes **every** managed container rather than only the ones whose owner has
+# died -- at shutdown the owner is this process -- so the engine never leaves a container behind
+# for the next boot to find. A SIGKILL is precisely the case the boot sweep above exists for.
+install_shutdown_sweep("shutdown")
 
 # The bootloader runs here, before anything imports the registry or ``app`` -- both of which open
 # the SQLite store on import. The fleet is loaded, validated and *proven* first: a system that

@@ -395,6 +395,38 @@ class ContainerLifecycleTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_the_shutdown_sweep_removes_a_container_whose_owner_is_alive(self):
+        """The boot sweep spares a live owner; the shutdown sweep must not.
+
+        At shutdown the owner *is* this process, so an ownership check would spare exactly the
+        containers the engine is trying to clean up. This is the gap the engine-level teardown
+        (Phase 25) exists to close.
+        """
+        name = "aleth-chaos-shutdown"
+        created = subprocess.run(
+            [*docker_sandbox.docker_bin(), "run", "-d", "--rm", "--name", name,
+             "--label", "aleth.managed=true",
+             # Alive on purpose: this very process.
+             "--label", f"aleth.owner_pid={os.getpid()}",
+             docker_sandbox.image(), "/bin/sh", "-c", "sleep 300"],
+            capture_output=True, text=True, timeout=180,
+        )
+        self.assertEqual(created.returncode, 0, created.stderr)
+        # ``docker run`` prints the full id; ``docker ps`` reports the short form, which is what
+        # ``managed_containers`` carries -- so the comparison is on the shared 12 characters.
+        short_id = created.stdout.strip()[:12]
+        self.addCleanup(lambda: docker_sandbox.remove_container(name))
+
+        # The boot sweep leaves it alone -- its owner is alive, which is correct at boot.
+        self.assertEqual(docker_sandbox.purge_orphaned_containers(), [])
+
+        removed = docker_sandbox.purge_managed_containers()
+
+        self.assertIn(short_id, removed, "the shutdown sweep left a container behind")
+        self.assertNotIn(
+            short_id, [container.id for container in docker_sandbox.managed_containers()]
+        )
+
     @unittest.skipUnless(IS_POSIX, "/proc is a Linux interface")
     def test_the_sweeper_removes_a_container_whose_owner_is_gone(self):
         """The boot/teardown sweep: a dead owner is the definition of an orphan."""
@@ -472,15 +504,26 @@ class BootSweepTests(unittest.TestCase):
         )
 
     def test_main_wires_both_sweeps_before_the_bootloader(self):
-        """The boot sweep must precede the tier probe and the store; teardown must be registered."""
+        """Both sweeps must precede the tier probe and the store, and the teardown must be armed.
+
+        The shutdown install is *before* the bootloader on purpose too: the bootloader can
+        ``sys.exit``, and an exit that skipped the registration would leave the engine's
+        containers behind.
+        """
         with open(os.path.join(REPO_ROOT, "main.py"), "r", encoding="utf-8") as handle:
             source = handle.read()
         boot = source.index('sweep_orphaned_containers("boot")')
-        self.assertIn("atexit.register(sweep_orphaned_containers", source)
+        shutdown = source.index('install_shutdown_sweep("shutdown")')
+        bootloader = source.index("boot_or_exit()")
+
+        self.assertLess(boot, bootloader, "the boot sweep must precede the tier probe")
         self.assertLess(
-            boot, source.index("boot_or_exit()"),
-            "the sweep must run before the bootloader probes the fleet",
+            shutdown, bootloader,
+            "the shutdown sweep must be armed before anything can exit",
         )
+        # The old registration was ``atexit`` only, and it spared a live owner -- at shutdown the
+        # owner is this process, so it swept nothing. The install is what covers a kill as well.
+        self.assertNotIn("atexit.register(sweep_orphaned_containers", source)
 
 
 class NetworkBoundaryTests(unittest.TestCase):

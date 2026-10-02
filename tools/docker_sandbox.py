@@ -56,11 +56,13 @@ Configuration (read at call time, so tests can point them at a double):
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import dataclasses
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -741,6 +743,84 @@ def sweep_orphaned_containers(stage: str) -> int:
     else:
         print(f"[Sandbox] {stage} sweep: no orphaned containers", flush=True)
     return len(removed)
+
+
+def purge_managed_containers() -> List[str]:
+    """Force-remove every container this app made, whoever owns it. Returns what it removed.
+
+    The **engine's** shutdown sweep, and deliberately not the boot sweep.
+    :func:`purge_orphaned_containers` spares a container whose owner is still alive -- right at
+    boot, useless here: at shutdown the owner *is* this process, and it is about to stop being
+    alive. Nothing this app started may outlive it.
+
+    It asks the daemon instead of trusting this process's bookkeeping, because the bookkeeping may
+    be exactly what is broken; the ``aleth.managed`` label the perimeter stamps on every container
+    is what it matches on. That is also why it does not rely on process-group scoping: a container
+    is a child of *dockerd*, not of this process, so killing our own group never reached it.
+
+    The label is global rather than per project, so this removes containers belonging to **any**
+    aleth engine on the host. That is the intent -- one engine per machine, and it must leave no
+    garbage -- but it is the reason this is the shutdown path and not something run casually: a
+    second concurrent engine on the same host would lose its in-flight containers.
+
+    Never raises: a machine with no client, or a daemon that will not answer, has nothing to clean.
+    """
+    removed: List[str] = []
+    for container in managed_containers():
+        # Detached, like the exec server's signal path: this process may be killed a moment later,
+        # and a removal the kill can interrupt is a removal that did not happen.
+        if remove_container(container.id, detached=True):
+            removed.append(container.id)
+    return removed
+
+
+def install_shutdown_sweep(stage: str = "shutdown") -> None:
+    """Run the engine's container sweep on every way out: ``atexit``, SIGINT and SIGTERM.
+
+    The exec server has its own reaper for the containers *it* holds (see
+    ``mcp_exec_server.install_container_reaper``); this is the engine's, and it covers what that
+    one cannot: a container whose exec server died first, and a shutdown where no server was
+    running at all.
+
+    Registered on all three exits on purpose. ``atexit`` covers a normal return and a ``sys.exit``
+    -- including the bootloader's. SIGINT and SIGTERM cover a kill from a terminal, a supervisor or
+    a service manager. The handler sweeps, restores the default disposition and re-delivers the
+    signal, so the process still dies with the status the sender expects rather than lingering as
+    a Python process that swallowed a terminate.
+
+    A SIGKILL is precisely the case the *boot* sweep exists for: nothing can run, so the next boot
+    is the only thing that will ever collect that container.
+    """
+
+    def _sweep(*_args) -> None:
+        removed = purge_managed_containers()
+        if removed:
+            print(
+                f"[Sandbox] {stage} sweep removed {len(removed)} managed container(s): "
+                + ", ".join(removed),
+                # Flushed on purpose: a shutdown report lost to an unwritten buffer is not a report.
+                flush=True,
+            )
+
+    atexit.register(_sweep)
+
+    def _handler(signum, _frame):
+        _sweep()
+        try:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        except Exception:  # a platform that cannot re-deliver still has to leave
+            raise SystemExit(128 + signum)
+
+    for name in ("SIGINT", "SIGTERM"):
+        number = getattr(signal, name, None)
+        if number is None:
+            continue
+        try:
+            signal.signal(number, _handler)
+        except (ValueError, OSError):
+            # Not the main thread: ``atexit`` still covers the graceful paths.
+            pass
 
 
 def _force_remove(name: str) -> None:

@@ -16,6 +16,7 @@ expected to run in the same environment as the daemon -- see the module docstrin
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -563,6 +564,60 @@ class ContainerRemovalContractTests(unittest.TestCase):
             removed = docker_sandbox.purge_active_containers(detached=True)
         remove.assert_called_once_with("aleth-exec-x", detached=True)
         self.assertEqual(removed, ["aleth-exec-x"])
+
+
+class ShutdownSweepTests(unittest.TestCase):
+    """Phase 25: the engine registers its own container teardown, on every way out.
+
+    The exec server reaps the containers *it* holds; this covers what that one cannot -- a
+    container whose server died first, and a shutdown where no server was running at all. It is
+    asserted without a daemon: what matters here is that the registration happens and that the
+    registered callable is the sweep.
+    """
+
+    def test_the_sweep_is_registered_with_atexit_and_both_signals(self):
+        with mock.patch.object(docker_sandbox.atexit, "register") as register, \
+                mock.patch.object(docker_sandbox.signal, "signal") as install:
+            docker_sandbox.install_shutdown_sweep("shutdown")
+
+        register.assert_called_once()
+        installed = {call.args[0] for call in install.call_args_list}
+        self.assertIn(signal.SIGINT, installed)
+        self.assertIn(signal.SIGTERM, installed)
+
+    def test_the_registered_atexit_callable_is_the_sweep(self):
+        with mock.patch.object(docker_sandbox.atexit, "register") as register, \
+                mock.patch.object(docker_sandbox.signal, "signal"), \
+                mock.patch.object(
+                    docker_sandbox, "purge_managed_containers", return_value=["abc123"]
+                ) as purge:
+            docker_sandbox.install_shutdown_sweep("shutdown")
+            sweep = register.call_args.args[0]
+            sweep()
+
+        purge.assert_called_once_with()
+
+    def test_the_shutdown_sweep_ignores_ownership(self):
+        """It removes what the *app* made, whoever owns it -- that is the whole point.
+
+        The owner here is this very process, alive, which is exactly the case the boot sweep is
+        right to spare and the shutdown sweep must not.
+        """
+        with mock.patch.object(
+            docker_sandbox, "managed_containers",
+            return_value=[docker_sandbox.ManagedContainer("id1", "e1", str(os.getpid()), "1")],
+        ), mock.patch.object(docker_sandbox, "remove_container", return_value=True) as remove:
+            removed = docker_sandbox.purge_managed_containers()
+
+        self.assertEqual(removed, ["id1"])
+        # Detached: this process may be killed a moment later, and a removal the kill can
+        # interrupt is a removal that did not happen.
+        remove.assert_called_once_with("id1", detached=True)
+
+    def test_a_sweep_with_nothing_to_clean_is_silent(self):
+        """A machine with no client has nothing to clean, and must not raise on the way out."""
+        with mock.patch.object(docker_sandbox, "managed_containers", return_value=[]):
+            self.assertEqual(docker_sandbox.purge_managed_containers(), [])
 
 
 if __name__ == "__main__":
