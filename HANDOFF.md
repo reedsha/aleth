@@ -30,6 +30,13 @@
   self-correcting).
 - **`overwrite_source` now has no production caller either.** Recorded, not acted on: it survives
   as the façade-pinned engine primitive with `FileOpTests` coverage and the Phase 23 shadow binding.
+- **The container reaper is no longer killable by the kill it exists for (Phase 24).** The exec
+  server's SIGTERM handler removed its in-flight containers with `docker rm -f` — a child of the
+  very process group the MCP client SIGKILLs when its 5 s grace expires. The removal's own budget
+  is 15 s, so under load the SIGKILL landed inside it and the container outlived its server. The
+  removal now runs in **its own session** (`remove_container(detached=True)`, output to `DEVNULL`),
+  so it completes regardless. This is the failure that made CI red on `ubuntu-latest / py3.11`;
+  see `MASTER_CONTEXT.md` §4 for the full account.
 - **The run's file I/O and the frontend's reads are two modules (Phase 23).** Phase 20 said
   reads resolve the user's tree and execution writes resolve the shadow, but both halves sat behind
   one resolver in `tools/workspace_io.py` — and `overwrite_source`/`read_source` resolved against
@@ -1417,12 +1424,15 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `b538467` (Phase 23) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `94a153b` (Phase 24, first commit) before the reaper fix |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.1 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1184 passed, 18 skipped, 233 subtests** in 97.29 s (`-n auto`; CI adds `-m "not llm"`) — the count *fell* by one net: `WorkflowWriteGuardTests` (2) deleted, the torn-mint test (1) added |
-| Identity atomicity | `tests/test_state_identity.py::MintedIdentityTests::test_a_torn_mint_cannot_become_a_different_project` | **passed** — a refused rename leaves no partial token and no scratch file, so a torn mint cannot answer as a different project |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1187 passed, 18 skipped, 233 subtests** in 94.51 s (`-n auto`; CI adds `-m "not llm"`) — the count *fell* by one net from Phase 23: `WorkflowWriteGuardTests` (2) deleted, the torn-mint test (1) added, the removal-contract tests (3) added |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n2` in WSL | **1199 passed, 5 skipped** in 123.17 s — the container-backed tests actually run here, which is why this is the leg that can see the reaper race |
+| Container reaper | `tests/test_chaos.py::ContainerLifecycleTests` in WSL | **8/8 iterations passed** (3 tests each); durations ~3.5–3.8 s, down from a 5.17 s outlier that was hitting the client's grace |
+| Removal contract | `tests/test_docker_sandbox.py::ContainerRemovalContractTests` | **3 passed** — detached ⇒ `start_new_session` and no pipes; plain ⇒ captured and awaited; the purge passes the mode through |
+| Identity atomicity | `tests/test_state_identity.py::MintedIdentityTests::test_a_torn_mint_cannot_become_a_different_project` | **passed** — a refused rename leaves no partial token and no scratch file |
 | I/O roots | `tests/test_staging.py::ExecutionRootBifurcationTests` | **7 passed** — the writer lands in the shadow and not the host, a read sees the agent's own writes across steps, the UI reads still see the live project, an injected root is the only root, an out-of-root path is a `ValueError`, `execution_io`'s code never names `get_project_dir` (AST-pinned), and the run context carries the shadow root |
 | Durability + bounding | `tests/test_retention.py` (new) + `tests/test_staging.py` | **48 passed** — ledger retention per table, a ledger-below-its-bound no-op, a never-created ledger skipped, `ids_with_status`, and the boot sweep end-to-end (a crashed intent failed *and* its shadow collected, a completed one kept, a never-ran project's strays collected, the report line, and a failing sweep reported rather than raised); plus the sibling-temporary assertion, a failed merge leaving the host file whole with no litter, and orphaned/manifest-less shadow collection |
 | Atomic writes | `tests/test_mcp.py::AtomicFilesystemWriteTests` | **4 passed** — no scratch beside a write, a refused `os.replace` leaving the original whole and no litter, the temporary sharing the target's directory, and `create_file` still create-never-replace |
