@@ -37,11 +37,13 @@ const TRIGGER_IDS = [
   "btnConfirmNormalize", // the Normalization Gate's reformat, which is a run
   "btnRetryArchitect",
   "btnRetryCoder",
-  // The steering controls (Phase 34): an interrupt and a resume are requests to the engine, so
-  // they are disabled with everything else while it is unreachable.
+  // The steering controls (Phase 34) and the rewind (Phase 35): an interrupt, a resume and a
+  // rollback are all requests to the engine, so they are disabled with everything else while it is
+  // unreachable.
   "btnInterruptRun",
   "btnSteerSubmit",
   "btnSteerCancel",
+  "btnSteerRollback",
 ];
 
 let current = CONNECTING;

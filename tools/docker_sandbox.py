@@ -70,7 +70,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools import env_sanitizer, process_control, stream_drain
 
@@ -802,6 +802,67 @@ def purge_orphaned_containers(session_id: Optional[str] = None) -> List[str]:
     return removed
 
 
+def managed_networks() -> List[str]:
+    """The ids of every docker network this app created. Normally empty.
+
+    The engine creates **no** networks: every sandbox runs on a Docker built-in -- ``none``, or
+    ``bridge`` for the deterministic setup phase -- so a container's network *namespace* is created
+    with the container and destroyed with it (``--rm``). There is therefore nothing here to reap in
+    practice, and this query exists so that claim is a check rather than a promise: a future
+    sandbox that does create one is collected by the same sweep instead of leaking.
+    """
+    return _docker_lines(["network", "ls", "--filter", f"label={LABEL_MANAGED}", "-q"])
+
+
+def purge_orphaned_networks() -> List[str]:
+    """Remove every app-managed network. Returns their ids. Never raises.
+
+    Idempotent, like :func:`remove_container`: ``network rm`` on an already-gone network is not an
+    error, so the boot sweep and the shutdown hook can race each other safely.
+    """
+    removed: List[str] = []
+    for network in managed_networks():
+        try:
+            argv = [*docker_bin(), "network", "rm", network]
+        except EnvironmentError:
+            return removed
+        try:
+            completed = subprocess.run(
+                argv, capture_output=True, text=True, timeout=KILL_TIMEOUT_SECONDS,
+                encoding="utf-8", errors="replace",
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if completed.returncode == 0:
+            removed.append(network)
+    return removed
+
+
+def sweep_orphaned_networks(stage: str) -> int:
+    """Reap app-managed networks, and say what it found. Returns how many were destroyed.
+
+    The companion to :func:`sweep_orphaned_containers`, and never raises for the same reason: a
+    boot that cannot reach the daemon is still a boot.
+    """
+    try:
+        removed = purge_orphaned_networks()
+    except Exception as error:
+        print(
+            f"[Sandbox] {stage} network sweep skipped: {type(error).__name__}: {error}",
+            flush=True,
+        )
+        return 0
+    if removed:
+        print(
+            f"[Sandbox] {stage} network sweep removed {len(removed)} network(s): "
+            + ", ".join(removed),
+            flush=True,
+        )
+    else:
+        print(f"[Sandbox] {stage} network sweep: none created by the engine", flush=True)
+    return len(removed)
+
+
 def sweep_orphaned_containers(stage: str) -> int:
     """Sweep, and **say what it found**. Returns how many containers were destroyed.
 
@@ -865,8 +926,44 @@ def purge_managed_containers() -> List[str]:
     return removed
 
 
-def install_shutdown_sweep(stage: str = "shutdown") -> None:
-    """Run the engine's container sweep on every way out: ``atexit``, SIGINT and SIGTERM.
+def build_shutdown_sweep(stage: str = "shutdown", extra: Optional[Callable[[], None]] = None) -> Callable:
+    """The teardown itself: run ``extra``, then remove every managed container. Never raises.
+
+    Separated from :func:`install_shutdown_sweep` so the behaviour is testable without registering
+    an ``atexit`` hook and overwriting this process's signal handlers for the rest of the session.
+
+    ``extra`` is one more teardown step, run first and independently. ``main.py`` uses it to mark
+    running intents ``aborted_by_system`` in the ledger (Phase 36): the containers are a resource
+    leak, but a ``running`` intent with no process behind it is a lie the next boot has to unpick.
+    It is a callback rather than an import because this module is the container perimeter and has
+    no business knowing about the ledger.
+    """
+
+    def _sweep(*_args) -> None:
+        if extra is not None:
+            # Independently guarded: a failure to record the abort must not stop the containers
+            # from being removed, and vice versa.
+            try:
+                extra()
+            except Exception as error:
+                print(
+                    f"[Sandbox] {stage} extra step failed: {type(error).__name__}: {error}",
+                    flush=True,
+                )
+        removed = purge_managed_containers()
+        if removed:
+            print(
+                f"[Sandbox] {stage} sweep removed {len(removed)} managed container(s): "
+                + ", ".join(removed),
+                # Flushed on purpose: a shutdown report lost to an unwritten buffer is not a report.
+                flush=True,
+            )
+
+    return _sweep
+
+
+def install_shutdown_sweep(stage: str = "shutdown", extra: Optional[Callable[[], None]] = None) -> None:
+    """Run the engine's teardown on every way out: ``atexit``, SIGINT and SIGTERM.
 
     The exec server has its own reaper for the containers *it* holds (see
     ``mcp_exec_server.install_container_reaper``); this is the engine's, and it covers what that
@@ -882,17 +979,7 @@ def install_shutdown_sweep(stage: str = "shutdown") -> None:
     A SIGKILL is precisely the case the *boot* sweep exists for: nothing can run, so the next boot
     is the only thing that will ever collect that container.
     """
-
-    def _sweep(*_args) -> None:
-        removed = purge_managed_containers()
-        if removed:
-            print(
-                f"[Sandbox] {stage} sweep removed {len(removed)} managed container(s): "
-                + ", ".join(removed),
-                # Flushed on purpose: a shutdown report lost to an unwritten buffer is not a report.
-                flush=True,
-            )
-
+    _sweep = build_shutdown_sweep(stage, extra)
     atexit.register(_sweep)
 
     def _handler(signum, _frame):

@@ -186,6 +186,53 @@ test("a refused resume keeps the hold on screen and says why", async ({ page }) 
   await expect(page.locator("#toastContainer")).toContainText("Could not resume the run");
 });
 
+test("a held run offers its snapshots and the rewind reaches the engine", async ({ page }) => {
+  await openApp(page, {
+    api: {
+      start_execution: { success: true, intent_id: INTENT_ID },
+      get_intent_steps: {
+        success: true,
+        intent_id: INTENT_ID,
+        steps: [
+          { step: 0, sha: "a", message: "aleth: the workspace as staged" },
+          { step: 1, sha: "b", message: "aleth: step 1: write_file" },
+        ],
+      },
+      rollback_intent: { success: true, intent_id: INTENT_ID, step: 1 },
+    },
+  });
+  await startRun(page);
+  await dispatchAgentEvent(page, { type: "intent_paused", intent_id: INTENT_ID, message: "hold" });
+
+  const select = page.locator("#steerStepSelect");
+  await expect(select).toBeVisible();
+  await expect(select.locator("option")).toHaveCount(2);
+  // Newest first, so the step before the damage is the one already chosen.
+  await expect(select).toHaveValue("1");
+
+  await page.locator("#btnSteerRollback").click();
+
+  await expect.poll(() => fetchBodies(page)).toContainEqual({ intent_id: INTENT_ID, step: 1 });
+  expect(await page.evaluate(() => window.__alethFetchLog)).toContain("/api/intent/rollback");
+  await expect(page.locator("#toastContainer")).toContainText("rewound to step 1");
+});
+
+test("a run with no snapshots offers no rewind rather than a dead control", async ({ page }) => {
+  await openApp(page, {
+    api: {
+      start_execution: { success: true, intent_id: INTENT_ID },
+      get_intent_steps: { success: true, intent_id: INTENT_ID, steps: [] },
+    },
+  });
+  await startRun(page);
+  await dispatchAgentEvent(page, { type: "intent_paused", intent_id: INTENT_ID, message: "hold" });
+
+  const select = page.locator("#steerStepSelect");
+  await expect(select).toContainText("no snapshots yet");
+  await expect(select).toHaveValue("");
+  await expect(page.locator("#btnSteerRollback")).toBeDisabled();
+});
+
 // ---------------------------------------------------------------------------
 // 3. Stream resiliency: follow the run, return on the terminal event, hydrate on reconnect
 // ---------------------------------------------------------------------------

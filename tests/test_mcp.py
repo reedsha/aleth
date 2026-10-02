@@ -1911,5 +1911,135 @@ class MCPCommandTests(MCPServerTestCase):
         client.close()
 
 
+class SnapshotStepTests(MCPServerTestCase):
+    """Phase 35: a run that changes files is snapshotted per step, and can be rewound.
+
+    The unit tests pin the repository and the ledger; this pins the *loop* -- that a mutating tool
+    call is committed and tagged, and that a rewind the operator queued while the run was held
+    restores the context window as well as the bill.
+    """
+
+    class _Completion:
+        def __init__(self, text="", tool_calls=None):
+            self.text = text
+            self.tool_calls = tool_calls or []
+
+    def _scripted(self, *turns):
+        remaining = list(turns)
+        seen = []
+
+        def completer(*, system, messages, tools):
+            seen.append({"messages": messages, "tools": tools})
+            return remaining.pop(0) if remaining else self._Completion(text="done")
+
+        completer.seen = seen
+        return completer
+
+    def _ledger_with_running(self, intent_id):
+        from api.intents import Intent
+        from storage.db import default_db_path, get_store
+        from storage.intents import IntentLedger
+
+        get_store()
+        ledger = IntentLedger(default_db_path())
+        intent = Intent(id=intent_id, action_type="custom", message="go",
+                        action_params={}, enqueued_at=0.0)
+        ledger.record(intent)
+        self.assertTrue(ledger.claim(intent))
+        return ledger
+
+    def test_a_mutating_step_is_snapshotted_and_can_be_rewound(self):
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import run_tool_loop
+        from tools import snapshots
+
+        snapshots.init_snapshots(self.tmp)
+        completer = self._scripted(
+            self._Completion(tool_calls=[{
+                "name": "create_file", "arguments": {"path": "made.py", "content": "made = 1\n"},
+            }]),
+            self._Completion(text="done"),
+        )
+        with MCPSessionContext(self.tmp) as session:
+            run_tool_loop(
+                session=session, role="coder", system_prompt="sys",
+                user_message="make a file", completer=completer, workspace_root=self.tmp,
+            )
+
+        self.assertEqual([entry["step"] for entry in snapshots.steps(self.tmp)], [0, 1])
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "made.py")))
+
+        snapshots.revert_to_step(self.tmp, 0)
+
+        self.assertFalse(
+            os.path.exists(os.path.join(self.tmp, "made.py")),
+            "the rewind must restore the tree the run was handed",
+        )
+
+    def test_a_queued_rewind_restores_the_context_window(self):
+        """The API restores the files; this is the loop's half of the same rewind.
+
+        The proof is the *payload*: after a rewind to step 1, the turn step 2 produced is gone from
+        the window, because the model must not be handed history for files that no longer exist.
+        """
+        import threading
+        import time
+
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import run_tool_loop
+        from tools import snapshots
+
+        snapshots.init_snapshots(self.tmp)
+        ledger = self._ledger_with_running("i-rewind")
+        scripted = self._scripted(
+            self._Completion(tool_calls=[{
+                "name": "create_file", "arguments": {"path": "a.py", "content": "a = 1\n"},
+            }]),
+            self._Completion(tool_calls=[{
+                "name": "create_file", "arguments": {"path": "b.py", "content": "b = 1\n"},
+            }]),
+            self._Completion(text="done"),
+        )
+        state = {"n": 0}
+
+        def completer(*, system, messages, tools):
+            state["n"] += 1
+            if state["n"] == 2:
+                # The operator grabs the wheel and rewinds to step 1 while the model is thinking.
+                ledger.interrupt("i-rewind", "hold")
+                ledger.request_rollback("i-rewind", 1)
+            return scripted(system=system, messages=messages, tools=tools)
+
+        events = []
+
+        def release():
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if any(event.get("type") == "intent_paused" for event in list(events)):
+                    ledger.resume("i-rewind", "")
+                    return
+                time.sleep(0.02)
+
+        thread = threading.Thread(target=release, daemon=True)
+        thread.start()
+        with MCPSessionContext(self.tmp) as session:
+            run_tool_loop(
+                session=session, role="coder", system_prompt="sys",
+                user_message="go", completer=completer, intent_id="i-rewind", ledger=ledger,
+                pause_timeout=10.0, emit=events.append, workspace_root=self.tmp,
+            )
+        thread.join(timeout=10)
+
+        self.assertTrue(
+            any("[ROLLBACK]" in str(event.get("text") or "") for event in events),
+            [event.get("type") for event in events],
+        )
+        # The window was rewound with the files: step 1's turn is there, step 2's is not.
+        last = scripted.seen[-1]["messages"]
+        rendered = json.dumps(last)
+        self.assertIn("a.py", rendered)
+        self.assertNotIn("b.py", rendered, "the rewound turn is still in the context window")
+
+
 if __name__ == "__main__":
     unittest.main()

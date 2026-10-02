@@ -156,6 +156,26 @@ class ResumeRequest(BaseModel):
     correction: str = ""
 
 
+class IntentIdRequest(BaseModel):
+    """An operation that names one intent and nothing else. A GET carries it in the query."""
+
+    model_config = _STRICT
+    intent_id: str
+
+
+class RollbackRequest(BaseModel):
+    """Rewind a held run to ``step`` (Phase 35).
+
+    The step is the run's own step number, not an index into a UI list: it is what the shadow's
+    snapshot tags and the per-step ledger rows are keyed on, so the files, the context window and
+    the bill all resolve to the same point.
+    """
+
+    model_config = _STRICT
+    intent_id: str
+    step: int
+
+
 class ConsoleOpenRequest(BaseModel):
     model_config = _STRICT
     backlog: List[Dict[str, Any]] = []
@@ -268,6 +288,11 @@ OPERATIONS: tuple = (
     # are operations, so the intent surface still has no privileged route beside the table.
     Operation("interrupt_intent", "POST", "/api/intent/interrupt", InterruptRequest, _invoke("interrupt_intent")),
     Operation("resume_intent", "POST", "/api/intent/resume", ResumeRequest, _invoke("resume_intent")),
+    # The rewind (Phase 35). A read of the steps a held run can be rewound to, and the rewind
+    # itself. Both are operations, so the intent surface still has no privileged route beside the
+    # table -- including the one the directive names with the id in the path.
+    Operation("get_intent_steps", "GET", "/api/intent/steps", IntentIdRequest, _invoke("get_intent_steps")),
+    Operation("rollback_intent", "POST", "/api/intent/rollback", RollbackRequest, _invoke("rollback_intent")),
 )
 
 

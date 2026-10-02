@@ -53,7 +53,7 @@ class RetentionTestCase(unittest.TestCase):
         self.db_path = os.path.join(self.tmp, "aleth_state.db")
         _write(self.host, "pkg/mod.py", "value = 1\n")
         # A shadow left by an earlier test would be judged by this one's sweep.
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
 
     def _build_ledgers(self):

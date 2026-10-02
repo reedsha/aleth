@@ -99,6 +99,79 @@ export async function dismissSteering() {
   await resumeRun(intentId, "");
 }
 
+// -- the rewind (Phase 35) ----------------------------------------------------------
+
+/**
+ * Rewinds the held run's workspace to the step the operator picked.
+ *
+ * The files are restored by the engine; the context window and the token bill follow when the run
+ * resumes, because those belong to the loop's process and the target travels through the ledger.
+ * So this only has to send the intent and say what happened -- and then re-read the step list,
+ * because the tree has moved.
+ */
+export async function rollbackToStep() {
+  const intentId = state.activeIntentId;
+  const select = DOM.steerStepSelect;
+  const step = select && select.value !== "" ? Number(select.value) : NaN;
+  if (!intentId) {
+    showToast("No paused run to rewind.", "error");
+    return;
+  }
+  if (!Number.isFinite(step)) {
+    showToast("Choose a step to rewind to.", "info");
+    return;
+  }
+  const button = DOM.btnSteerRollback;
+  if (button) button.disabled = true;
+  try {
+    await api.rollback_intent(intentId, step);
+  } catch (err) {
+    showToast(`Could not rewind the run: ${(err && err.message) || err}`, "error");
+    return;
+  } finally {
+    if (button) button.disabled = false;
+  }
+  showToast(`Workspace rewound to step ${step}.`, "success");
+  await loadRollbackSteps();
+}
+
+/**
+ * Fills the step picker from the shadow's snapshots. Never raises.
+ *
+ * A run with no snapshots (an older shadow, or a project that never changed a file) offers nothing
+ * to rewind to, and the control says so rather than pretending to work.
+ */
+export async function loadRollbackSteps() {
+  const select = DOM.steerStepSelect;
+  const button = DOM.btnSteerRollback;
+  if (!select) return;
+  let payload = null;
+  try {
+    payload = await api.get_intent_steps(state.activeIntentId);
+  } catch (_err) {
+    // A read that fails offers nothing to rewind to, and the control says so below.
+  }
+  const steps = (payload && payload.steps) || [];
+  select.textContent = "";
+  if (!steps.length) {
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "no snapshots yet";
+    select.appendChild(empty);
+    if (button) button.disabled = true;
+    return;
+  }
+  if (button) button.disabled = false;
+  // Newest first: the rewind a person wants is usually the step before the damage.
+  steps.slice().reverse().forEach((entry) => {
+    const option = document.createElement("option");
+    option.value = String(entry.step);
+    const note = String(entry.message || "").replace(/^aleth:\s*/, "");
+    option.textContent = `step ${entry.step}${note ? ` \u2014 ${note}` : ""}`;
+    select.appendChild(option);
+  });
+}
+
 async function resumeRun(intentId, correction) {
   const button = DOM.btnSteerSubmit;
   if (button) button.disabled = true;
@@ -139,6 +212,9 @@ export function renderPaused(event) {
   // A repeat `intent_paused` (a resume that was refused, then the loop announcing the hold again)
   // must not stack a second toast on the same fact.
   if (!wasPaused) showToast("The run is paused. Tell the agent what to change.", "info");
+  // The rewind points are the shadow's snapshots, so they are read when the hold opens rather than
+  // carried on every event.
+  loadRollbackSteps();
 }
 
 export function renderResumed() {

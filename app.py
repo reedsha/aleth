@@ -908,6 +908,78 @@ class EngineService:
             return {"success": False, "error": "the intent is not paused, so it cannot be resumed"}
         return {"success": True, "intent_id": str(intent_id or ""), "status": "running"}
 
+    def get_intent_steps(self, intent_id=None):
+        """The steps a held run can be rewound to (Phase 35).
+
+        Read from the shadow's own snapshot repository, not from the ledger: the snapshots *are* the
+        rewind points, and a step whose files never changed has no snapshot of its own to return to
+        (it resolves to the newest one at or before it).
+        """
+        from tools import snapshots, staging
+
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return {"success": False, "error": "a rollback needs the intent it belongs to"}
+        shadow = staging.find_staging(intent_id=resolved)
+        if shadow is None:
+            return {"success": True, "intent_id": resolved, "steps": []}
+        return {
+            "success": True,
+            "intent_id": resolved,
+            "staging_id": shadow.staging_id,
+            "steps": snapshots.steps(shadow.path),
+        }
+
+    def rollback_intent(self, intent_id=None, step=0):
+        """Rewind a *held* run's workspace to ``step`` (Phase 35).
+
+        Only while paused: a rewind is an operator decision made at a hold, and the run must not be
+        writing files while its tree is restored underneath it. The atomic ledger write is the gate
+        -- a conditional ``UPDATE`` that only takes on ``paused_awaiting_input`` -- so the files are
+        never restored under a run that resumed in the meantime.
+
+        The filesystem restore happens here; the context window and the token ledger are rewound by
+        the agent loop when it resumes, from the target this writes. Those are the two halves of one
+        rewind, in the two processes that own them.
+        """
+        from tools import snapshots, staging
+
+        if self._ledger is None:
+            return {"success": False, "error": "no intent ledger is attached"}
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return {"success": False, "error": "a rollback needs the intent it belongs to"}
+        shadow = staging.find_staging(intent_id=resolved)
+        if shadow is None:
+            return {"success": False, "error": "there is no staged workspace to rewind"}
+        target = snapshots.latest_step_at_or_before(shadow.path, int(step))
+        if target is None:
+            return {
+                "success": False,
+                "error": f"there is no snapshot at or before step {int(step)}",
+            }
+        if not self._ledger.request_rollback(resolved, target):
+            return {"success": False, "error": "the run is not paused, so it cannot be rewound"}
+        try:
+            outcome = snapshots.revert_to_step(shadow.path, target)
+        except snapshots.SnapshotError as error:
+            # The target did not take: clear it, so a later resume does not rewind the context to a
+            # step whose files were never restored.
+            self._ledger.request_rollback(resolved, 0)
+            return {"success": False, "error": str(error)}
+        self.emit_event({
+            "type": "log", "agent": "software-architect", "log_type": "decision",
+            "text": f"[ROLLBACK] workspace restored to step {outcome['step']}",
+        })
+        return {
+            "success": True,
+            "intent_id": resolved,
+            "staging_id": shadow.staging_id,
+            "step": outcome["step"],
+            "requested_step": outcome["requested_step"],
+            "steps": snapshots.steps(shadow.path),
+        }
+
     def start_api(self):
         """Bind the local gateway, serving the built frontend and the API from one origin.
 

@@ -370,6 +370,9 @@ def _from_llm(
                 # emits on, so a client following this intent sees the run as it happens. A swarm
                 # child has no bus to reach, so this stays ``None`` there.
                 emit=emit,
+                # The shadow this pass writes into (Phase 35). Its snapshot repository is what lets
+                # the operator rewind a step; empty (a swarm child) simply means no rewind here.
+                workspace_root=workspace_dir,
             )
         except AgentStepLimitExceeded:
             # A model that ran away is a fault, not a planner that returned nothing. Letting it fall

@@ -25,7 +25,7 @@ import { initSidebars, openPlansTab, renderSidebarPlans, setSidebarTab, switchAc
 import { DOM, setAgentCardOpen, state, unresolvedElements } from "./store.js";
 import { simulateWorkflow } from "./visuals.js";
 import { closeDagPanel, toggleDagPanel } from "./dag.js";
-import { dismissSteering, interruptActiveRun, submitSteering } from "./live-run.js";
+import { dismissSteering, interruptActiveRun, rollbackToStep, submitSteering } from "./live-run.js";
 import { editTaskInWorkbench, handleWorkbenchDiscard, handleWorkbenchEdit, handleWorkbenchInput, handleWorkbenchShowDag, handleWorkbenchShowRaw, handleWorkbenchShowTree, initWorkbench, refreshWorkbenchChrome, renderPlanDocument, syncWorkbenchGutterScroll } from "./workbench.js";
 import { closeAuditModal, closeRollbackModal, closeWorkspaceFilesModal, handleAuditResolution, handleConfirmRollback, openAuditModal, openPlanSummaryPanel, openRollbackModal, openWorkspaceFilesModal, renderFilteredWorkspaceFiles } from "./workspace.js";
 
@@ -144,6 +144,8 @@ function initEventListeners() {
   if (DOM.btnInterruptRun) DOM.btnInterruptRun.addEventListener("click", interruptActiveRun);
   if (DOM.btnSteerSubmit) DOM.btnSteerSubmit.addEventListener("click", submitSteering);
   if (DOM.btnSteerCancel) DOM.btnSteerCancel.addEventListener("click", dismissSteering);
+  // The rewind (Phase 35): the step picker is filled when the hold opens, and this sends it.
+  if (DOM.btnSteerRollback) DOM.btnSteerRollback.addEventListener("click", rollbackToStep);
   if (DOM.steerInput) {
     // Ctrl/Cmd+Enter submits, the convention every other composer in the app uses. A bare Enter
     // stays a newline: a steering directive is prose, not a shell command.

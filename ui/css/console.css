@@ -276,6 +276,47 @@
   gap: 8px;
 }
 
+/* The rewind row (Phase 35): pick a snapshot, take the workspace back to it. */
+.steer-revert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.steer-revert-label {
+  flex: none;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.steer-select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-glass);
+  background: var(--bg-secondary);
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.steer-select:focus {
+  outline: none;
+  border-color: var(--accent-amber);
+}
+
+.steer-revert-btn {
+  flex: none;
+  padding: 4px 12px;
+}
+
 .steer-btn {
   padding: 6px 14px;
   border-radius: 8px;

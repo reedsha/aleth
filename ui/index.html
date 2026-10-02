@@ -738,6 +738,13 @@
               </div>
               <textarea class="steer-input" id="steerInput" rows="3"
                         placeholder="e.g. Stop refactoring the CSS; fix the API endpoint only."></textarea>
+              <!-- The rewind (Phase 35). A run that corrupted the tree can be taken back to any
+                   step it snapshotted, and the context window and the bill come back with it. -->
+              <div class="steer-revert">
+                <label class="steer-revert-label" for="steerStepSelect">Rewind workspace to</label>
+                <select class="steer-select" id="steerStepSelect"></select>
+                <button class="steer-btn steer-revert-btn" id="btnSteerRollback" type="button">Revert</button>
+              </div>
               <div class="steer-actions">
                 <button class="steer-btn steer-cancel" id="btnSteerCancel" type="button">Resume without changes</button>
                 <button class="steer-btn steer-submit" id="btnSteerSubmit" type="button">Resume with directive</button>

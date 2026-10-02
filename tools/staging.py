@@ -34,11 +34,14 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
+import sys
 import uuid
 from typing import Any, Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple
 
 from tools import atomic_io
+from tools import snapshots
 from tools.workspace import (
     GIT_TIMEOUT_SECONDS,
     IDENTITY_FILE,
@@ -115,6 +118,36 @@ class StagingWorkspace:
     def with_verification(self, ok: Optional[bool], error: str = "") -> "StagingWorkspace":
         """A copy carrying the verification verdict, written back to the manifest by the caller."""
         return dataclasses.replace(self, verified=ok, verify_error=str(error or ""))
+
+
+def remove_tree(path: str) -> None:
+    """Remove a directory tree, clearing read-only bits as it goes.
+
+    A shadow carries its own git repository (Phase 35), and git writes its loose object files
+    **mode 0444** -- which is exactly what makes a plain ``rmtree`` fail on Windows and leave the
+    shadow, and its read-only objects, behind forever. Clearing the bit and retrying is the whole
+    fix; a failure on one entry is swallowed so the rest of the tree is still removed.
+
+    Public because it is the only safe way to delete anything under the staging base: the test
+    scaffolding needs it too, and a second implementation would drift.
+    """
+    if not os.path.isdir(path):
+        return
+
+    def _force(func, target, _exc) -> None:
+        try:
+            os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+        except OSError:
+            pass
+        try:
+            func(target)
+        except OSError:
+            pass
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_force)
+    else:
+        shutil.rmtree(path, onerror=_force)
 
 
 def staging_base() -> str:
@@ -371,7 +404,7 @@ def create_staging(
     resolved_id = str(staging_id or uuid.uuid4().hex[:STAGING_ID_LENGTH])
     path = os.path.join(staging_base(), resolved_id)
     if os.path.exists(path):
-        shutil.rmtree(path, ignore_errors=True)
+        remove_tree(path)
     try:
         shutil.copytree(host, path, ignore=_copy_ignore(host, _git_workspace_files(host)), symlinks=True)
     except OSError as error:
@@ -387,6 +420,10 @@ def create_staging(
     atomic_io.write_text_atomic(
         os.path.join(path, STAGING_MANIFEST), json.dumps(workspace.to_manifest(), indent=2)
     )
+    # Phase 35: the shadow carries its own snapshot repository, so a run can be rewound. Created
+    # here -- once, at birth -- so the baseline (step 0) is the workspace exactly as handed to the
+    # agent. Best-effort: a shadow without snapshots is still a usable shadow.
+    snapshots.init_snapshots(path)
     return workspace
 
 
@@ -574,7 +611,7 @@ def purge_staging(staging_id: str) -> bool:
     path = os.path.join(staging_base(), str(staging_id))
     if not os.path.isdir(path):
         return False
-    shutil.rmtree(path, ignore_errors=True)
+    remove_tree(path)
     return True
 
 

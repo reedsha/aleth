@@ -13,11 +13,24 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 34)
+## ⚡ 0. Current State at This Handoff (Phase 36)
 
-- **Phases 5 → 34 are complete and CI-green.** Phase 34 (the live HITL dashboard and stream
-  resiliency) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
+- **Phases 5 → 36 are complete and CI-green.** Phases 35-36 (temporal workspace snapshots, zombie
+  eradication) are the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
   what changed most recently.
+- **A run can be rewound (Phase 35).** Every shadow carries its own git repository
+  (`tools/snapshots.py`); `create_staging` commits the workspace as `step 0`, and each
+  file-changing tool call is committed and tagged. `POST /api/intent/rollback` restores the tree
+  (only while paused -- the atomic ledger write is the gate), and the loop restores the context
+  window from a per-step snapshot while `IntentLedger.truncate_to_step` truncates the bill.
+  `GET /api/intent/steps` lists the rewind points; the steering overlay has a step picker.
+- **The engine cleans up after itself (Phase 36).** `install_shutdown_sweep(stage, extra=…)` runs
+  `abort_running_intents` on `atexit`/SIGINT/SIGTERM: every `running` intent becomes
+  `aborted_by_system` (its own terminal status, and it gates new work) before the process leaves.
+  The boot reaper is the container sweep; `sweep_orphaned_networks` runs at every boot because the
+  engine creates no networks, and the claim is checked rather than promised.
+- **Shadows are removable again.** Git writes loose objects mode 0444, which made a plain `rmtree`
+  fail on Windows; all removals go through `staging.remove_tree`.
 - **The stream is rendered, not dropped (Phase 34).** `ui/js/console.js` echoes the loop's
   `agent_thought` / `tool_execution_start` / `tool_execution_complete` / `intent_paused|steered|resumed`
   into the transcript, and `token_budget_update` drives a live burn counter in the console bar
@@ -1549,12 +1562,16 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `9f18ddf` (Phase 33) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `9e632d6` (Phase 34) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
-| Build | `npm run build` | 59 modules; `dist/index.html` 68.50 kB, `index-*.css` 94.38 kB, `index-*.js` 174.31 kB |
-| UI tests | `npx playwright test` | **73 passed** in 22.1 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1277 passed, 23 skipped, 243 subtests** in 99.41 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1295 passed, 5 skipped**, and **0 containers left behind** |
+| Build | `npm run build` | 59 modules |
+| UI tests | `npx playwright test` | **75 passed** in 21.7 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1302 passed, 23 skipped, 243 subtests** in 92.51 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1320 passed, 5 skipped**, and **0 containers left behind** |
+| Snapshots | `tests/test_snapshots.py` | **19 passed** — init at step 0 and idempotent; a no-change step is not committed; monotonic step numbering; a revert restores modified/added/deleted files and cleans uncommitted ones; a step with no snapshot resolves to the state as of it; per-step spend accumulates and truncates; the rollback target is paused-only and drains once; `abort_running` marks running intents and leaves settled and paused ones alone |
+| Loop rewind | `tests/test_mcp.py::SnapshotStepTests` | **2 passed** — a mutating tool call is committed and tagged, and a rewind queued while the run was held restores the *context window* (step 2's turn is gone from the payload) |
+| Rewind UI | `tests/ui/live-run.spec.mjs` | **11 passed** — the picker lists the snapshots newest-first and Revert posts the step; a run with no snapshots disables the control |
+| Shutdown | `tests/test_chaos.py::ShutdownHookTests` + `test_snapshots.py::SystemAbortTests` | **passed** — the teardown runs its extra step, a failing extra step still removes containers, no `network create` exists in the production modules, and the network sweep is a check |
 | Live rendering | `tests/ui/live-run.spec.mjs` | **9 passed** — the loop's thoughts and tool executions reach the console; the burn counter tracks the budget and warns at the cap; Interrupt posts the held intent; `intent_paused` opens the overlay and resume sends the correction; a refused resume keeps the hold; the window follows the run's stream and returns on the terminal event; a reconnect and a reload both hydrate the hold from the ledger |
 | Stream filter | `tests/test_api_gateway.py::IntentStreamFilterTests` + the live filter test | **5 passed** — this intent's frames and untagged lifecycle frames are delivered; another intent's and unparseable frames are dropped |
 | Live stream | `tests/test_mcp.py::SteeringAndStreamTests` | **4 passed** — the loop emits `agent_thought`/`token_budget_update`/`tool_execution_start`/`tool_execution_complete` in order and every frame validates against the bus union; an interrupt holds a run and the correction lands as the last `[user]` message; a pause nobody answers raises; and a correction that beats the next gate is still taken |

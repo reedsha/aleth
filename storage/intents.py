@@ -31,6 +31,7 @@ state to the same file, so it is short transactions and WAL, not an ORM.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
@@ -57,13 +58,31 @@ INTENT_DDL = """
                     -- Phase 33: the user's steering payload, as a JSON array of corrections. Written
                     -- by the interrupt API while the run is paused, drained by the loop when it
                     -- resumes -- so a correction cannot be lost between the two.
-                    pending_input     TEXT NOT NULL DEFAULT '[]'
+                    pending_input     TEXT NOT NULL DEFAULT '[]',
+                    -- Phase 35: the step a paused run should be rewound to when it resumes. Written
+                    -- by the rollback API (which also restores the shadow), drained by the loop
+                    -- exactly once. 0 means "no rollback queued".
+                    rollback_step     INTEGER NOT NULL DEFAULT 0
+                );
+
+                -- Phase 35: what each *step* cost, so a rollback can truncate the bill as well as
+                -- the files. The cumulative columns above are the breaker's fast read; this is the
+                -- ledger behind them, and it is what makes "forget steps 13-15" expressible.
+                CREATE TABLE IF NOT EXISTS intent_step_spend (
+                    intent_id         TEXT NOT NULL,
+                    step              INTEGER NOT NULL,
+                    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    recorded_at       REAL NOT NULL,
+                    PRIMARY KEY (intent_id, step)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_intent_status
                     ON intent_ledger(status);
                 CREATE INDEX IF NOT EXISTS idx_intent_created
                     ON intent_ledger(created_at);
+                CREATE INDEX IF NOT EXISTS idx_intent_step
+                    ON intent_step_spend(intent_id, step);
 """
 
 # New columns go here *and* in the DDL above -- ``CREATE TABLE IF NOT EXISTS`` never adds a column
@@ -72,6 +91,7 @@ INTENT_MIGRATIONS = (
     ("prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("pending_input", "TEXT NOT NULL DEFAULT '[]'"),
+    ("rollback_step", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 # The status a run takes when the user interrupts it (Phase 33). Not terminal: the run is *held*, and
@@ -79,9 +99,15 @@ INTENT_MIGRATIONS = (
 # wrong, a person intervened.
 PAUSED = "paused_awaiting_input"
 
+# The status the engine writes when *it* is what stopped the run (Phase 36): a SIGTERM, a SIGINT or
+# a crash, written by the shutdown hook before the process leaves. Distinct from ``failed`` for the
+# same reason ``PAUSED`` is: nothing the agent did went wrong, the machine did. It is terminal and
+# it gates new work, because the user has to be told their run was cut off.
+ABORTED_BY_SYSTEM = "aborted_by_system"
+
 # The terminal states. `failed` is the one that gates new work; `stopped` is terminal but was the
 # user's own doing, so it is acknowledged by the act of stopping.
-TERMINAL = ("completed", "stopped", "failed")
+TERMINAL = ("completed", "stopped", "failed", ABORTED_BY_SYSTEM)
 
 
 def _loads_input(raw: Any) -> List[str]:
@@ -110,6 +136,12 @@ def apply_intent_schema(connection: sqlite3.Connection) -> None:
     for name, ddl in INTENT_MIGRATIONS:
         if name not in present:
             connection.execute(f"ALTER TABLE intent_ledger ADD COLUMN {name} {ddl}")
+
+
+# The statuses that *gate* new work until the user acknowledges them. ``failed`` is the agent's
+# failure; ``aborted_by_system`` is the engine's own (Phase 36). Both are things the user asked for
+# and did not get, so both have to be seen before another intent is accepted.
+GATING_STATUSES = ("failed", ABORTED_BY_SYSTEM)
 
 
 class IntentLedger:
@@ -389,6 +421,154 @@ class IntentLedger:
         finally:
             connection.close()
 
+    def record_step_spend(self, intent_id: str, step: int, *, prompt: int = 0, completion: int = 0) -> None:
+        """Record what one *step* cost, and add it to the intent's cumulative total.
+
+        Two writes, on purpose. The cumulative columns are what the breaker reads before every
+        call -- one indexed read, no aggregation -- while the per-step rows are the ledger that
+        makes a rollback's truncation expressible (Phase 35). Both are upserts, so a retried step
+        adds to its own row rather than replacing it.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return
+        prompt_tokens = max(0, int(prompt))
+        completion_tokens = max(0, int(completion))
+        if prompt_tokens == 0 and completion_tokens == 0:
+            return
+        connection = _connect(self.path)
+        try:
+            with connection:
+                connection.execute(
+                    "INSERT INTO intent_step_spend"
+                    " (intent_id, step, prompt_tokens, completion_tokens, recorded_at)"
+                    " VALUES (?, ?, ?, ?, ?)"
+                    " ON CONFLICT(intent_id, step) DO UPDATE SET"
+                    " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
+                    " completion_tokens = completion_tokens + excluded.completion_tokens,"
+                    " recorded_at = excluded.recorded_at",
+                    (resolved, int(step), prompt_tokens, completion_tokens, time.time()),
+                )
+        finally:
+            connection.close()
+        self.add_tokens(resolved, prompt=prompt_tokens, completion=completion_tokens)
+
+    def truncate_to_step(self, intent_id: str, step: int) -> Tuple[int, int]:
+        """Forget every step's spend after ``step`` and recompute the cumulative total.
+
+        The bill follows the files: a run rewound to step 12 must not keep paying for steps 13-15.
+        Returns the recomputed ``(prompt_tokens, completion_tokens)``.
+
+        An intent with no per-step rows at all is left alone rather than zeroed: the rows are the
+        authority for the truncation, and inventing a total from an empty ledger would *under*-count
+        a real bill. The current cumulative is returned unchanged in that case.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return (0, 0)
+        connection = _connect(self.path)
+        try:
+            with connection:
+                counted = connection.execute(
+                    "SELECT COUNT(*) FROM intent_step_spend WHERE intent_id = ?", (resolved,)
+                ).fetchone()
+                if not counted or int(counted[0] or 0) == 0:
+                    row = connection.execute(
+                        "SELECT prompt_tokens, completion_tokens FROM intent_ledger"
+                        " WHERE intent_id = ?",
+                        (resolved,),
+                    ).fetchone()
+                    return (int(row[0] or 0), int(row[1] or 0)) if row is not None else (0, 0)
+                connection.execute(
+                    "DELETE FROM intent_step_spend WHERE intent_id = ? AND step > ?",
+                    (resolved, int(step)),
+                )
+                row = connection.execute(
+                    "SELECT COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)"
+                    " FROM intent_step_spend WHERE intent_id = ?",
+                    (resolved,),
+                ).fetchone()
+                prompt_tokens = int(row[0] or 0)
+                completion_tokens = int(row[1] or 0)
+                connection.execute(
+                    "UPDATE intent_ledger SET prompt_tokens = ?, completion_tokens = ?,"
+                    " updated_at = ? WHERE intent_id = ?",
+                    (prompt_tokens, completion_tokens, time.time(), resolved),
+                )
+                return (prompt_tokens, completion_tokens)
+        finally:
+            connection.close()
+
+    def request_rollback(self, intent_id: str, step: int) -> bool:
+        """Queue a rewind to ``step`` for a *paused* run. ``True`` when it took.
+
+        Conditional on ``paused_awaiting_input``: a rewind is an operator decision made at a hold,
+        and the files are restored by the caller in the same breath. The loop drains it on resume
+        (Phase 35), so the context window and the bill are rewound with the files.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return False
+        connection = _connect(self.path)
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE intent_ledger SET rollback_step = ?, updated_at = ?"
+                    " WHERE intent_id = ? AND status = ?",
+                    (max(0, int(step)), time.time(), resolved, PAUSED),
+                )
+                return int(cursor.rowcount or 0) == 1
+        finally:
+            connection.close()
+
+    def drain_rollback(self, intent_id: str) -> int:
+        """Take the queued rewind target, clearing it. ``0`` means none was queued.
+
+        Read-and-clear together, like :meth:`drain_input`: a rewind is applied exactly once even if
+        the loop is paused again while it is being drained.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return 0
+        connection = _connect(self.path)
+        try:
+            with connection:
+                row = connection.execute(
+                    "SELECT rollback_step FROM intent_ledger WHERE intent_id = ?", (resolved,)
+                ).fetchone()
+                if row is None:
+                    return 0
+                target = int(row[0] or 0)
+                if target > 0:
+                    connection.execute(
+                        "UPDATE intent_ledger SET rollback_step = 0, updated_at = ?"
+                        " WHERE intent_id = ?",
+                        (time.time(), resolved),
+                    )
+                return target
+        finally:
+            connection.close()
+
+    def abort_running(self, reason: str, status: str = ABORTED_BY_SYSTEM) -> int:
+        """Mark every ``running`` intent terminal from outside its own run. Returns how many.
+
+        What the engine's shutdown hook calls (Phase 36): a daemon that is dying must not leave an
+        intent ``running`` in the ledger for the next boot to puzzle over -- and the user must be
+        told the run was cut off by the machine, not by the agent. Conditional on ``running`` so it
+        cannot rewrite an intent that already settled: the engine's own terminal write wins.
+        """
+        connection = _connect(self.path)
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE intent_ledger SET status = ?, error = ?, updated_at = ?"
+                    " WHERE status = 'running'",
+                    (str(status), str(reason or ""), time.time()),
+                )
+                return int(cursor.rowcount or 0)
+        finally:
+            connection.close()
+
     def status_of(self, intent_id: str) -> str:
         """The intent's current status, or ``""`` when it is unknown. One indexed read."""
         resolved = str(intent_id or "").strip()
@@ -438,16 +618,20 @@ class IntentLedger:
             connection.close()
 
     def pending_failure(self) -> Optional[Dict[str, Any]]:
-        """The newest failed intent the user has not acknowledged, or ``None``.
+        """The newest terminal failure the user has not acknowledged, or ``None``.
 
-        This is the gate. While it answers a row, the UI must not accept a new intent: the user
-        has not yet been told that the last one did not do what they asked.
+        This is the gate. While it answers a row, the UI must not accept a new intent: the user has
+        not yet been told that the last one did not do what they asked. It covers the engine's own
+        abort as well as the agent's failure (Phase 36) -- a run cut off by a SIGTERM is just as
+        much a run the user is owed an explanation for.
         """
+        placeholders = ", ".join("?" for _ in GATING_STATUSES)
         connection = _connect(self.path)
         try:
             row = connection.execute(
-                "SELECT * FROM intent_ledger WHERE status = 'failed' AND acknowledged_at = 0"
-                " ORDER BY updated_at DESC LIMIT 1"
+                f"SELECT * FROM intent_ledger WHERE status IN ({placeholders})"
+                " AND acknowledged_at = 0 ORDER BY updated_at DESC LIMIT 1",
+                GATING_STATUSES,
             ).fetchone()
             return dict(row) if row is not None else None
         finally:
@@ -469,11 +653,41 @@ class IntentLedger:
                         (time.time(), str(intent_id)),
                     )
                 else:
+                    placeholders = ", ".join("?" for _ in GATING_STATUSES)
                     cursor = connection.execute(
                         "UPDATE intent_ledger SET acknowledged_at = ?"
-                        " WHERE status = 'failed' AND acknowledged_at = 0",
-                        (time.time(),),
+                        f" WHERE status IN ({placeholders}) AND acknowledged_at = 0",
+                        (time.time(), *GATING_STATUSES),
                     )
                 return int(cursor.rowcount or 0)
         finally:
             connection.close()
+
+
+def abort_running_intents(reason: str) -> int:
+    """Mark every ``running`` intent in this project's ledger terminal. Never raises.
+
+    What the engine's shutdown hook calls (Phase 36). A daemon that is dying must not leave an
+    intent ``running`` for the next boot to puzzle over -- and the user has to be told their run was
+    cut off by the *machine*, not by the agent, which is why the status is its own.
+
+    Best effort by contract: a shutdown that cannot tidy is still a shutdown, and an exception on a
+    signal path would replace the sender's exit status with a traceback. A project that has never
+    run has no ledger, and that is not a fault.
+    """
+    try:
+        # Imported lazily: ``storage.db`` builds the state paths, and this module is imported from
+        # inside it on some paths -- a module-level import here would close that loop.
+        from storage.db import default_db_path
+
+        path = default_db_path()
+        if not os.path.isfile(path):
+            return 0
+        return IntentLedger(path).abort_running(str(reason or ""))
+    except Exception as error:
+        print(
+            f"[State] the running intents could not be marked aborted: "
+            f"{type(error).__name__}: {error}",
+            flush=True,
+        )
+        return 0

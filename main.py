@@ -26,9 +26,16 @@ from tools import token_budget
 
 token_budget.install_cache_dir()
 
-from tools.docker_sandbox import install_shutdown_sweep, sweep_orphaned_containers
+from tools.docker_sandbox import (
+    install_shutdown_sweep,
+    sweep_orphaned_containers,
+    sweep_orphaned_networks,
+)
 
 sweep_orphaned_containers("boot")
+# ...and the networks, which the engine creates none of: the sweep exists so that "there is nothing
+# to reap" is a check at every boot rather than a promise in a comment (Phase 36).
+sweep_orphaned_networks("boot")
 
 # The state sweep runs immediately after, and still before the bootloader, for the same reason: a
 # process that died without unwinding leaves a shadow workspace no run can reach any more and an
@@ -44,7 +51,25 @@ sweep_state()
 # manager. This one removes **every** managed container rather than only the ones whose owner has
 # died -- at shutdown the owner is this process -- so the engine never leaves a container behind
 # for the next boot to find. A SIGKILL is precisely the case the boot sweep above exists for.
-install_shutdown_sweep("shutdown")
+#
+# Phase 36 adds the other half: the same hook marks every ``running`` intent ``aborted_by_system``
+# in the ledger. A daemon that dies must not leave an intent running with no process behind it --
+# and the user has to be told their run was cut off by the *machine*, not by the agent. The ledger
+# write is idempotent and conditional on ``running``, so the engine's own terminal write always
+# wins and a repeated signal is harmless.
+from storage.intents import abort_running_intents
+
+
+def _abort_running_intents() -> None:
+    aborted = abort_running_intents("the engine was shut down before this run finished")
+    if aborted:
+        print(
+            f"[State] shutdown marked {aborted} running intent(s) aborted_by_system",
+            flush=True,
+        )
+
+
+install_shutdown_sweep("shutdown", extra=_abort_running_intents)
 
 # The bootloader runs here, before anything imports the registry or ``app`` -- both of which open
 # the SQLite store on import. The fleet is loaded, validated and *proven* first: a system that

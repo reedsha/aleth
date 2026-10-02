@@ -232,6 +232,8 @@ export function initDOMElements() {
   DOM.steerInput = document.getElementById("steerInput");
   DOM.btnSteerSubmit = document.getElementById("btnSteerSubmit");
   DOM.btnSteerCancel = document.getElementById("btnSteerCancel");
+  DOM.steerStepSelect = document.getElementById("steerStepSelect");
+  DOM.btnSteerRollback = document.getElementById("btnSteerRollback");
 
   // Live preview (the workspace's generated interface, rendered in place)
   DOM.btnTogglePreview = document.getElementById("btnTogglePreview");

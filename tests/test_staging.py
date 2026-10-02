@@ -53,7 +53,7 @@ class StagingModuleTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
         # A clean slate for the plan-keyed lookups: a staging left by an earlier test would
         # otherwise answer a query this test did not make.
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
 
     def _host_with_files(self):
@@ -177,7 +177,7 @@ class GitFilteredStagingTests(unittest.TestCase):
     def setUp(self):
         self.host = tempfile.mkdtemp(prefix="aleth_git_host_")
         self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
 
     def _repo(self):
@@ -226,7 +226,7 @@ class ExecutionRootTests(unittest.TestCase):
         self.addCleanup(workspace.set_project_dir, self._original)
         self.addCleanup(workspace.set_execution_dir, None)
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
 
     def test_the_execution_root_defaults_to_the_project_and_follows_a_pointer(self):
         self.assertEqual(workspace.get_execution_dir(), workspace.get_project_dir())
@@ -249,7 +249,7 @@ class ShadowRunTests(unittest.TestCase):
         workspace.set_project_dir(self.host)
         self.addCleanup(workspace.set_project_dir, self._original_project)
         self.addCleanup(workspace.set_execution_dir, None)
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
         self.service = EngineService()
 
@@ -411,7 +411,7 @@ class DurableWriteTests(unittest.TestCase):
         self.host = tempfile.mkdtemp(prefix="aleth_durable_host_")
         self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
         _write(self.host, "pkg/mod.py", "value = 1\n")
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
 
     @staticmethod
@@ -474,7 +474,7 @@ class OrphanedStagingTests(unittest.TestCase):
         self.host = tempfile.mkdtemp(prefix="aleth_orphan_host_")
         self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
         _write(self.host, "pkg/mod.py", "value = 1\n")
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
 
     def test_a_shadow_awaiting_review_is_kept(self):
@@ -526,7 +526,7 @@ class MergeGateTests(unittest.TestCase):
         workspace.set_project_dir(self.host)
         self.addCleanup(workspace.set_project_dir, self._original_project)
         self.addCleanup(workspace.set_execution_dir, None)
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
         self.service = EngineService()
 
@@ -635,7 +635,7 @@ class ExecutionWiringTests(unittest.TestCase):
         workspace.set_project_dir(self.host)
         self.addCleanup(workspace.set_project_dir, self._original_project)
         self.addCleanup(workspace.set_execution_dir, None)
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
 
     def test_run_approved_artifact_applies_into_the_execution_root(self):
@@ -731,7 +731,7 @@ class ManifestShapeTests(unittest.TestCase):
     def setUp(self):
         self.host = tempfile.mkdtemp(prefix="aleth_manifest_host_")
         self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
 
     def test_the_manifest_is_json_with_the_run_identity(self):
@@ -764,7 +764,7 @@ class ExecutionRootBifurcationTests(unittest.TestCase):
         workspace.set_project_dir(self.host)
         self.addCleanup(workspace.set_project_dir, self._original_project)
         self.addCleanup(workspace.set_execution_dir, None)
-        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        staging.remove_tree(staging.staging_base())
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
         self.service = EngineService()
 

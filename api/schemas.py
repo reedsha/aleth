@@ -111,6 +111,9 @@ class IntentLedgerEntry(BaseModel):
     # The queued steering payload (Phase 33): corrections a paused run has been handed and not yet
     # drained. On the wire so the UI can show that its input is pending rather than lost.
     pending_input: str = "[]"
+    # The step a held run will be rewound to when it resumes (Phase 35). On the wire so a reloaded
+    # window can show the hold it is in, not only the hold it just asked for.
+    rollback_step: int = 0
 
 
 class IntentQueueStatus(BaseModel):

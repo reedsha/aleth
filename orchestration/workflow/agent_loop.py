@@ -31,6 +31,7 @@ from __future__ import annotations
 import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from tools import snapshots
 from tools import token_budget
 
 # The paused status is the ledger's vocabulary, not this module's: one spelling, defined where the
@@ -233,6 +234,7 @@ def _gate(
     emit: Optional[Callable[[Dict[str, Any]], None]],
     pause_timeout: float,
     steering: List[Dict[str, Any]],
+    rollback: Optional[List[int]] = None,
 ) -> None:
     """The liveness, interrupt and steering gate. Called before every call and every tool.
 
@@ -253,7 +255,8 @@ def _gate(
     status = _status_of(ledger, intent_id)
     if status == PAUSED:
         _await_resume(
-            ledger, intent_id, emit=emit, pause_timeout=pause_timeout, steering=steering
+            ledger, intent_id, emit=emit, pause_timeout=pause_timeout, steering=steering,
+            rollback=rollback,
         )
         return
     if status != "running":
@@ -300,6 +303,7 @@ def _await_resume(
     emit: Optional[Callable[[Dict[str, Any]], None]],
     pause_timeout: float,
     steering: List[Dict[str, Any]],
+    rollback: Optional[List[int]] = None,
 ) -> None:
     """Hold the run while the user decides, then take their correction. Raises on timeout/abort."""
     import time
@@ -322,6 +326,12 @@ def _await_resume(
     corrections = _take_steering(ledger, intent_id, emit=emit, steering=steering)
     _emit(emit, {"type": "intent_resumed", "intent_id": intent_id,
                  "corrections": corrections})
+    # A rewind the operator asked for while the run was held (Phase 35). The files are already back
+    # -- the rollback API restored the shadow -- so this is the other half of the same rewind, and
+    # the loop applies it before it builds the next payload.
+    target = _drain_rollback(ledger, intent_id)
+    if target and rollback is not None:
+        rollback.append(target)
 
 
 def _drain_input(ledger: Any, intent_id: str) -> List[str]:
@@ -334,6 +344,60 @@ def _drain_input(ledger: Any, intent_id: str) -> List[str]:
             file=sys.stderr,
         )
         return []
+
+
+def _drain_rollback(ledger: Any, intent_id: str) -> int:
+    """Take the queued rewind target, or ``0`` when none was asked for. Never raises."""
+    try:
+        return int(ledger.drain_rollback(intent_id) or 0)
+    except Exception as error:
+        print(
+            f"[agent-loop] the rollback request could not be read: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 0
+
+
+def _rewind(
+    ledger: Any,
+    intent_id: str,
+    target: int,
+    step_snapshots: Dict[int, Tuple[List[List[Dict[str, Any]]], str, List[Dict[str, Any]]]],
+    turns: List[List[Dict[str, Any]]],
+    steering: List[Dict[str, Any]],
+) -> Optional[str]:
+    """Restore the loop's context to ``target`` and truncate the bill. Returns the summary, or None.
+
+    The files are already back -- the rollback API restored the shadow before it wrote the target
+    into the ledger -- so this is the other half of the same rewind. The context window and the
+    token ledger must match the tree, or the model is handed history for files that no longer
+    exist and the breaker counts a bill the run no longer owes.
+
+    A step with no context snapshot (it never ran, or it belongs to an earlier pass) still has its
+    bill truncated; the window is left as it is rather than emptied, because an emptied window
+    would make the model re-derive work the operator did not ask it to redo.
+    """
+    _truncate_bill(ledger, intent_id, target)
+    snapshot = step_snapshots.get(int(target))
+    if snapshot is None:
+        return None
+    turns[:] = snapshot[0]
+    steering[:] = snapshot[2]
+    return snapshot[1]
+
+
+def _truncate_bill(ledger: Any, intent_id: str, step: int) -> None:
+    """Forget the spend of every step after ``step``. Best effort, never fatal."""
+    if ledger is None or not str(intent_id or "").strip():
+        return
+    try:
+        ledger.truncate_to_step(intent_id, int(step))
+    except Exception as error:
+        print(
+            f"[agent-loop] the token ledger could not be truncated: "
+            f"{type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
 
 
 def _spent(ledger: Any, intent_id: str) -> int:
@@ -351,12 +415,16 @@ def _spent(ledger: Any, intent_id: str) -> int:
     return int(prompt) + int(completion)
 
 
-def _record_spend(ledger: Any, intent_id: str, prompt: int, completion: int) -> None:
-    """Add this call's cost to the intent's total. Best effort, and never fatal."""
+def _record_spend(ledger: Any, intent_id: str, prompt: int, completion: int, step: int = 0) -> None:
+    """Add this call's cost to the intent's total -- and to the step's. Best effort, never fatal.
+
+    Two ledgers on purpose (Phase 35): the cumulative columns are what the breaker reads, and the
+    per-step rows are what a rewind truncates. ``record_step_spend`` writes both.
+    """
     if ledger is None or not str(intent_id or "").strip():
         return
     try:
-        ledger.add_tokens(intent_id, prompt=prompt, completion=completion)
+        ledger.record_step_spend(intent_id, int(step), prompt=prompt, completion=completion)
     except Exception as error:
         print(
             f"[agent-loop] the token spend could not be recorded: {type(error).__name__}: {error}",
@@ -388,6 +456,7 @@ def run_tool_loop(
     max_tokens: Optional[int] = None,
     emit: Optional[Callable[[Dict[str, Any]], None]] = None,
     pause_timeout: float = PAUSE_TIMEOUT_SECONDS,
+    workspace_root: str = "",
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Drive ``completer`` through the tools bound for ``role``.
 
@@ -409,6 +478,12 @@ def run_tool_loop(
     ``emit`` is the live stream (Phase 33): structured ``agent_thought``,
     ``tool_execution_start``/``_complete`` and ``token_budget_update`` events as they happen. It is
     an observer -- the durable record is the ledger -- so a failing emitter never stops a run.
+
+    ``workspace_root`` is the shadow the tools write into. When it carries a snapshot repository
+    (Phase 35), every step that changes a file is committed and tagged, so the operator can rewind
+    the run -- and the loop keeps one context snapshot per step, so the window and the bill rewind
+    with the files. Empty means "no rewind for this loop", which is what a swarm child and a bare
+    unit test get.
     """
     tools = session.get_bound_tools(role) if session is not None else []
     by_name = {tool.name: tool for tool in tools}
@@ -419,9 +494,45 @@ def run_tool_loop(
     summary = ""
     dropped = False
     transcript: List[Dict[str, Any]] = []
+    # Phase 35. The rewind needs three things to line up: the files (the snapshot repository), the
+    # context window (one snapshot per step), and the bill (the per-step rows in the ledger).
+    step_snapshots: Dict[int, Tuple[List[List[Dict[str, Any]]], str, List[Dict[str, Any]]]] = {}
+    pending_rollback: List[int] = []
+    snapshots_on = bool(workspace_root) and snapshots.is_repository(workspace_root)
+    # Numbered for the life of the *shadow*, not the pass: the autonomous loop drives several
+    # planner passes under one intent and they share one shadow, so per-pass numbering would let
+    # pass two's step 1 overwrite pass one's snapshot.
+    run_step = snapshots.next_step(workspace_root) if snapshots_on else 1
+
+    def sync_after_gate() -> bool:
+        """Run the gate, then apply any rewind the gate woke from. Reassigns ``summary``.
+
+        A rewind is applied *here* rather than only at the top of a step because the hold can be
+        observed from the per-call gate too -- and a payload built after it must already reflect
+        the restored window.
+
+        Returns ``True`` when the context was rewound. The caller then **drops the step it was in
+        the middle of**: those tool calls were decided against a context the operator has just
+        discarded, and executing them would write files from the history that was undone.
+        """
+        nonlocal summary
+        _gate(ledger, intent_id, emit=emit, pause_timeout=pause_timeout,
+              steering=steering, rollback=pending_rollback)
+        if not pending_rollback:
+            return False
+        target = pending_rollback.pop(0)
+        restored = _rewind(ledger, intent_id, target, step_snapshots, turns, steering)
+        if restored is not None:
+            summary = restored
+        _emit(emit, {
+            "type": "log", "agent": "software-architect", "log_type": "decision",
+            "text": f"[ROLLBACK] rewound the workspace and the context to step {target}",
+        })
+        return True
 
     for _step in range(max_steps):
-        _gate(ledger, intent_id, emit=emit, pause_timeout=pause_timeout, steering=steering)
+        step = run_step if snapshots_on else _step + 1
+        sync_after_gate()
         _check_budget(ledger, intent_id, max_tokens)
 
         payload = _payload(
@@ -435,9 +546,9 @@ def run_tool_loop(
         text = str(getattr(completion, "text", "") or "")
         calls = list(getattr(completion, "tool_calls", None) or [])
         completion_tokens = token_budget.count_tokens(text)
-        _record_spend(ledger, intent_id, prompt_tokens, completion_tokens)
+        _record_spend(ledger, intent_id, prompt_tokens, completion_tokens, step)
         _emit(emit, {
-            "type": "agent_thought", "intent_id": intent_id, "step": _step + 1,
+            "type": "agent_thought", "intent_id": intent_id, "step": step,
             "text": text, "tool_calls": [str((c or {}).get("name") or "") for c in calls],
         })
         _emit(emit, {
@@ -453,11 +564,14 @@ def run_tool_loop(
         turn: List[Dict[str, Any]] = [
             {"role": "assistant", "content": text, "tool_calls": calls}
         ]
+        discarded = False
         for call in calls:
             # Re-checked per call, not only per step: a tool *mutates*, and an abort, an interruption
-            # or a budget that landed while the model was thinking must not be overtaken by the write
+            # or a budget that landed while the model was thinking must not be overturned by the write
             # it planned.
-            _gate(ledger, intent_id, emit=emit, pause_timeout=pause_timeout, steering=steering)
+            if sync_after_gate():
+                discarded = True
+                break
             _check_budget(ledger, intent_id, max_tokens)
             name = str((call or {}).get("name") or "")
             arguments = dict((call or {}).get("arguments") or {})
@@ -478,10 +592,25 @@ def run_tool_loop(
                 "type": "tool_execution_complete", "intent_id": intent_id,
                 "tool": name, "result": result,
             })
+            # Phase 35: snapshot the step if the tool changed a file. The test is git's -- the
+            # shadow's own repository -- not a list of "tools that write", because a shell command
+            # writes files too and a list would be a claim that rots. Silent by contract: a snapshot
+            # that cannot be taken must never stop the run producing the work.
+            if snapshots_on:
+                snapshots.commit_step(workspace_root, step, f"step {step}: {name}")
             transcript.append({"tool": name, "arguments": arguments, "result": result})
             turn.append({"role": "tool", "name": name, "content": result})
+        if discarded:
+            # The context was rewound mid-step: the calls this step produced were decided against
+            # history the operator has undone, so the step is dropped and re-planned in the next
+            # iteration, from the restored window.
+            continue
         turns.append(turn)
         summary, dropped = _compact(turns, summary, summarizer, dropped)
+        # The window and the summary as they stood when this step ended: exactly what the next step
+        # will be handed, and therefore exactly what a rewind to this step must restore.
+        step_snapshots[step] = (list(turns), summary, list(steering))
+        run_step += 1
 
     _record_step_limit(ledger, intent_id, role, max_steps)
     raise AgentStepLimitExceeded(STEP_LIMIT_MESSAGE)

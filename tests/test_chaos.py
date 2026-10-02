@@ -542,10 +542,12 @@ class BootSweepTests(unittest.TestCase):
         with open(os.path.join(REPO_ROOT, "main.py"), "r", encoding="utf-8") as handle:
             source = handle.read()
         boot = source.index('sweep_orphaned_containers("boot")')
-        shutdown = source.index('install_shutdown_sweep("shutdown")')
+        networks = source.index('sweep_orphaned_networks("boot")')
+        shutdown = source.index('install_shutdown_sweep("shutdown"')
         bootloader = source.index("boot_or_exit()")
 
         self.assertLess(boot, bootloader, "the boot sweep must precede the tier probe")
+        self.assertLess(networks, bootloader, "the network sweep must precede the tier probe")
         self.assertLess(
             shutdown, bootloader,
             "the shutdown sweep must be armed before anything can exit",
@@ -553,6 +555,9 @@ class BootSweepTests(unittest.TestCase):
         # The old registration was ``atexit`` only, and it spared a live owner -- at shutdown the
         # owner is this process, so it swept nothing. The install is what covers a kill as well.
         self.assertNotIn("atexit.register(sweep_orphaned_containers", source)
+        # Phase 36: the same teardown marks the running intents aborted. A daemon that dies must not
+        # leave an intent running with no process behind it.
+        self.assertIn("abort_running_intents", source)
 
 
 class NetworkBoundaryTests(unittest.TestCase):
@@ -748,6 +753,56 @@ class NetworkIsolationTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("CONNECTED", result.stdout)
+
+
+class ShutdownHookTests(unittest.TestCase):
+    """Phase 36: the teardown marks the running intents, and no network is left to leak."""
+
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, fake_docker_env())
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def test_the_teardown_runs_its_extra_step(self):
+        """The ledger abort is the other half of a shutdown: a container is a resource leak, but a
+        ``running`` intent with no process behind it is a lie the next boot has to unpick."""
+        ran = []
+        sweep = docker_sandbox.build_shutdown_sweep("test", extra=lambda: ran.append(True))
+
+        sweep()
+
+        self.assertEqual(ran, [True])
+
+    def test_a_failing_extra_step_still_removes_the_containers(self):
+        """Independently guarded: a ledger that cannot be written must not leave a container
+        running, and a container sweep that fails must not skip the ledger."""
+        def broken():
+            raise RuntimeError("the ledger is locked")
+
+        sweep = docker_sandbox.build_shutdown_sweep("test", extra=broken)
+        sweep()  # must not raise
+
+    def test_no_network_is_created_to_leak(self):
+        """The engine creates no docker networks: every sandbox runs on a built-in, so a
+        container's namespace is created with the container and destroyed with it. This pins the
+        claim by searching the production modules for the call that would create one."""
+        offenders = []
+        for root, _dirs, files in os.walk(os.path.join(REPO_ROOT, "tools")):
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                path = os.path.join(root, name)
+                with open(path, "r", encoding="utf-8") as handle:
+                    source = handle.read()
+                if '"network", "create"' in source or "'network', 'create'" in source:
+                    offenders.append(os.path.relpath(path, REPO_ROOT))
+        self.assertEqual(offenders, [], "the engine must not create docker networks")
+
+    def test_the_network_sweep_is_a_check_not_a_promise(self):
+        """With no daemon there is nothing to list, and the sweep says so rather than raising."""
+        self.assertEqual(docker_sandbox.managed_networks(), [])
+        self.assertEqual(docker_sandbox.purge_orphaned_networks(), [])
+        self.assertEqual(docker_sandbox.sweep_orphaned_networks("test"), 0)
 
 
 if __name__ == "__main__":

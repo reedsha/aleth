@@ -70,6 +70,10 @@ export const OPERATIONS = {
   // releases it carrying the user's correction, which is injected into the agent's context.
   interrupt_intent: { verb: "POST", path: "/api/intent/interrupt", args: ["intent_id", "note"] },
   resume_intent: { verb: "POST", path: "/api/intent/resume", args: ["intent_id", "correction"] },
+  // The rewind (Phase 35): `get_intent_steps` lists the snapshots a held run can be rewound to,
+  // and `rollback_intent` restores the workspace, the context and the bill to one of them.
+  get_intent_steps: { verb: "GET", path: "/api/intent/steps", args: ["intent_id"] },
+  rollback_intent: { verb: "POST", path: "/api/intent/rollback", args: ["intent_id", "step"] },
   ui_ready: { verb: "POST", path: "/api/ui/ready", args: [] },
   // The one intent. It is an operation -- it is *queued* rather than executed, which is a fact
   // about the service behind it, not a second transport. `execute_plan` asks the engine to drive
