@@ -68,7 +68,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools import env_sanitizer, process_control, stream_drain
 
@@ -558,35 +558,53 @@ def active_containers() -> List[str]:
         return list(_ACTIVE)
 
 
-def remove_container(container: str) -> bool:
+def remove_container(container: str, *, detached: bool = False) -> bool:
     """Force-remove one container. Idempotent, and never raises.
 
     ``rm -f`` on an already-gone container succeeds, which is what makes every caller here safe
     to retry: the signal handler, the timeout path and the sweeper can all race each other.
+
+    ``detached`` is for the one caller that is itself being killed -- the exec server's signal
+    handler. The removal runs in **its own session**, so the client's grace-expiry SIGKILL, aimed
+    at the server's process group, cannot reach it: the container dies even when the server does
+    not live long enough to see it happen. Without this the two budgets disagree -- the handler's
+    removal is bounded by :data:`KILL_TIMEOUT_SECONDS` while the grace is
+    ``process_control.DEFAULT_GRACE_SECONDS`` -- and a slow removal under load was killed
+    mid-flight, leaving the container orphaned by the very signal that was meant to reap it.
+
+    Output goes to ``DEVNULL`` rather than a pipe in that mode: a detached child must not hold a
+    pipe whose reader is about to die.
     """
     try:
         argv = [*docker_bin(), "rm", "-f", container]
     except EnvironmentError:
         return False
+    if detached:
+        options: Dict[str, Any] = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        spawn: Dict[str, Any] = {"start_new_session": True}
+    else:
+        options = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace"}
+        spawn = {}
     try:
-        completed = subprocess.run(
-            argv, capture_output=True, text=True, timeout=KILL_TIMEOUT_SECONDS,
-            encoding="utf-8", errors="replace",
-        )
+        completed = subprocess.run(argv, timeout=KILL_TIMEOUT_SECONDS, **options, **spawn)
     except (OSError, subprocess.SubprocessError):
         return False
     return completed.returncode == 0
 
 
-def purge_active_containers() -> List[str]:
+def purge_active_containers(*, detached: bool = False) -> List[str]:
     """Force-remove every container this process still has in flight.
 
     What the exec server's signal handler calls. Deliberately not a docker *query*: this runs on
     a signal, and the names are already known here -- a query would add a round trip to a path
     that has a grace period measured in seconds.
+
+    ``detached`` is passed through to :func:`remove_container`, and the handler asks for it: the
+    process this is cleaning up after is about to be SIGKILLed, and a removal that kill can
+    interrupt is a removal that did not happen.
     """
     names = active_containers()
-    removed = [name for name in names if remove_container(name)]
+    removed = [name for name in names if remove_container(name, detached=detached)]
     for name in names:
         _unregister_active(name)
     return removed

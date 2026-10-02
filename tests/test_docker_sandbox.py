@@ -514,5 +514,56 @@ class RealContainerTests(unittest.TestCase):
         )
 
 
+class ContainerRemovalContractTests(unittest.TestCase):
+    """How a container is removed, asserted without any daemon.
+
+    The signal handler's removal is the one case where the process doing the removing is about to
+    be killed, so *how* the runtime is invoked is the guarantee -- not how long it took.
+    """
+
+    def _kwargs_for(self, *, detached):
+        """The kwargs the removal hands the runtime, with the runtime pinned to the double.
+
+        ``remove_container`` resolves the client through ``docker_bin()`` first, and this machine
+        has no docker client on PATH, so the env pin is what lets the call reach the spawn at all.
+        """
+        captured = {}
+
+        def _run(argv, **kwargs):
+            captured.update(kwargs)
+            return mock.Mock(returncode=0)
+
+        with mock.patch.dict(os.environ, fake_docker_env()), \
+                mock.patch.object(docker_sandbox.subprocess, "run", _run):
+            self.assertTrue(docker_sandbox.remove_container("aleth-exec-x", detached=detached))
+        return captured
+
+    def test_a_plain_removal_is_awaited_and_captured(self):
+        kwargs = self._kwargs_for(detached=False)
+        self.assertTrue(kwargs.get("capture_output"))
+        self.assertNotIn("start_new_session", kwargs)
+
+    def test_the_signal_paths_removal_is_detached(self):
+        """It must survive the SIGKILL aimed at its parent's process group.
+
+        Without its own session the removal is in the group the client is about to kill, so a
+        removal slower than the grace period is killed mid-flight and the container outlives the
+        server that was supposed to reap it.
+        """
+        kwargs = self._kwargs_for(detached=True)
+        self.assertTrue(kwargs.get("start_new_session"))
+        # No pipe: a detached child must not hold a pipe whose reader is about to die.
+        self.assertEqual(kwargs.get("stdout"), subprocess.DEVNULL)
+        self.assertEqual(kwargs.get("stderr"), subprocess.DEVNULL)
+
+    def test_the_purge_passes_the_mode_through(self):
+        with mock.patch.object(docker_sandbox, "_ACTIVE", {"aleth-exec-x": "eid"}), \
+                mock.patch.object(docker_sandbox, "remove_container") as remove:
+            remove.return_value = True
+            removed = docker_sandbox.purge_active_containers(detached=True)
+        remove.assert_called_once_with("aleth-exec-x", detached=True)
+        self.assertEqual(removed, ["aleth-exec-x"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -411,6 +411,13 @@ def install_container_reaper() -> None:
     substitute for the timeout path inside ``run_isolated`` -- that covers a command that runs too
     long; this covers the *server* being killed underneath a command.
 
+    The removal is requested **detached** (``purge_active_containers(detached=True)``), and that
+    detail is the whole guarantee. The client sends SIGTERM, waits its grace period, then SIGKILLs
+    this process's whole group -- and this handler's ``docker rm`` child used to be *in* that
+    group, so a removal slower than the grace (under a parallel suite, common) was killed
+    mid-flight and the container outlived the server it belonged to. In its own session the
+    removal cannot be reached by that kill, so the container dies either way.
+
     A no-op where the platform cannot deliver these signals, and on a thread that is not the main
     one (``signal.signal`` refuses both): the guarantee is then the client's group kill, which is
     what the handler exists to complement.
@@ -418,7 +425,7 @@ def install_container_reaper() -> None:
 
     def _reap(signum, _frame):
         try:
-            removed = docker_sandbox.purge_active_containers()
+            removed = docker_sandbox.purge_active_containers(detached=True)
             print(
                 f"[exec-server] signal {signum}: removed {len(removed)} in-flight container(s)",
                 file=sys.stderr,

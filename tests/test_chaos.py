@@ -381,7 +381,11 @@ class ContainerLifecycleTests(unittest.TestCase):
             # SIGTERM first (then SIGKILL after the grace period): the handler's one chance.
             client.close()
 
-            deadline = time.monotonic() + 2
+            # The verdict is "the container does not outlive its server", and the removal is
+            # bounded by the perimeter's own kill budget -- a ``docker rm -f`` round trip, which
+            # under a parallel suite is seconds, not the tenths a fixed 2 s window assumed. The
+            # window matches that budget; the assertion itself is unchanged.
+            deadline = time.monotonic() + docker_sandbox.KILL_TIMEOUT_SECONDS
             while time.monotonic() < deadline and docker_sandbox.managed_containers():
                 time.sleep(0.1)
             self.assertEqual(
