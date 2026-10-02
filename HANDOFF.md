@@ -13,12 +13,28 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 27)
+## ⚡ 0. Current State at This Handoff (Phase 28)
 
-- **Phases 5 → 27 are complete and CI-green.** Phase 27 (context threading & observability
-  lock-in) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what
+- **Phases 5 → 28 are complete and CI-green.** Phase 28 (concurrency safety, SQLite WAL & network
+  airgaps) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what
   changed most recently.
-- **A fault is now joined to the intent that caused it (Phase 27).** `intent_id` is threaded from
+- **The correlation id is thread-safe (Phase 28).** `tools/run_context.py` is a
+  `contextvars.ContextVar`, not a module global: with a thread per run and a `threading.excepthook`,
+  a global meant thread B's id filed thread A's crash. Anything off the run's thread asks
+  `IntentQueue.current` instead — `stop_execution` runs on the API thread, where a context variable
+  is invisible by design.
+- **The supervisor records its children's deaths (Phase 28).** `Swarm._handle_failure` writes
+  `kind=WORKER_TERMINATED` / `detail="Worker terminated unexpectedly"` joined to the tick's intent,
+  captured into the `Future` callback at dispatch. A dying child cannot write its own autopsy.
+- **One configured SQLite connection (Phase 28).** `storage/connection.py` owns
+  `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` and `foreign_keys=ON`; all eight
+  call sites use it. The default rollback journal locks the whole file for a write, which turns a
+  concurrent poll into `database is locked` — a crashed engine rather than a slow one.
+- **Egress is severed for good (Phase 28).** The plan-declared `net` capability and its
+  `--allow-network` flag are **gone**; `SANDBOX_NETWORK = "none"` is a constant and the builders
+  have no parameter for it. A plan that still declares `net` is told it has no effect. This reverses
+  Phase 12's opt-in — see `MASTER_CONTEXT.md` §2.
+- **A fault is joined to the intent that caused it (Phase 27).** `intent_id` is threaded from
   `_launch_run` through the registry, the runner, `WorkflowContext`, the planner and into
   `run_tool_loop` — and across the process boundary into swarm children, riding the role descriptor
   (`Swarm.tick(intent_id=…)` → `role_payload` → `worker.execute_node`), because a child cannot look
@@ -1460,12 +1476,15 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `34ac423` (Phase 26) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `6f45c37` (Phase 27) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.0 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1207 passed, 22 skipped, 235 subtests** in 84.24 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1223 passed, 5 skipped**, and **0 containers left behind** — `-n4`, not `-n auto`: this VM has 7.8 GB |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1209 passed, 22 skipped, 236 subtests** in 81.69 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1225 passed, 5 skipped**, and **0 containers left behind** — this is the leg that exercises WAL under real parallelism and the airgap against a real daemon |
+| Context isolation | `tests/test_run_context.py` | **5 passed** — two concurrent threads hold different ids (barrier-deterministic), a new thread does not inherit its parent's, and an unhandled exception reports `intent=<id>` with the traceback |
+| Supervisor faults | `tests/test_swarm.py::TestReactiveTick::test_a_dead_worker_is_recorded_by_the_parent` (+ the negative case) | **passed** — a dead worker writes one `WORKER_TERMINATED` row joined to the tick's intent, and a successful worker writes none |
+| Airgap | `tests/test_chaos.py::NetworkBoundaryTests` + `NetworkIsolationTests` | **passed** — no parameter can widen the network (pinned by `inspect.signature`), declaring `net` is reported and does not unseal, and on a live daemon the container cannot connect |
 | Correlation | `tests/test_mcp.py::ToolLoopTests::test_the_ceiling_is_recorded_against_the_intent` + `tests/test_telemetry.py::AgentFaultSchemaTests` | **passed** — the row carries `intent_id`, a blank one is refused (`ValueError`), the join narrows to one run, and a pre-Phase-27 ledger is migrated (`intent_id` added, `session_id` dropped) with its old rows intact |
 | Liveness gate | `tests/test_mcp.py::RunLivenessGateTests` | **3 passed** — an abort during the model's turn stops the loop before the tool mutates (`written.py` never appears), the fault write is skipped for a dead intent, and an ungated loop still has its ceiling |
 | Crash log | `tests/test_run_context.py` | **3 passed** — the id round-trips and clears, an unhandled exception reports `intent=i-crash` with the traceback, and an idle process prints `intent=<none>` |
