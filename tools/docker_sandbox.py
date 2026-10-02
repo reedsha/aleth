@@ -83,6 +83,11 @@ DEFAULT_IMAGE = "aleth-sandbox:latest"
 # The image contract lives beside the repo it serves. It describes the sandbox image only.
 DOCKERFILE = Path(__file__).resolve().parent.parent / "docker" / "sandbox.Dockerfile"
 
+# How long a base-image pull may take. Bounded for the same reason every other wait here is: a
+# registry that stops answering must not hold the engine. A pull is a *host* operation -- it is how
+# a runtime image the engine does not build becomes available -- and it happens once, then caches.
+PULL_TIMEOUT_SECONDS = 600
+
 DEFAULT_MEMORY_MB = 512
 DEFAULT_CPUS = 1.0
 DEFAULT_MAX_PROCESSES = 64
@@ -352,6 +357,35 @@ def build_image(image_name: Optional[str] = None) -> bool:
     return True
 
 
+def pull_image(image_name: str) -> bool:
+    """Pull a base image from its registry. Returns whether it succeeded. Never raises.
+
+    The counterpart of :func:`build_image` for a runtime the engine does not build: a JavaScript
+    project's sandbox is ``node:20-alpine``, and that is pulled rather than built -- building *our*
+    Dockerfile under someone else's tag would be a lie, and requiring a manual pull before every new
+    runtime is the friction that makes a monolith look attractive.
+
+    It is a host-level operation, not sandbox egress: the engine fetches a base image the same way a
+    person would. Bounded, and reported, so it is never a silent network access.
+    """
+    try:
+        argv = [*docker_bin(), "pull", image_name]
+    except EnvironmentError:
+        return False
+    print(f"[sandbox] pulling {image_name} (one time, then cached)", file=sys.stderr)
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, timeout=PULL_TIMEOUT_SECONDS,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if completed.returncode != 0:
+        return False
+    _VERIFIED_IMAGES.add(image_name)
+    return True
+
+
 def _build_once(image_name: str) -> bool:
     """Build under a cross-process lock, re-checking after it is held.
 
@@ -394,9 +428,13 @@ def ensure_image(image_name: Optional[str] = None) -> str:
     if image_present(target):
         return target
     if target != DEFAULT_IMAGE:
+        # A runtime image the engine does not build: pull it, once, rather than refusing and making
+        # every new language a manual chore (Phase 30).
+        if pull_image(target):
+            return target
         raise SandboxError(
-            f"the sandbox image {target!r} is not present, and {DOCKERFILE.name} does not build it; "
-            f"build {target!r} or unset {IMAGE_ENV}"
+            f"the sandbox image {target!r} is not present and could not be pulled; "
+            f"run `docker pull {target}` or set {IMAGE_ENV} to an image you have"
         )
     if not DOCKERFILE.is_file():
         raise SandboxError(
@@ -900,6 +938,7 @@ def run_isolated(
     cpus: float = DEFAULT_CPUS,
     max_processes: int = DEFAULT_MAX_PROCESSES,
     network: str = SANDBOX_NETWORK,
+    image: Optional[str] = None,
 ) -> IsolatedResult:
     """Run ``command`` in a container rooted at ``cwd``, or raise :class:`SandboxError`.
 
@@ -909,13 +948,18 @@ def run_isolated(
 
     The network is sealed by default (see :func:`build_command`). ``network`` exists for the
     deterministic setup phase and nothing else; the model-facing surface never sets it.
+
+    ``image`` is the **runtime** the command runs in (Phase 30): resolved per project from its own
+    manifests by ``tools.project_phases.detect_runtime``. It defaults to the engine's own sandbox
+    image, which is the Python toolchain; a JavaScript project gets ``node:20-alpine`` instead, so no
+    single image has to carry every language.
     """
     root = Path(cwd).resolve()
     if not root.is_dir():
         raise SandboxError(f"the workspace root {str(root)!r} is not a directory")
 
     try:
-        target = ensure_image()
+        target = ensure_image(image)
         execution_id = uuid.uuid4().hex
         name = f"aleth-exec-{execution_id[:12]}"
         argv = build_command(

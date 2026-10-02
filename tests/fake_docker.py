@@ -29,6 +29,7 @@ Optional knobs, read from the environment:
   Windows client does when the daemon is down (the trap ``available()`` must not fall into);
 * ``FAKE_DOCKER_IMAGE_MISSING`` -- answer ``image inspect`` with "no such image";
 * ``FAKE_DOCKER_BUILD_FAIL``  -- fail ``docker build``;
+* ``FAKE_DOCKER_PULL_FAIL``   -- fail ``docker pull`` (the base-image path);
 * ``FAKE_DOCKER_FLOOD_MB``    -- write N megabytes to stdout in 64 KB chunks, bracketed by a
   ``HEAD-MARKER`` and a ``TAIL-MARKER``, to exercise the bounded stream drainer.
 """
@@ -113,6 +114,19 @@ def _image_inspect() -> int:
     return 0
 
 
+def _pull() -> int:
+    """``docker pull <image>`` -- the base-image path (Phase 30).
+
+    ``FAKE_DOCKER_PULL_FAIL`` makes it fail, which is how the *refusal* path is exercised without a
+    registry.
+    """
+    if os.environ.get("FAKE_DOCKER_PULL_FAIL"):
+        sys.stderr.write("Error response from daemon: pull access denied\n")
+        return 1
+    sys.stdout.write("Status: Downloaded newer image\n")
+    return 0
+
+
 def _build() -> int:
     if os.environ.get("FAKE_DOCKER_BUILD_FAIL"):
         sys.stderr.write("The command '/bin/sh -c pip install ...' returned a non-zero code: 1\n")
@@ -189,6 +203,8 @@ def main(argv: list) -> int:
         return _image_inspect()
     if subcommand == "build":
         return _build()
+    if subcommand == "pull":
+        return _pull()
     if subcommand == "rm":
         return 0
     if subcommand == "run":

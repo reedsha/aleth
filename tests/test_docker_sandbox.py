@@ -432,14 +432,30 @@ class ImageContractTests(unittest.TestCase):
                 docker_sandbox.ensure_image()
         self.assertIn("could not be built", str(caught.exception))
 
-    def test_an_absent_custom_image_is_an_error_not_a_build(self):
-        """The repo's Dockerfile builds the sandbox image and nothing else."""
-        env = {**fake_docker_env(FAKE_DOCKER_IMAGE_MISSING="1"),
-               docker_sandbox.IMAGE_ENV: "mine:1"}
+    def test_an_absent_runtime_image_is_pulled_not_built(self):
+        """A runtime the engine does not own is fetched, never built under its tag (Phase 30).
+
+        Building ``sandbox.Dockerfile`` under ``node:20-alpine`` would be a lie; requiring a manual
+        pull before every new language is the friction that makes a monolith look attractive.
+        """
+        env = {**fake_docker_env(FAKE_DOCKER_IMAGE_MISSING="1", FAKE_DOCKER_LOG=self.log),
+               docker_sandbox.IMAGE_ENV: "node:20-alpine"}
+        with mock.patch.dict(os.environ, env):
+            self.assertEqual(docker_sandbox.ensure_image(), "node:20-alpine")
+
+        calls = _invocations(self.log)
+        self.assertIn(["pull", "node:20-alpine"], calls, calls)
+        self.assertFalse([call for call in calls if call and call[0] == "build"],
+                         "the engine's own Dockerfile was used for someone else's tag")
+
+    def test_a_pull_that_fails_is_a_refusal(self):
+        env = {**fake_docker_env(FAKE_DOCKER_IMAGE_MISSING="1", FAKE_DOCKER_PULL_FAIL="1"),
+               docker_sandbox.IMAGE_ENV: "node:20-alpine"}
         with mock.patch.dict(os.environ, env):
             with self.assertRaises(docker_sandbox.SandboxError) as caught:
                 docker_sandbox.ensure_image()
-        self.assertIn("mine:1", str(caught.exception))
+        self.assertIn("node:20-alpine", str(caught.exception))
+        self.assertIn("docker pull", str(caught.exception))
 
     def test_a_run_refuses_when_the_image_cannot_be_provided(self):
         """The refusal reaches the command path: a missing image is never a host run."""

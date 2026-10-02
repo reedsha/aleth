@@ -59,11 +59,58 @@ class PhaseDetectionTests(unittest.TestCase):
         self.assertIn("npm install", project_phases.detect_setup_command(self.root))
 
     def test_a_test_script_is_what_makes_a_javascript_suite_a_suite(self):
+        """With no test script there is no suite -- and the *syntax* fallback takes over (Phase 30).
+
+        A free pass is exactly what the gate must not give: a ``package.json`` with no tests still
+        has to parse before a human is asked to review it.
+        """
         self._write("package.json", json.dumps({"name": "x"}))
-        self.assertEqual(project_phases.detect_verify_command(self.root), "")
+        fallback = project_phases.detect_verify_command(self.root)
+        self.assertNotIn("npm test", fallback)
+        self.assertIn("node --check", fallback)
 
         self._write("package.json", json.dumps({"name": "x", "scripts": {"test": "jest"}}))
         self.assertIn("npm test", project_phases.detect_verify_command(self.root))
+
+    def test_a_python_project_with_no_suite_falls_back_to_compileall(self):
+        self._write("pyproject.toml", "[project]\nname = 'x'\n")
+        # ``pyproject.toml`` alone *is* the suite marker, so remove it and keep the runtime.
+        self._write("setup.py", "from setuptools import setup\nsetup()\n")
+        os.remove(os.path.join(self.root, "pyproject.toml"))
+        self.assertIn("compileall", project_phases.detect_verify_command(self.root))
+
+    def test_the_runtime_decides_the_image(self):
+        self._write("requirements.txt", "requests\n")
+        self.assertEqual(project_phases.detect_runtime(self.root), project_phases.PYTHON_RUNTIME)
+        self.assertEqual(project_phases.detect_image(self.root), project_phases.PYTHON_IMAGE)
+
+        os.remove(os.path.join(self.root, "requirements.txt"))
+        self._write("package.json", "{}")
+        self.assertEqual(project_phases.detect_runtime(self.root), project_phases.NODE_RUNTIME)
+        self.assertEqual(project_phases.detect_image(self.root), project_phases.NODE_IMAGE)
+
+    def test_a_polyglot_project_must_declare_its_image(self):
+        """Refused rather than guessed: verifying half a repository is not a verdict."""
+        self._write("requirements.txt", "requests\n")
+        self._write("package.json", "{}")
+        with self.assertRaises(ValueError) as caught:
+            project_phases.detect_runtime(self.root)
+        self.assertIn("both", str(caught.exception))
+
+        self._write(project_phases.DECLARATION_FILE, json.dumps({"image": "my-polyglot:1"}))
+        self.assertEqual(project_phases.detect_image(self.root), "my-polyglot:1")
+
+    def test_the_setup_timeout_is_hard_and_bounded(self):
+        """The one phase with egress must not be able to hold the queue forever (Phase 30)."""
+        self.assertLessEqual(project_phases.DEFAULT_SETUP_TIMEOUT_SECONDS, 120)
+        self._write("requirements.txt", "requests\n")
+        self._write(project_phases.DECLARATION_FILE,
+                    json.dumps({"setup_timeout_seconds": 999999}))
+        # A human may raise it, up to the ceiling -- never past it.
+        self.assertEqual(
+            project_phases._declared_timeout(self.root, "setup", 120),
+            project_phases.MAX_SETUP_TIMEOUT_SECONDS,
+        )
 
     def test_a_python_project_verifies_with_pytest(self):
         self._write("pytest.ini", "[pytest]\n")
@@ -85,6 +132,7 @@ class PhaseDetectionTests(unittest.TestCase):
         self.assertIn("pip install", project_phases.detect_setup_command(self.root))
 
     def test_a_project_with_nothing_to_run_returns_none(self):
+        """No manifest at all: nothing to install, and nothing to verify it with."""
         self.assertIsNone(project_phases.run_setup(self.root))
         self.assertIsNone(project_phases.run_verification(self.root))
 
