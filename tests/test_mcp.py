@@ -1062,6 +1062,228 @@ class RunLivenessGateTests(MCPServerTestCase):
                 )
 
 
+class ContextWindowTests(MCPServerTestCase):
+    """Phase 31: the payload is bounded, and the model is told what it lost.
+
+    A linear transcript reaches a hundred thousand tokens by turn fifteen, and every later call pays
+    for the whole history again. These pin the two halves of the fix: a summary when a compressor is
+    available, and an explicit truncation notice when there is not.
+    """
+
+    class _Completion:
+        def __init__(self, text="", tool_calls=None):
+            self.text = text
+            self.tool_calls = tool_calls or []
+
+    def _scripted(self, *turns):
+        """A completer that records every payload it was handed."""
+        remaining = list(turns)
+        seen = []
+
+        def completer(*, system, messages, tools):
+            seen.append({"system": system, "messages": messages})
+            return remaining.pop(0) if remaining else self._Completion(text="done")
+
+        completer.seen = seen
+        return completer
+
+    def _forever(self, count=12):
+        """``count`` tool-calling turns, then a plain answer.
+
+        The trailing answer matters: without it the loop exhausts its steps and raises instead of
+        returning, and every assertion below would be reading a raised exception. Callers pass
+        ``max_steps - 1`` so the answer lands inside the budget.
+        """
+        calls = [self._Completion(tool_calls=[
+            {"name": "read_file", "arguments": {"path": "mod.py"}}
+        ])] * count
+        return calls + [self._Completion(text="done")]
+
+    def _run(self, completer, **kwargs):
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import run_tool_loop
+
+        self._write("mod.py", "x = 1\n")
+        with MCPSessionContext(self.tmp) as session:
+            return run_tool_loop(
+                session=session, role="coder", system_prompt="SYS",
+                user_message="loop", completer=completer, **kwargs
+            )
+
+    def test_a_long_run_sends_a_summary_and_a_bounded_window(self):
+        from orchestration.workflow.agent_loop import CONTEXT_WINDOW_TURNS
+
+        calls = []
+
+        def summarizer(older, previous):
+            calls.append(older)
+            return "the agent read mod.py twelve times"
+
+        completer = self._scripted(*self._forever(11))
+        self._run(completer, max_steps=12, summarizer=summarizer)
+
+        last = completer.seen[-1]["messages"]
+        roles = [message["role"] for message in last]
+        self.assertEqual(roles[0], "system", "the summary must lead the payload")
+        self.assertIn("Rolling state summary", last[0]["content"])
+        self.assertEqual(last[1], {"role": "user", "content": "loop"},
+                         "the task is pinned, never compressed away")
+        # The verbatim window is the last few turns: one assistant + one tool each.
+        self.assertLessEqual(roles.count("assistant"), CONTEXT_WINDOW_TURNS + 1)
+        self.assertTrue(calls, "the compressor was never asked")
+
+    def test_without_a_compressor_the_model_is_told_what_was_dropped(self):
+        from orchestration.workflow.agent_loop import TRUNCATION_NOTICE
+
+        completer = self._scripted(*self._forever(11))
+        self._run(completer, max_steps=12)
+
+        last = completer.seen[-1]["messages"]
+        roles = [message["role"] for message in last]
+        self.assertEqual(roles[0], "system", roles)
+        self.assertIn(TRUNCATION_NOTICE, last[0]["content"])
+        self.assertIn("shadow workspace state", last[0]["content"])
+
+    def test_the_payload_does_not_grow_with_the_run(self):
+        """The property that matters: once the window is full, turn twenty costs what turn ten did.
+
+        The *first* payloads are naturally tiny -- there is no history yet -- so the comparison is
+        between two points after the window has filled, not against the empty start.
+        """
+        completer = self._scripted(*self._forever(19))
+        self._run(completer, max_steps=20)
+
+        sizes = [len(str(entry["messages"])) for entry in completer.seen]
+        settled = sizes[8]  # the window is full and the drop has started by here
+        self.assertLessEqual(sizes[-1], settled * 1.2,
+                             f"the payload grew with the run: {settled} -> {sizes[-1]}")
+        self.assertLessEqual(max(sizes[8:]), settled * 1.2,
+                             f"the payload is not bounded after the window fills: {sizes[8:]}")
+
+    def test_a_short_run_has_no_summary_and_no_notice(self):
+        from orchestration.workflow.agent_loop import TRUNCATION_NOTICE
+
+        completer = self._scripted(*self._forever(2))
+        self._run(completer, max_steps=3)
+
+        for entry in completer.seen:
+            for message in entry["messages"]:
+                if message["role"] == "system":
+                    self.assertNotIn(TRUNCATION_NOTICE, message["content"])
+                    self.assertNotIn("Rolling state summary", message["content"])
+
+    def test_a_failing_compressor_falls_back_rather_than_raising(self):
+        from orchestration.workflow.agent_loop import TRUNCATION_NOTICE
+
+        def broken(older, previous):
+            raise RuntimeError("the summariser is down")
+
+        completer = self._scripted(*self._forever(11))
+        self._run(completer, max_steps=12, summarizer=broken)
+
+        self.assertIn(TRUNCATION_NOTICE, completer.seen[-1]["messages"][0]["content"])
+
+
+class TokenBudgetTests(MCPServerTestCase):
+    """Phase 32: the bill is bounded, and the number is durable."""
+
+    class _Completion:
+        def __init__(self, text="", tool_calls=None):
+            self.text = text
+            self.tool_calls = tool_calls or []
+
+    def _ledger_with_running(self, intent_id):
+        from api.intents import Intent
+        from storage.db import default_db_path, get_store
+        from storage.intents import IntentLedger
+
+        get_store()  # applies the telemetry schema, as a boot does
+        ledger = IntentLedger(default_db_path())
+        intent = Intent(id=intent_id, action_type="custom", message="go",
+                        action_params={}, enqueued_at=0.0)
+        ledger.record(intent)
+        self.assertTrue(ledger.claim(intent))
+        return ledger
+
+    def _run(self, completer, **kwargs):
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import run_tool_loop
+
+        self._write("mod.py", "x = 1\n")
+        with MCPSessionContext(self.tmp) as session:
+            return run_tool_loop(
+                session=session, role="coder", system_prompt="SYS",
+                user_message="loop", completer=completer, **kwargs
+            )
+
+    def _forever(self, count=8):
+        return [self._Completion(tool_calls=[
+            {"name": "read_file", "arguments": {"path": "mod.py"}}
+        ])] * count + [self._Completion(text="done")]
+
+    def test_the_spend_is_recorded_in_the_ledger(self):
+        ledger = self._ledger_with_running("i-spend")
+
+        self._run(
+            lambda *, system, messages, tools: self._Completion(text="done"),
+            intent_id="i-spend", ledger=ledger,
+        )
+
+        prompt, completion = ledger.token_totals("i-spend")
+        self.assertGreater(prompt, 0, "a call cost nothing?")
+        self.assertGreaterEqual(completion, 0)
+
+    def test_the_breaker_stops_the_loop_before_the_next_call(self):
+        from tools.token_budget import TokenBudgetExceeded
+
+        ledger = self._ledger_with_running("i-broke")
+        calls = []
+
+        def completer(*, system, messages, tools):
+            calls.append(messages)
+            return self._Completion(tool_calls=[
+                {"name": "read_file", "arguments": {"path": "mod.py"}}
+            ])
+
+        with self.assertRaises(TokenBudgetExceeded) as caught:
+            self._run(completer, intent_id="i-broke", ledger=ledger, max_tokens=1)
+
+        # The first call happened -- nothing had been spent yet, so the check could not fire -- and
+        # the *second* was refused, which is the point: the spend is counted before the next request.
+        self.assertEqual(len(calls), 1)
+        # ...and the refusal carries the number, because the number is the point.
+        self.assertIn("spent", str(caught.exception))
+        self.assertIn("budget of 1", str(caught.exception))
+
+    def test_a_budget_already_spent_refuses_immediately(self):
+        from tools.token_budget import TokenBudgetExceeded
+
+        ledger = self._ledger_with_running("i-empty")
+        ledger.add_tokens("i-empty", prompt=10_000, completion=10_000)
+
+        with self.assertRaises(TokenBudgetExceeded) as caught:
+            self._run(
+                lambda *, system, messages, tools: self._Completion(text="done"),
+                intent_id="i-empty", ledger=ledger, max_tokens=1000,
+            )
+        self.assertIn("20000 tokens", str(caught.exception))
+
+    def test_no_ledger_means_no_budget_but_the_ceiling_still_fires(self):
+        """An ungated loop is still bounded: the step ceiling is the other half."""
+        from orchestration.workflow.agent_loop import AgentStepLimitExceeded
+
+        with self.assertRaises(AgentStepLimitExceeded):
+            self._run(self._scripted_forever(), max_steps=2)
+
+    def _scripted_forever(self, count=4):
+        remaining = list(self._forever(count))
+
+        def completer(*, system, messages, tools):
+            return remaining.pop(0) if remaining else self._Completion(text="done")
+
+        return completer
+
+
 class ToolResultBudgetTests(MCPServerTestCase):
     """Phase 26: no tool result may blow the model's context window.
 

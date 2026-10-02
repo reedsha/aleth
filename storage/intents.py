@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 # The queue and the ledger share one file with the workflow's task writes, so the connection is
 # configured centrally (``storage.connection``: WAL, ``synchronous=NORMAL``, a bounded wait).
@@ -47,7 +47,12 @@ INTENT_DDL = """
                     error           TEXT NOT NULL DEFAULT '',
                     created_at      REAL NOT NULL,
                     updated_at      REAL NOT NULL,
-                    acknowledged_at REAL NOT NULL DEFAULT 0
+                    acknowledged_at REAL NOT NULL DEFAULT 0,
+                    -- Phase 32: what the run has *spent*, cumulative. Here rather than in the loop's
+                    -- memory because the loop is one process of several -- a swarm child spends
+                    -- tokens too -- and a budget that only one of them can see is not a budget.
+                    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_intent_status
@@ -55,6 +60,13 @@ INTENT_DDL = """
                 CREATE INDEX IF NOT EXISTS idx_intent_created
                     ON intent_ledger(created_at);
 """
+
+# New columns go here *and* in the DDL above -- ``CREATE TABLE IF NOT EXISTS`` never adds a column
+# to a table that already exists.
+INTENT_MIGRATIONS = (
+    ("prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 # The terminal states. `failed` is the one that gates new work; `stopped` is terminal but was the
 # user's own doing, so it is acknowledged by the act of stopping.
@@ -70,6 +82,12 @@ def _connect(db_path: str) -> sqlite3.Connection:
 def apply_intent_schema(connection: sqlite3.Connection) -> None:
     """Create the ledger on a caller's connection, so a test can build the real table."""
     connection.executescript(INTENT_DDL)
+    # ``PRAGMA table_info`` is read positionally on purpose: this is called with a bare connection
+    # (no ``row_factory``), and the column name is index 1.
+    present = {row[1] for row in connection.execute("PRAGMA table_info(intent_ledger)")}
+    for name, ddl in INTENT_MIGRATIONS:
+        if name not in present:
+            connection.execute(f"ALTER TABLE intent_ledger ADD COLUMN {name} {ddl}")
 
 
 class IntentLedger:
@@ -224,6 +242,44 @@ class IntentLedger:
                     (str(reason or ""), time.time(), resolved),
                 )
                 return int(cursor.rowcount or 0) == 1
+        finally:
+            connection.close()
+
+    def add_tokens(self, intent_id: str, *, prompt: int = 0, completion: int = 0) -> None:
+        """Add what one call spent to this intent's cumulative total. One statement.
+
+        An ``UPDATE`` with ``+=`` rather than a read-modify-write: several processes can be spending
+        against the same intent (the swarm's children plan too), and a read-then-write would lose
+        whichever increment landed in between.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved or (int(prompt) == 0 and int(completion) == 0):
+            return
+        self._write(
+            "UPDATE intent_ledger SET prompt_tokens = prompt_tokens + ?,"
+            " completion_tokens = completion_tokens + ?, updated_at = ? WHERE intent_id = ?",
+            (max(0, int(prompt)), max(0, int(completion)), time.time(), resolved),
+        )
+
+    def token_totals(self, intent_id: str) -> Tuple[int, int]:
+        """``(prompt_tokens, completion_tokens)`` spent so far, or ``(0, 0)``. One indexed read.
+
+        The authority the loop's breaker consults before every call and every tool execution: the
+        count is durable, so it survives the process that spent it and covers a run split across
+        the parent and its swarm children.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return (0, 0)
+        connection = _connect(self.path)
+        try:
+            row = connection.execute(
+                "SELECT prompt_tokens, completion_tokens FROM intent_ledger WHERE intent_id = ?",
+                (resolved,),
+            ).fetchone()
+            if row is None:
+                return (0, 0)
+            return (int(row["prompt_tokens"] or 0), int(row["completion_tokens"] or 0))
         finally:
             connection.close()
 

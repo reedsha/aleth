@@ -13,11 +13,25 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 30)
+## ⚡ 0. Current State at This Handoff (Phase 32)
 
-- **Phases 5 → 30 are complete and CI-green.** Phase 30 (dynamic runtimes, syntax fallbacks,
-  supply-chain bounding) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only
-  points at what changed most recently.
+- **Phases 5 → 32 are complete and CI-green.** Phases 31-32 (rolling context compression, hard token
+  bounding) are the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what
+  changed most recently.
+- **The context is not linear (Phase 31).** The payload is the immutable system prompt, a **rolling
+  summary** of the older turns, and the last `CONTEXT_WINDOW_TURNS = 4` turns verbatim. Past
+  `COMPRESS_AFTER_TURNS = 5`, `_compact` folds the rest with an injected `summarizer` (the cheapest
+  configured slot, `tier_0`); no summarizer falls back to a FIFO drop plus an explicit
+  `TRUNCATION_NOTICE` — sticky, so the model is told on every later turn. The original user message
+  is pinned and never compressed.
+- **The bill is bounded (Phase 32).** `tools/token_budget.py` counts each call (tiktoken when an
+  encoding loads offline, else the documented estimate); `IntentLedger` accumulates
+  `prompt_tokens`/`completion_tokens`; `TokenBudgetExceeded` is checked **before every LLM call and
+  every tool execution** against `MAX_INTENT_TOKENS = 250000` (configurable via
+  `ALETH_MAX_INTENT_TOKENS`).
+- **The Node syntax check batches its arguments (Phase 32).** `find ... -exec node --check {} +`
+  with the build-output directories pruned, not a shell glob: expanding a compiled frontend into one
+  argv is how the check fails with E2BIG on the repository it protects.
 - **One runtime per project, not a monolith (Phase 30).** `docker/sandbox.Dockerfile` is the Python
   toolchain and carries no other language; `tools.project_phases.detect_runtime` reads the project's
   manifests and `detect_image` picks `aleth-sandbox:latest` or `node:20-alpine` (pulled on first use
@@ -1503,12 +1517,14 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `3544896` (Phase 29) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `93460f1` (Phase 30) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.0 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1235 passed, 23 skipped, 236 subtests** in 78.38 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1252 passed, 5 skipped**, and **0 containers left behind** — on the rebuilt image, verified in-container as Python-only |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1256 passed, 23 skipped, 236 subtests** in 81.58 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1273 passed, 5 skipped**, and **0 containers left behind** |
+| Rolling window | `tests/test_mcp.py::ContextWindowTests` | **6 passed** — a summary leads the payload and the window is bounded; without a compressor the exact notice appears; a failing compressor falls back; a short run has neither; and the payload stops growing once the window fills |
+| Token bounding | `tests/test_mcp.py::TokenBudgetTests` + `tests/test_token_budget.py` | **passed** — the spend is recorded in the ledger, the breaker stops the loop before the next call and names the count, an already-spent budget refuses immediately, an ungated loop still hits the step ceiling, the columns migrate, and the Node check batches its arguments |
 | Runtime selection | `tests/test_project_phases.py` | **17 passed** — the manifests decide the runtime and the image, a polyglot project is refused until it declares one, the syntax fallback fires for Python and Node, and the setup timeout is hard and clamped |
 | Gate sealing | `tests/test_staging.py::MergeGateTests` | **7 passed** — a failed verdict refuses, a pass merges, an **unrun** gate refuses, a shadow with no verdict refuses, a rejection is unaffected, and the verdict survives a reload |
 | Image contract | `tests/test_docker_sandbox.py::ImageContractTests` | **passed** — an absent runtime image is *pulled*, not built under its tag, and a failed pull is a refusal naming `docker pull` |

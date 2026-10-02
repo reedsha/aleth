@@ -104,6 +104,10 @@ class IntentLedgerEntry(BaseModel):
     created_at: float
     updated_at: float
     acknowledged_at: float = 0.0
+    # What the run has spent (Phase 32). On the wire because the UI is where a user asks what a run
+    # cost, and the ledger is the only durable answer.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class IntentQueueStatus(BaseModel):

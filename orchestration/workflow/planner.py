@@ -208,6 +208,54 @@ def _skills_for(capabilities: Optional[Sequence[str]]) -> str:
         return ""
 
 
+def _context_summarizer() -> Optional[Callable[[str, str], str]]:
+    """The rolling compressor's secondary model, or ``None`` when there is not one to use.
+
+    The cheapest *configured* slot, deliberately: this is a bookkeeping call that rewrites history,
+    not a decision, and paying architect-grade rates to summarise is the same waste the compression
+    exists to prevent. When System 2 is disabled, or no tier resolves, this answers ``None`` and the
+    loop falls back to dropping the older turns with a notice -- which is still bounded.
+
+    The prompt is fixed and short; the *content* is whatever the loop hands it, so a project's own
+    code can appear in the transcript it rewrites. That is the same material the primary model was
+    already given, so it is not a new disclosure -- but it is why this is a real call with the
+    caller's own endpoint rather than a third-party service.
+    """
+    try:
+        from orchestration.model_router import BOOT_SLOTS, endpoint_for_tier
+        from orchestration import system2
+
+        if not system2.is_enabled():
+            return None
+        endpoint = endpoint_for_tier(BOOT_SLOTS[0])
+    except Exception:
+        return None
+    if not endpoint:
+        return None
+
+    def _summarize(older: str, previous: str) -> str:
+        parts = ["Rewrite the agent transcript below as a short factual summary."]
+        parts.append(
+            "Keep: what the task asked for, what was changed and where, what failed and why, and "
+            "any constraint the agent must keep obeying. Drop: raw tool output, repeated text."
+        )
+        parts.append("Answer with the summary only, in under 200 words.")
+        if previous:
+            parts.append(f"A summary of still-older turns, to fold in:\n{previous}")
+        parts.append(f"Transcript:\n{older}")
+        completion = system2.complete(
+            model=endpoint["route"],
+            system="You compress an agent's working memory without losing what matters.",
+            user="\n\n".join(parts),
+            base_url=endpoint.get("base_url"),
+            api_key=endpoint.get("api_key"),
+            max_tokens=512,
+        )
+        return str(getattr(completion, "text", "") or "")
+
+    return _summarize
+
+
 def _intent_ledger(intent_id: str) -> Any:
     """The ledger the loop's liveness gate reads, or ``None`` when there is no intent to gate on.
 
@@ -287,6 +335,7 @@ def _from_llm(
             RunAborted,
             run_tool_loop,
         )
+        from tools.token_budget import TokenBudgetExceeded
 
         def _loop_completer(*, system: str, messages: List[Any], tools: List[Any]) -> Any:
             return system2.complete_with_tools(
@@ -308,12 +357,14 @@ def _from_llm(
                 # An injected completer drives the loop too, so a test can script the model's
                 # decisions while the tools still go over the real MCP transport.
                 completer=completer if completer is not None else _loop_completer,
-                # The correlation id and the liveness gate (Phase 27). The ledger is built here
-                # rather than looked up inside the loop, because the loop also runs in a swarm
-                # *child* process, where ``default_db_path()`` would resolve against the child's
-                # own idea of the plan directory rather than the parent's.
+                # The correlation id, the liveness gate and the token ledger (Phases 27-32). The
+                # ledger is resolved from the published state root, so a swarm child reads the
+                # parent's -- it cannot derive it.
                 intent_id=intent_id,
                 ledger=ledger,
+                # The rolling compressor (Phase 31): a cheap secondary model folds the older turns
+                # into a summary. Absent or failing, the loop drops them and says so.
+                summarizer=_context_summarizer(),
             )
         except AgentStepLimitExceeded:
             # A model that ran away is a fault, not a planner that returned nothing. Letting it fall
@@ -323,6 +374,11 @@ def _from_llm(
         except RunAborted:
             # ...and the same for an abort: a run that was stopped underneath this pass is not a
             # model that failed to answer, and reporting it as one hides the stop (Phase 28).
+            raise
+        except TokenBudgetExceeded:
+            # ...and for the budget: a run that spent its allowance is a fact about the *user's
+            # money*, and reporting it as "the model could not plan" would hide the only number
+            # that matters (Phase 32).
             raise
         except Exception:
             return None

@@ -191,8 +191,10 @@ def detect_syntax_command(project_dir: str) -> str:
     ``node --check`` over the sources for JavaScript (or the project's own ``build`` script, which is
     a stronger check when it exists).
 
-    The JavaScript loop skips ``node_modules``: a dependency tree's syntax is not this project's
-    verdict, and walking it would make the check slow enough to time out.
+    The JavaScript check prunes ``node_modules`` and the build-output directories, and batches its
+    arguments with ``-exec ... +`` rather than a shell glob: a compiled frontend can hold thousands
+    of artefacts, and expanding them into one argv is how the check fails with E2BIG on the very
+    repository it was meant to protect.
     """
     runtime = detect_runtime(project_dir)
     if runtime == PYTHON_RUNTIME:
@@ -203,10 +205,16 @@ def detect_syntax_command(project_dir: str) -> str:
         scripts = package.get("scripts") if isinstance(package, dict) else None
         if isinstance(scripts, dict) and str(scripts.get("build") or "").strip():
             return "npm run build --silent"
+        # ``find ... -exec node --check {} +``, **not** a shell glob: a React or Next.js tree can
+        # hold thousands of compiled artefacts, and expanding them into one argv is how a check
+        # fails with E2BIG ("argument list too long") on the repository it was meant to protect.
+        # ``-exec ... +`` batches what the OS will accept, and the build-output directories are
+        # pruned because a bundle's syntax is not this project's verdict.
         return (
-            "for f in $(find . -path ./node_modules -prune -o -type f "
-            "\\( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \\) -print); do "
-            "node --check \"$f\" || exit 1; done"
+            "find . -type f \\( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \\) "
+            "-not -path '*/node_modules/*' -not -path '*/dist/*' -not -path '*/.next/*' "
+            "-not -path '*/build/*' -not -path '*/out/*' -not -path '*/coverage/*' "
+            "-exec node --check {} +"
         )
     return ""
 
