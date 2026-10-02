@@ -95,7 +95,7 @@ def _refuse_if_blocked(ctx: Any, plan_file: str, task: Mapping[str, Any]) -> boo
     return True
 
 
-def _write_checked(agent_id: str, filename: str, content: str) -> str:
+def _write_checked(agent_id: str, filename: str, content: str, *, root: str = "") -> str:
     """Writes a deliverable and makes a failure loud.
 
     Uses the engine-internal writer, not the model's ``write_file`` tool: that tool refuses
@@ -103,6 +103,10 @@ def _write_checked(agent_id: str, filename: str, content: str) -> str:
     refresh a deliverable a previous run already created. A failure raises, so the runner
     turns it into ``agent_error`` + a terminal ``workflow_complete`` instead of narrating a
     write that never happened.
+
+    ``root`` is the run's execution root (``ctx.execution_root``), injected rather than resolved
+    here (Phase 23): the writer lands in the shadow the orchestrator granted, and an empty root
+    falls back to the process's active execution root rather than to the user's project.
     """
     # NOTE: the Artifact Gate is deliberately *not* applied here. Intercepting the engine's
     # own writes was the wrong place for it: it made the gate a control-flow mechanism
@@ -110,7 +114,7 @@ def _write_checked(agent_id: str, filename: str, content: str) -> str:
     # ``orchestration.workflow.planner`` / ``executor``), and the gate remains where it
     # belongs -- a fail-safe on the model's ``edit_ast_node`` tool.
     try:
-        return overwrite_source(filename, content)
+        return overwrite_source(filename, content, root=root)
     except OSError as error:
         raise RuntimeError(f"{agent_id} could not write {filename}: {error}") from error
     return result
@@ -278,7 +282,7 @@ def fix_bug_action(
     # Full read, not the tool's token-optimised view: this content is written back
     # below, and ``read_file`` middle-truncates large files, which would delete the
     # omitted middle when the patch is saved.
-    curr_code = read_source(target_file)
+    curr_code = read_source(target_file, root=ctx.execution_root)
     ctx.emit_fn(tool_result(
         "software-architect", "read_file",
         f"Inspected {target_file} ({len(curr_code)} bytes)"
@@ -675,7 +679,7 @@ def next_step_action(
         raise RuntimeError(
             f"{target_coder_id} could not apply the approved plan: {applied.error}"
         )
-    out_code = read_source(out_filename) or ""
+    out_code = read_source(out_filename, root=ctx.execution_root) or ""
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Wrote {len(out_code)} chars to {out_filename}"
@@ -686,7 +690,7 @@ def next_step_action(
         f"Writing test suite to {out_test}"
     ))
     time.sleep(0.3)
-    out_test_code = read_source(out_test) or ""
+    out_test_code = read_source(out_test, root=ctx.execution_root) or ""
     ctx.emit_fn(tool_result(
         target_coder_id, "write_file",
         f"Wrote {len(out_test_code)} chars to {out_test}"

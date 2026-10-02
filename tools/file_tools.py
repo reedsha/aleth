@@ -6,8 +6,13 @@ decomposed by concern into focused siblings:
     workspace.py    - where work happens (project dir + active plan pointer)
     plan_parser.py  - markdown <-> plan dict translation (pure)
     plan_state.py   - SQLite-backed plan state + the read-only markdown projection
-    workspace_io.py - engine-internal file I/O (read/write/list/preview/env)
+    execution_io.py - the run's file I/O, bound to the execution root (the shadow)
+    workspace_io.py - the frontend's file reads (listing/preview/env), bound to the project
     recovery.py     - backups, codebase audit, sync resolution, rollback
+
+The two I/O modules are deliberately separate (Phase 23): their callers have opposed security
+contracts, so ``execution_io`` cannot import ``get_project_dir`` and ``workspace_io`` cannot reach
+the execution root. This façade re-exports both halves so existing imports keep working.
 
 This module re-exports the full previous public surface so existing imports such
 as ``from tools.file_tools import load_plan_state`` keep working unchanged.
@@ -56,16 +61,18 @@ from tools.workspace import (
     set_project_dir,
     walk_workspace,
 )
+from tools.execution_io import (
+    overwrite_source,
+    read_source,
+)
 from tools.workspace_io import (
     ENV_FILENAME,
     MAX_ENVIRONMENT_VARIABLES,
     MAX_PREVIEW_CHARS,
     PREVIEW_FILENAME,
     list_workspace_files,
-    overwrite_source,
     read_environment_variables,
     read_preview_source,
-    read_source,
 )
 
 __all__ = [

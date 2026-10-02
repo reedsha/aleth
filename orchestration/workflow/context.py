@@ -47,6 +47,10 @@ class WorkflowContext:
     should_stop: Any
     plan_file: str
     mcp_session: Any = None
+    # The root agent I/O is granted for this run (Phase 23): the active shadow, captured once when
+    # the run starts and injected into every write and read-modify-write read. A tool resolves the
+    # root it was handed, never one of its own, so it cannot be pointed at the user's live tree.
+    execution_root: str = ""
 
 
 def _mark(status: Any) -> str:

@@ -1,20 +1,19 @@
-"""Engine-internal workspace I/O: the kernel's own file operations.
+"""The frontend's file ground truth: the listing, the preview and the ``.env`` reader.
 
-These are **not** LLM tools. They are the operations the engine performs on its own behalf --
-auditing the workspace, publishing a deliverable, restoring a backup, rendering the preview,
-listing the environment -- and they have no model-facing schema because no model calls them.
-The model's file tools are MCP tools now, bound per run from a live server (see
-``tools/mcp_tools.py`` and ``orchestration/mcp_session.py``).
+These are **not** LLM tools, and they are **not** the run's file access. They are reads of the
+*user's project* -- what the explorer renders, what the preview shows, which ``.env`` names are
+configured -- so they resolve against ``get_project_dir()`` and they must keep seeing the live tree
+while a run is in flight.
 
-The two concerns were previously interleaved in one toolbox module: a static catalog of
-``@tool``-decorated wrappers sitting beside the engine primitives. They have different
-callers, different lifecycles and different security contracts, so they are separate modules
-now, and the catalog is gone rather than relocated.
+The run's own file access lives in ``tools.execution_io``, bound to the shadow. The two halves were
+one module until Phase 23, and sharing a resolver between callers with opposed security contracts is
+what let the engine's deliverable writer resolve against the live project directory while every
+execution path wrote into the shadow. The split is the fix: this module has no way to reach the
+execution root, and that one has no way to reach this root.
 
-**Containment is enforced here**, by resolving both sides with ``Path.resolve()`` and
-comparing them -- the same rule the MCP filesystem server applies. A resolved-path comparison
-cannot be talked around: ``..``, a Windows backslash traversal, an absolute path and a symlink
-pointing out of the tree all fail the one check.
+**Containment is enforced here too**, by resolving both sides with ``Path.resolve()`` and comparing
+them. A resolved-path comparison cannot be talked around: ``..``, a Windows backslash traversal, an
+absolute path and a symlink pointing out of the tree all fail the one check.
 """
 
 from __future__ import annotations
@@ -23,7 +22,6 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from tools import atomic_io
 from tools.git_status import workspace_vcs_status
 from tools.workspace import PROJECT_ROOT, get_project_dir, walk_workspace
 
@@ -43,7 +41,7 @@ ENV_FILENAME = ".env"
 MAX_ENVIRONMENT_VARIABLES = 60
 
 
-class PathDenied(Exception):
+class PathDenied(ValueError):
     """A path resolved outside the workspace. Never a soft failure."""
 
 
@@ -59,40 +57,6 @@ def _resolve(filename: str) -> Path:
     if candidate != root and root not in candidate.parents:
         raise PathDenied(f"Path traversal denied: {filename!r} is outside the workspace.")
     return candidate
-
-
-def overwrite_source(filename: str, content: str) -> str:
-    """Create or replace a workspace file. **Not an LLM tool.**
-
-    The workflow publishes its own deliverables through this, because a deliverable may
-    already exist from a previous run and re-running a task must be able to refresh it. The
-    chokehold is on the model's write tool (the MCP filesystem server's ``create_file``,
-    which refuses to overwrite), not on the engine publishing its own artifact.
-    """
-    filepath = _resolve(filename)
-    atomic_io.write_text_atomic(str(filepath), content)
-    return f"Successfully wrote {len(content)} characters to {filename}."
-
-
-def read_source(filename: str) -> str:
-    """Reads a workspace file in full, with no token-optimised truncation.
-
-    A token-optimised view middle-truncates a large file, which is right when the content is
-    only being shown to a model. Paths that will write the content *back* -- a bug patch, say
-    -- must not use that view: the omitted middle would be silently deleted when the
-    (truncated) text is written to disk. Returns "" when the file is missing or unreadable, so
-    a caller can tell there was nothing to read rather than writing an error string as
-    content.
-    """
-    try:
-        filepath = _resolve(filename)
-    except PathDenied:
-        return ""
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace", newline="") as handle:
-            return handle.read()
-    except OSError:
-        return ""
 
 
 def list_workspace_files() -> list[dict]:

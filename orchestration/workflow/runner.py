@@ -119,6 +119,9 @@ def run_agent_workflow(
                 should_stop=should_stop,
                 plan_file=plan_file,
                 mcp_session=mcp_session,
+                # The same root the MCP session is caged in, injected rather than looked up
+                # later: an action that writes a file is handed the run's root (Phase 23).
+                execution_root=get_execution_dir(),
             )
 
             emit({

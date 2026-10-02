@@ -13,8 +13,9 @@ must not be ``runner.py``: process management is not sequencing. This module own
 * :class:`~orchestration.workflow.context.WorkflowContext` carries the live session, so every
   action branch reaches the servers through ``ctx.mcp_session`` instead of importing a file
   or shell helper. That is what lets the engine primitives and the shell runner live in
-  their own modules -- ``tools/workspace_io.py`` and ``tools/mcp_exec_server.py`` -- instead
-  of a shared file-and-shell toolbox the whole app reached into.
+  their own modules -- ``tools/execution_io.py``, ``tools/workspace_io.py`` and
+  ``tools/mcp_exec_server.py`` -- instead of a shared file-and-shell toolbox the whole app
+  reached into.
 
 The servers are spawned once per run rather than once per call, so a run pays one process
 start each instead of one per tool use. (A warm pool across runs is the next step -- see the

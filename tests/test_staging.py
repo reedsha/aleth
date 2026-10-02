@@ -7,16 +7,20 @@ the same machinery through ``EngineService`` -- the execution root the run loop 
 review read, and the gate that refuses to merge a plan that is not finished.
 """
 
+import ast
+import inspect
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
-from tools import env_sanitizer, staging, workspace
+from tools import env_sanitizer, execution_io, staging, workspace
+from tools.file_tools import list_workspace_files
 
 FAKE_DOCKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_docker.py")
 
@@ -619,6 +623,132 @@ class ManifestShapeTests(unittest.TestCase):
         self.assertEqual(data["staging_id"], shadow.staging_id)
         self.assertEqual(data["intent_id"], "i-man")
         self.assertEqual(data["plan_id"], "PLAN-Z")
+
+
+class ExecutionRootBifurcationTests(unittest.TestCase):
+    """Phase 23: the run's file I/O and the frontend's file reads resolve opposite roots.
+
+    The Phase 20 breach, formalized. ``overwrite_source`` lived beside the UI readers and resolved
+    against the *project* directory, so the engine's own deliverable writer wrote into the user's
+    live tree while every other execution path wrote into the shadow. ``read_source`` is the read
+    half of a read-modify-write patch and had the same defect -- it read the host while the patch
+    landed in the shadow, which is a patch against a stale base.
+    """
+
+    def setUp(self):
+        from app import EngineService
+
+        self.host = tempfile.mkdtemp(prefix="aleth_bifurcation_host_")
+        self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
+        _write(self.host, "pkg/mod.py", "value = 1\n")
+        self._original_project = workspace.get_project_dir()
+        workspace.set_project_dir(self.host)
+        self.addCleanup(workspace.set_project_dir, self._original_project)
+        self.addCleanup(workspace.set_execution_dir, None)
+        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
+        self.service = EngineService()
+
+    def test_the_engine_writer_lands_in_the_shadow_not_the_host(self):
+        with self.service._staged_execution("intent-bifurcated") as shadow:
+            execution_io.overwrite_source("deliverable.py", "x = 1\n")
+
+            self.assertTrue(os.path.isfile(os.path.join(shadow.path, "deliverable.py")))
+            self.assertFalse(os.path.isfile(os.path.join(self.host, "deliverable.py")))
+
+    def test_a_read_sees_the_agents_own_writes_across_steps(self):
+        """The read half of a read-modify-write patch resolves the same root as the write."""
+        with self.service._staged_execution("intent-steps"):
+            execution_io.overwrite_source("pkg/mod.py", "value = 2\n")
+
+            self.assertEqual(execution_io.read_source("pkg/mod.py"), "value = 2\n")
+
+        # The host still holds the pre-run bytes: the read never left the shadow either.
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
+
+    def test_the_ui_reads_still_see_the_live_project(self):
+        """The frontend's ground truth is the user's tree, and stays so mid-run."""
+        with self.service._staged_execution("intent-ui"):
+            _write(self.host, "live.py", "live = 1\n")
+            paths = [entry["path"] for entry in list_workspace_files()]
+
+        self.assertIn("live.py", paths)
+
+    def test_an_injected_root_is_the_only_root(self):
+        granted = tempfile.mkdtemp(prefix="aleth_granted_")
+        self.addCleanup(shutil.rmtree, granted, ignore_errors=True)
+
+        execution_io.overwrite_source("injected.py", "x = 1\n", root=granted)
+
+        self.assertTrue(os.path.isfile(os.path.join(granted, "injected.py")))
+        self.assertFalse(os.path.isfile(os.path.join(self.host, "injected.py")))
+
+    def test_an_injected_root_cannot_be_escaped(self):
+        granted = tempfile.mkdtemp(prefix="aleth_granted_")
+        self.addCleanup(shutil.rmtree, granted, ignore_errors=True)
+
+        with self.assertRaises(ValueError) as caught:
+            execution_io.overwrite_source("../escape.py", "x = 1\n", root=granted)
+        self.assertIn("Path traversal denied", str(caught.exception))
+
+        with self.assertRaises(ValueError):
+            execution_io.read_source("../../escape.py", root=granted)
+
+    def test_the_execution_module_never_reaches_for_the_project_root(self):
+        """The bifurcation is a property of the module, not of one code path inside it.
+
+        A future edit that resolved against ``get_project_dir`` would be the Phase 20 breach again,
+        so the boundary is pinned the way the deleted tool catalog is -- and pinned on the module's
+        *code* (its imports, names and attributes), not on its prose: the docstring names
+        ``get_project_dir`` precisely to say it is out of scope here.
+        """
+        tree = ast.parse(inspect.getsource(execution_io))
+        referenced = (
+            {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+            | {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+            | {
+                alias.name
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.Import, ast.ImportFrom))
+                for alias in node.names
+            }
+        )
+        self.assertNotIn("get_project_dir", referenced)
+        self.assertFalse(hasattr(execution_io, "get_project_dir"))
+        # ...and bound to the other root, so this pins the binding and not merely an absence.
+        self.assertIn("get_execution_dir", referenced)
+
+    def test_the_orchestrator_injects_the_run_root_into_the_context(self):
+        """The root is injected once, at the orchestrator seam -- not resolved by the tool."""
+        from orchestration.workflow import actions_admin, runner
+
+        class _NullSession:
+            def __init__(self, root):
+                self.root = root
+
+            def __enter__(self):
+                return None
+
+            def __exit__(self, *exc):
+                return False
+
+        captured = {}
+        with self.service._staged_execution("intent-ctx-root") as shadow:
+            with mock.patch.object(runner, "MCPSessionContext", _NullSession), \
+                    mock.patch.object(runner, "load_plan_state", return_value={}), \
+                    mock.patch.object(
+                        actions_admin, "analyze_action",
+                        lambda ctx: captured.update(root=ctx.execution_root),
+                    ):
+                runner.run_agent_workflow(
+                    coder_agents={},
+                    stop_event=threading.Event(),
+                    user_message="analyze the codebase",
+                    emit_fn=lambda event: None,
+                    action_type="analyze",
+                )
+
+        self.assertEqual(captured.get("root"), shadow.path)
 
 
 if __name__ == "__main__":
