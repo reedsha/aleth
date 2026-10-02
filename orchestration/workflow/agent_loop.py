@@ -9,13 +9,34 @@ and repeats until the model answers without asking for a tool.
 Nothing is faked at the transport layer: a tool call here reaches a real server process and
 comes back as a real result. Only the model's *decision* is injectable -- ``completer`` is a
 parameter -- which is what lets a test drive the loop deterministically without mocking MCP.
+
+**The ceiling is a fault, not an answer (Phase 26).** A model still asking for tools after
+``MAX_AGENT_STEPS`` is not deliberating, it is looping -- rewriting the same file, re-reading the
+same symbol, burning the token budget. So the loop stops, records the fault in the ledger, and
+raises: returning an empty answer instead would hand the caller a blank plan that looks like a
+decision, and the run would carry on against nothing.
 """
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Callable, Dict, List, Tuple
 
-DEFAULT_MAX_TURNS = 6
+# The hard ceiling on model-driven tool calls in one pass. Generous for real work -- a plan needs a
+# handful of reads and one edit -- and small enough that a hallucinated loop cannot run all day.
+MAX_AGENT_STEPS = 30
+
+# One spelling, shared with the engine that reads the terminal event and fails the intent.
+STEP_LIMIT_MESSAGE = "Exceeded maximum execution steps"
+
+
+class AgentStepLimitExceeded(RuntimeError):
+    """The model kept calling tools past the ceiling. A fault, not an answer.
+
+    Deliberately *not* caught by the planner's broad ``except Exception`` (which means "the model
+    did not return a plan"): a loop that ran away is a different thing, and swallowing it would
+    turn the ceiling into a silent no-plan.
+    """
 
 
 def _tool_schemas(tools: List[Any]) -> List[Dict[str, Any]]:
@@ -33,7 +54,7 @@ def run_tool_loop(
     system_prompt: str,
     user_message: str,
     completer: Callable[..., Any],
-    max_turns: int = DEFAULT_MAX_TURNS,
+    max_steps: int = MAX_AGENT_STEPS,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Drive ``completer`` through the tools bound for ``role``.
 
@@ -45,8 +66,10 @@ def run_tool_loop(
     ``{"name": ..., "arguments": {...}}``. A turn that returns no tool calls ends the loop.
 
     A tool that raises is reported into the transcript and back to the model as its result,
-    rather than aborting: a refused edit is information the model needs, not a crash. The
-    turn budget is a hard stop, so a model that loops forever cannot hang the run.
+    rather than aborting: a refused edit is information the model needs, not a crash. The step
+    ceiling is a hard stop *and a fault*: it records the fault and raises
+    :class:`AgentStepLimitExceeded`, so a model that loops forever cannot hang the run and cannot
+    be mistaken for one that answered.
     """
     tools = session.get_bound_tools(role) if session is not None else []
     by_name = {tool.name: tool for tool in tools}
@@ -55,7 +78,7 @@ def run_tool_loop(
     messages: List[Dict[str, Any]] = [{"role": "user", "content": user_message}]
     transcript: List[Dict[str, Any]] = []
 
-    for _turn in range(max_turns):
+    for _step in range(max_steps):
         completion = completer(system=system_prompt, messages=list(messages), tools=schemas)
         text = str(getattr(completion, "text", "") or "")
         calls = list(getattr(completion, "tool_calls", None) or [])
@@ -79,4 +102,32 @@ def run_tool_loop(
             transcript.append({"tool": name, "arguments": arguments, "result": result})
             messages.append({"role": "tool", "name": name, "content": result})
 
-    return "", transcript
+    _record_step_limit(role, max_steps)
+    raise AgentStepLimitExceeded(STEP_LIMIT_MESSAGE)
+
+
+def _record_step_limit(role: str, steps: int) -> None:
+    """Write the fault to the forensic ledger. Best effort, and it never replaces the fault.
+
+    The loop records its own row because it is the only thing that knows for certain, the same
+    reasoning that has the exec server record its own receipt. A telemetry write that fails is
+    reported and the raise goes ahead regardless: losing the *record* of a runaway loop is bad, and
+    losing the *stop* would be worse.
+    """
+    from storage import telemetry
+    from storage.db import default_db_path
+
+    try:
+        telemetry.record_agent_fault(
+            default_db_path(),
+            kind="STEP_LIMIT_EXCEEDED",
+            role=str(role),
+            detail=STEP_LIMIT_MESSAGE,
+            steps=int(steps),
+        )
+    except Exception as error:
+        print(
+            f"[agent-loop] the step-limit fault could not be recorded: "
+            f"{type(error).__name__}: {error}",
+            file=sys.stderr,
+        )

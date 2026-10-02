@@ -41,13 +41,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools import docker_sandbox, mcp_stdio
+from tools import docker_sandbox, mcp_stdio, result_budget
 
 SERVER_NAME = "aleth-exec"
 SERVER_VERSION = "1.0.0"
 
 DEFAULT_TIMEOUT_SECONDS = 30
-MAX_OUTPUT_CHARS = 2400
+# The model-facing cap lives in ``tools.result_budget`` (Phase 26), beside the file-read cap it
+# shares its number with: one budget for everything a tool hands the model, stated in bytes.
 
 # Every whitespace-free run of the command line that is not shell punctuation. The scan is
 # deliberately NOT ``shlex``: in POSIX mode shlex consumes a backslash as an escape, so
@@ -256,7 +257,7 @@ def run_workspace_command_result(
     if stderr:
         parts.append(f"[STDERR]\n{stderr}")
     body = "\n".join(parts) or "(Command executed successfully with no output)"
-    return f"[Exit Code: {result.returncode}]\n{_truncate(body)}", result
+    return f"[Exit Code: {result.returncode}]\n{result_budget.truncate_result(body)}", result
 
 
 def run_workspace_command(command: str, *, root: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> str:
@@ -391,12 +392,14 @@ class ExecServer:
         raise ValueError(f"unknown tool {name!r}")
 
 
-def _truncate(text: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
-    """Middle-truncate, so the head and the tail -- where errors live -- both survive."""
-    if len(text) <= max_chars:
-        return text
-    keep = max_chars // 2
-    return f"{text[:keep]}\n... [{len(text) - max_chars} characters omitted] ...\n{text[-keep:]}"
+def _truncate(text: str) -> str:
+    """Cap the command's output for the model (``tools.result_budget``).
+
+    Kept as a name because every caller here means "the model-facing budget", and the *number* is
+    shared with the filesystem server's file reads -- a model that cats a log and one that reads a
+    file meet the same ceiling.
+    """
+    return result_budget.truncate_result(text)
 
 
 def install_container_reaper() -> None:

@@ -39,7 +39,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tools import atomic_io, mcp_stdio
+from tools import atomic_io, mcp_stdio, result_budget
 
 SERVER_NAME = "aleth-filesystem"
 SERVER_VERSION = "1.0.0"
@@ -112,9 +112,15 @@ class FilesystemServer:
         return candidate
 
     def read_file(self, path: str) -> str:
+        """The file's text, capped at the model-facing budget (``tools.result_budget``).
+
+        A whole 50 MB file handed to the model is not a long answer, it is an API token-limit error
+        and a dead run. Over the cap the middle is dropped and the result says so, so the model
+        reaches for ``list_symbols``/``grep`` or a smaller span instead of assuming it read the file.
+        """
         target = self._resolve(path)
         with open(target, "r", encoding="utf-8", errors="replace", newline="") as handle:
-            return handle.read()
+            return result_budget.truncate_result(handle.read())
 
     def write_file(self, path: str, content: str) -> str:
         """The engine's writer. Atomic: the target is replaced, never truncated in place.

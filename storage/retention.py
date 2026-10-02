@@ -43,6 +43,7 @@ LEDGER_KEEP_ROWS = 1000
 BOUNDED_LEDGERS: Tuple[Tuple[str, str], ...] = (
     ("execution_telemetry", "recorded_at"),
     ("routing_decisions", "decided_at"),
+    ("agent_faults", "recorded_at"),
     ("intent_ledger", "created_at"),
 )
 

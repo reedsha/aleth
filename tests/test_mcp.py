@@ -894,22 +894,103 @@ class ToolLoopTests(MCPServerTestCase):
         self.assertIn("edit_ast_node", transcript[0]["result"])
         self.assertEqual(self._read("mod.py"), "def alpha():\n    return 1\n")
 
-    def test_the_turn_budget_is_a_hard_stop(self):
+    def test_the_step_ceiling_is_a_fault_not_an_answer(self):
+        """A model that keeps calling tools past the ceiling halts the pass *loudly*.
+
+        Returning an empty answer -- which is what this used to do -- hands the caller a blank plan
+        that looks like a decision, and the run carries on against nothing.
+        """
         from orchestration.mcp_session import MCPSessionContext
-        from orchestration.workflow.agent_loop import run_tool_loop
+        from orchestration.workflow.agent_loop import (
+            AgentStepLimitExceeded,
+            STEP_LIMIT_MESSAGE,
+            run_tool_loop,
+        )
 
         self._write("mod.py", "x = 1\n")
         forever = [self._Completion(tool_calls=[{"name": "read_file", "arguments": {"path": "mod.py"}}])] * 10
         completer = self._scripted(*forever)
 
         with MCPSessionContext(self.tmp) as session:
-            text, transcript = run_tool_loop(
-                session=session, role="coder", system_prompt="sys",
-                user_message="loop", completer=completer, max_turns=3,
-            )
+            with self.assertRaises(AgentStepLimitExceeded) as caught:
+                run_tool_loop(
+                    session=session, role="coder", system_prompt="sys",
+                    user_message="loop", completer=completer, max_steps=3,
+                )
 
-        self.assertEqual(text, "")
-        self.assertEqual(len(transcript), 3)
+        self.assertEqual(str(caught.exception), STEP_LIMIT_MESSAGE)
+
+    def test_the_ceiling_is_recorded_in_the_telemetry(self):
+        """The fault is written where a forensic read will find it, not only raised."""
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import MAX_AGENT_STEPS, STEP_LIMIT_MESSAGE, run_tool_loop
+        from storage import telemetry
+        from storage.db import default_db_path
+
+        self.assertEqual(MAX_AGENT_STEPS, 30, "the ceiling is a deliberate number")
+        self._write("mod.py", "x = 1\n")
+        forever = [self._Completion(tool_calls=[{"name": "read_file", "arguments": {"path": "mod.py"}}])] * 4
+        completer = self._scripted(*forever)
+
+        with MCPSessionContext(self.tmp) as session:
+            with self.assertRaises(Exception):
+                run_tool_loop(
+                    session=session, role="coder", system_prompt="sys",
+                    user_message="loop", completer=completer, max_steps=2,
+                )
+
+        rows = telemetry.agent_faults(default_db_path(), limit=5)
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["kind"], "STEP_LIMIT_EXCEEDED")
+        self.assertEqual(rows[0]["detail"], STEP_LIMIT_MESSAGE)
+        self.assertEqual(rows[0]["steps"], 2)
+        self.assertEqual(rows[0]["role"], "coder")
+
+
+class ToolResultBudgetTests(MCPServerTestCase):
+    """Phase 26: no tool result may blow the model's context window.
+
+    A 50 MB ``cat`` or a million-line file read is not a long answer, it is an API token-limit error
+    and a dead run. Both servers meet the same ceiling, and what was dropped is stated in the result
+    so the model reaches for ``grep`` instead of reasoning about what it never saw.
+    """
+
+    def test_a_small_result_is_untouched(self):
+        from tools.result_budget import truncate_result
+
+        self.assertEqual(truncate_result("hello"), "hello")
+
+    def test_an_oversized_result_keeps_both_ends_and_says_what_it_dropped(self):
+        from tools.result_budget import MAX_RESULT_BYTES, truncate_result
+
+        head, tail = "HEAD" * 4000, "TAIL" * 4000
+        capped = truncate_result(head + ("x" * 100_000) + tail)
+
+        self.assertLessEqual(len(capped.encode("utf-8")), MAX_RESULT_BYTES)
+        self.assertIn("TRUNCATED at 16KB", capped)
+        self.assertTrue(capped.startswith("HEAD"), "the head is what the command printed")
+        self.assertTrue(capped.endswith("TAIL"), "the tail is where a traceback lives")
+
+    def test_a_file_read_is_capped_over_the_wire(self):
+        """The cap is on the *result the model receives*, not on a helper it might not go through."""
+        from tools.result_budget import MAX_RESULT_BYTES
+
+        self._write("big.txt", "A" * 200_000)
+        with mcp_workspace_client(self.tmp) as client:
+            content = client.read_file("big.txt")
+
+        self.assertLessEqual(len(content.encode("utf-8")), MAX_RESULT_BYTES)
+        self.assertIn("TRUNCATED at 16KB", content)
+
+    def test_the_execution_block_is_capped_too(self):
+        """stdout/stderr go through the same budget: a command is the other way to flood it."""
+        from tools import mcp_exec_server
+        from tools.result_budget import MAX_RESULT_BYTES
+
+        capped = mcp_exec_server._truncate("E" * 200_000)
+
+        self.assertLessEqual(len(capped.encode("utf-8")), MAX_RESULT_BYTES)
+        self.assertIn("TRUNCATED at 16KB", capped)
 
 
 class PlannerAgentLoopTests(MCPServerTestCase):

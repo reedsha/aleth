@@ -77,6 +77,27 @@ ROUTING_DDL = """
                     ON routing_decisions(decided_at);
 """
 
+# The agent-fault ledger (Phase 26): one append-only row per *loop* fault -- the model that kept
+# calling tools past its ceiling, rather than a container that misbehaved or a route that was
+# chosen. Its own table for the same reason as ``routing_decisions``: the fault has no container,
+# no exit code and no route, so a row in either of the other two would make their queries wrong.
+AGENT_FAULT_DDL = """
+                CREATE TABLE IF NOT EXISTS agent_faults (
+                    fault_id    TEXT PRIMARY KEY,
+                    session_id  TEXT NOT NULL DEFAULT '',
+                    kind        TEXT NOT NULL DEFAULT '',
+                    role        TEXT NOT NULL DEFAULT '',
+                    detail      TEXT NOT NULL DEFAULT '',
+                    steps       INTEGER NOT NULL DEFAULT 0,
+                    recorded_at REAL NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_agent_faults_session
+                    ON agent_faults(session_id);
+                CREATE INDEX IF NOT EXISTS idx_agent_faults_recorded
+                    ON agent_faults(recorded_at);
+"""
+
 # New columns go here *and* in the DDL above. ``CREATE TABLE IF NOT EXISTS`` never adds a column to
 # a table that already exists, so a ledger written by an earlier build is upgraded by the guarded
 # ``ALTER`` below rather than silently missing the field.
@@ -95,9 +116,10 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def apply_telemetry_schema(connection: sqlite3.Connection) -> None:
-    """Create both ledgers on a caller's connection, so a test can build the real tables."""
+    """Create all three ledgers on a caller's connection, so a test can build the real tables."""
     connection.executescript(TELEMETRY_DDL)
     connection.executescript(ROUTING_DDL)
+    connection.executescript(AGENT_FAULT_DDL)
     # ``PRAGMA table_info`` is read positionally on purpose: this is called with a bare connection
     # (no ``row_factory``), and the column name is index 1.
     existing = {row[1] for row in connection.execute("PRAGMA table_info(execution_telemetry)")}
@@ -201,6 +223,54 @@ def recent_routing_decisions(db_path: str, limit: int = 50) -> List[Dict[str, An
     try:
         rows = connection.execute(
             "SELECT * FROM routing_decisions ORDER BY decided_at DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def record_agent_fault(
+    db_path: str,
+    *,
+    kind: str,
+    detail: str = "",
+    role: str = "",
+    steps: int = 0,
+    session_id: str = "",
+) -> str:
+    """Append one loop fault, returning its id. **Raises** on failure, like :func:`record`.
+
+    Written by the loop that hit the ceiling, because that is the only thing that knows for
+    certain -- the same reasoning that has the exec server record its own receipt. ``session_id``
+    is empty from there: the workflow layer is handed a message and an action, not an intent id, so
+    the *intent's* failure is recorded in the intent ledger by the engine, which is the layer that
+    has the id.
+    """
+    fault_id = str(uuid.uuid4())
+    connection = _connect(db_path)
+    try:
+        with connection:
+            connection.execute(
+                "INSERT INTO agent_faults"
+                " (fault_id, session_id, kind, role, detail, steps, recorded_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    fault_id, str(session_id), str(kind), str(role), str(detail), int(steps),
+                    time.time(),
+                ),
+            )
+    finally:
+        connection.close()
+    return fault_id
+
+
+def agent_faults(db_path: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """The newest loop faults first, bounded by ``limit``. Uses ``idx_agent_faults_recorded``."""
+    connection = _connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT * FROM agent_faults ORDER BY recorded_at DESC LIMIT ?",
             (max(1, int(limit)),),
         ).fetchall()
         return [dict(row) for row in rows]

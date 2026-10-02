@@ -259,7 +259,7 @@ def _from_llm(
     skills = _skills_for(capabilities)
 
     if session is not None:
-        from orchestration.workflow.agent_loop import run_tool_loop
+        from orchestration.workflow.agent_loop import AgentStepLimitExceeded, run_tool_loop
 
         def _loop_completer(*, system: str, messages: List[Any], tools: List[Any]) -> Any:
             return system2.complete_with_tools(
@@ -277,6 +277,11 @@ def _from_llm(
                 # decisions while the tools still go over the real MCP transport.
                 completer=completer if completer is not None else _loop_completer,
             )
+        except AgentStepLimitExceeded:
+            # A model that ran away is a fault, not a planner that returned nothing. Letting it fall
+            # into the broad handler below would degrade the ceiling into a silent "no plan", which
+            # is exactly the failure the ceiling exists to make loud (Phase 26).
+            raise
         except Exception:
             return None
         answer_text = text
