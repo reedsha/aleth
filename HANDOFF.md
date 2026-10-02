@@ -13,11 +13,26 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 26)
+## ⚡ 0. Current State at This Handoff (Phase 27)
 
-- **Phases 5 → 26 are complete and CI-green.** Phase 26 (teardown precision & LLM loop bounding)
-  is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
-  most recently.
+- **Phases 5 → 27 are complete and CI-green.** Phase 27 (context threading & observability
+  lock-in) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what
+  changed most recently.
+- **A fault is now joined to the intent that caused it (Phase 27).** `intent_id` is threaded from
+  `_launch_run` through the registry, the runner, `WorkflowContext`, the planner and into
+  `run_tool_loop` — and across the process boundary into swarm children, riding the role descriptor
+  (`Swarm.tick(intent_id=…)` → `role_payload` → `worker.execute_node`), because a child cannot look
+  it up. `agent_faults.intent_id` is `NOT NULL`, `record_agent_fault` **refuses a blank one**, and
+  the table's Phase-26 `session_id` is dropped by a guarded migration.
+- **An abort is durable, and the workflow layer reads it (Phase 27).** `IntentLedger.is_live` +
+  `IntentLedger.abort`; `stop_execution` writes the abort. `run_tool_loop` checks liveness **before
+  every step and before every tool call** and raises `RunAborted`, so a tool that mutates cannot
+  overtake an abort that landed while the model was thinking — and no telemetry is written for a
+  run that is already over.
+- **A crash reports its intent (Phase 27).** `tools/run_context.py` holds the process's current
+  intent and `install_exception_logging` (called first in `main.py`) installs both `sys.excepthook`
+  and `threading.excepthook` to print `intent=<id>` on the same line as the failure, keeping the
+  full traceback.
 - **The shutdown sweep is scoped to the engine's own process tree (Phase 26).** Phase 25's version
   matched the `aleth.managed` label alone, so an engine exiting killed the in-flight containers of
   *any* other engine on the host. `purge_managed_containers` now checks each candidate's owner with
@@ -1445,12 +1460,15 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `1ee5c32` (Phase 25) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `34ac423` (Phase 26) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.0 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1198 passed, 22 skipped, 232 subtests** in 82.89 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1214 passed, 5 skipped** in ~95 s, and **0 containers left behind** — `-n4`, not `-n auto`: this VM has 7.8 GB |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1207 passed, 22 skipped, 235 subtests** in 84.24 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1223 passed, 5 skipped**, and **0 containers left behind** — `-n4`, not `-n auto`: this VM has 7.8 GB |
+| Correlation | `tests/test_mcp.py::ToolLoopTests::test_the_ceiling_is_recorded_against_the_intent` + `tests/test_telemetry.py::AgentFaultSchemaTests` | **passed** — the row carries `intent_id`, a blank one is refused (`ValueError`), the join narrows to one run, and a pre-Phase-27 ledger is migrated (`intent_id` added, `session_id` dropped) with its old rows intact |
+| Liveness gate | `tests/test_mcp.py::RunLivenessGateTests` | **3 passed** — an abort during the model's turn stops the loop before the tool mutates (`written.py` never appears), the fault write is skipped for a dead intent, and an ungated loop still has its ceiling |
+| Crash log | `tests/test_run_context.py` | **3 passed** — the id round-trips and clears, an unhandled exception reports `intent=i-crash` with the traceback, and an idle process prints `intent=<none>` |
 | Teardown scope | `tests/test_docker_sandbox.py::ShutdownSweepTests` + `tests/test_chaos.py::…leaves_a_neighbours_container_alone` | **passed** — the sweep takes only its own tree; on a live daemon an `owner_pid=1` neighbour's container survives |
 | Loop ceiling | `tests/test_mcp.py::ToolLoopTests::test_the_step_ceiling_is_a_fault_not_an_answer` + `…recorded_in_the_telemetry` | **passed** — raises `AgentStepLimitExceeded("Exceeded maximum execution steps")` and writes an `agent_faults` row (kind, role, detail, steps) |
 | Tool-result budget | `tests/test_mcp.py::ToolResultBudgetTests` | **4 passed** — a small result is untouched, an oversized one keeps head *and* tail with the marker, and both the file read and the exec block stay ≤ 16 KB |
