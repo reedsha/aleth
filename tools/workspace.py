@@ -18,6 +18,7 @@ import subprocess
 import uuid
 from typing import Optional
 
+from storage import connection as _connection
 from tools import atomic_io
 
 # Default workspace directory. Resolved from the environment, because the workspace is a path
@@ -91,6 +92,11 @@ EXECUTION_DIR: Optional[str] = None
 STATE_ENV = "ALETH_STATE_DIR"
 DEFAULT_STATE_ROOT = "~/.aleth/state"
 PROJECT_ID_LENGTH = 16
+
+# The *published* absolute state directory for the active project. Defined in
+# ``storage.connection`` (the module that reads it) and re-exported here, because this module is
+# the one that derives and publishes it.
+STATE_ROOT_ENV = _connection.STATE_ROOT_ENV
 
 # The manifest a project can carry so its state follows it anywhere. Travels with the project, so
 # it is the one identity that survives a move, a clone to another path, or a container mount.
@@ -272,11 +278,34 @@ def project_id(plan_dir: str = None) -> str:
     return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:PROJECT_ID_LENGTH]
 
 
+def publish_state_root() -> str:
+    """Derive the active project's state directory and **force** it into the environment.
+
+    For the code that *moves* the pointer -- a boot, a workspace switch, a test fixture that repoints
+    the plan directory -- and for nobody else. A worker inherits the value and must never overwrite
+    it: its own plan pointer is not the parent's, so a re-derivation there is a different project's
+    state directory (Phase 29).
+    """
+    path = os.path.join(state_root(), project_id())
+    os.makedirs(path, exist_ok=True)
+    os.environ[STATE_ROOT_ENV] = path
+    return path
+
+
 def state_dir(plan_dir: str = None) -> str:
-    """The machine-state directory for a plan: ``<state_root>/<project_id>``."""
+    """The machine-state directory for a plan: ``<state_root>/<project_id>``.
+
+    The derivation is always the caller's own (so a process that owns the pointer gets the right
+    answer), and it publishes ``ALETH_STATE_ROOT`` **without overwriting**: the first derivation in
+    a process wins. That is what makes the channel safe in both directions -- a child inherits the
+    parent's absolute directory and cannot clobber it by deriving from its *own* plan pointer, and
+    a process that deliberately moves the pointer republishes with :func:`publish_state_root`.
+    """
     path = os.path.join(state_root(), project_id(plan_dir))
     os.makedirs(path, exist_ok=True)
+    os.environ.setdefault(STATE_ROOT_ENV, path)
     return path
+
 
 # Dynamic Active Plan File
 ACTIVE_PLAN_FILE = "PLAN.md"
@@ -321,6 +350,9 @@ def set_project_dir(new_path: str) -> str:
     abs_path = os.path.abspath(new_path)
     os.makedirs(abs_path, exist_ok=True)
     PROJECT_DIR = abs_path
+    # The plan follows the project (``select_workspace`` sets both), so the published state root
+    # follows it too (Phase 29).
+    publish_state_root()
     # Synchronize plan state for the new workspace.
     # Imported lazily on purpose: plan_state depends on this module, so importing
     # it at module scope here would create a circular import.
@@ -353,6 +385,8 @@ def set_plan_dir(new_path: str) -> str:
     abs_path = os.path.abspath(new_path)
     os.makedirs(abs_path, exist_ok=True)
     PLAN_DIR = abs_path
+    # The pointer moved, so the published state root is now one project behind (Phase 29).
+    publish_state_root()
     from tools.plan_state import load_plan_state
     load_plan_state(force_sync=True)
     return abs_path
@@ -430,3 +464,10 @@ def walk_workspace(base_dir: str):
             if d not in IGNORE_DIRS and not d.startswith(".tmp") and not d.startswith(".drive")
         ]
         yield root, dirs, files
+
+
+# NOTE: there is deliberately no publish at import. A *child* imports this module too, and a forced
+# publish here would derive from the child's own plan pointer -- clobbering the absolute directory
+# its parent handed it (Phase 29). The publish belongs to the code that *moves* the pointer:
+# ``set_plan_dir``/``set_project_dir``, the engine's first derivation (``state_dir``, which
+# publishes without overwriting), and a test fixture that repoints the directory.

@@ -1227,15 +1227,17 @@ _STORES_LOCK = threading.Lock()
 
 
 def default_db_path() -> str:
-    """The database path in the project's state directory (imported lazily to avoid a cycle).
+    """The database path in the project's state directory (delegated to ``storage.connection``).
 
     **Not** beside the plan. The plan is the user's git-tracked document; this is machine state,
     and the two living together is what put a binary file in their repository and made a read-only
-    install impossible. ``tools.workspace.state_dir`` owns the policy.
+    install impossible. ``tools.workspace.state_dir`` owns the policy and publishes the absolute
+    result (``ALETH_STATE_ROOT``); this name is kept because it is the one every caller already
+    knows.
     """
-    from tools.workspace import state_dir
+    from storage.connection import default_db_path as resolve
 
-    return os.path.join(state_dir(), DB_FILENAME)
+    return resolve()
 
 
 def get_store(path: Optional[str] = None) -> PlanStore:

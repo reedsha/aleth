@@ -44,6 +44,7 @@ class ArtifactGateTests(unittest.TestCase):
         workspace.PLAN_DIR = self.tmp
         workspace.PROJECT_DIR = self.tmp
         workspace.ACTIVE_PLAN_FILE = "PLAN.md"
+        workspace.publish_state_root()
         reset_stores()
         self.addCleanup(self._restore)
 

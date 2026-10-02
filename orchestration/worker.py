@@ -23,6 +23,7 @@ the human's, and it happens in the parent.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from typing import Any, Callable, Dict, Optional
@@ -33,6 +34,23 @@ REQUIRED_ROLE_KEYS = ("name", "system_prompt")
 
 # Where a node's plan comes from when the descriptor does not say.
 DEFAULT_PLAN_ID = "PLAN"
+
+
+def _database_path(db_path: str) -> str:
+    """The plan database this worker opens: the **published** state root, else the argument.
+
+    The environment is authoritative because this process cannot derive the answer: its own plan
+    pointer is not the parent's, so deriving here would silently open a *different* database --
+    which is what a database path in a descriptor was working around (Phase 29). ``db_path`` stays
+    as the fallback for a caller that spawns a worker without the environment (a test driving
+    ``execute_node`` directly).
+    """
+    from storage.connection import DB_FILENAME, published_state_root
+
+    published = published_state_root()
+    if published:
+        return os.path.join(published, DB_FILENAME)
+    return str(db_path)
 
 
 def _task_for(connection: sqlite3.Connection, task_id: str) -> Dict[str, Any]:
@@ -157,7 +175,7 @@ def execute_node(
 
     from storage.connection import connect
 
-    connection = connect(db_path)
+    connection = connect(_database_path(db_path))
     try:
         task = _task_for(connection, f"{plan_id}::{node_id}")
 
@@ -199,9 +217,6 @@ def execute_node(
                 # child records has to be joinable to the intent the parent is executing, and the
                 # child has no other way to know it.
                 intent_id=str(role_descriptor.get("intent_id") or ""),
-                # ...and the database the parent's ledger lives in, which this process cannot
-                # derive: its own plan directory is not the parent's (Phase 28).
-                ledger_path=str(db_path or ""),
             )
     finally:
         connection.close()

@@ -58,6 +58,9 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(workspace_module, "PLAN_DIR", str(tmp_path))
     monkeypatch.setattr(workspace_module, "PROJECT_DIR", str(root))
     monkeypatch.setattr(workspace_module, "ACTIVE_PLAN_FILE", "PLAN.md")
+    # The pointer moved, so the published absolute state root moves with it (Phase 29): a worker
+    # in another process reads the environment, not this pointer.
+    workspace_module.publish_state_root()
     reset_stores()
     store = get_store()
 

@@ -106,6 +106,9 @@ def _isolate_plan_directory():
         except OSError:
             pass
     workspace.PLAN_DIR = sandbox
+    # The pointer moved, so the published absolute state root moves with it (Phase 29): a spawned
+    # worker reads the environment, not the pointer.
+    workspace.publish_state_root()
     try:
         yield
     finally:

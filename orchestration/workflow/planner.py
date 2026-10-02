@@ -208,21 +208,23 @@ def _skills_for(capabilities: Optional[Sequence[str]]) -> str:
         return ""
 
 
-def _intent_ledger(intent_id: str, db_path: str = "") -> Any:
+def _intent_ledger(intent_id: str) -> Any:
     """The ledger the loop's liveness gate reads, or ``None`` when there is no intent to gate on.
 
-    ``db_path`` is the plan database the caller already knows. A swarm **child** is handed it in its
-    descriptor, and ``get_store()`` there would resolve against the child's own idea of the plan
-    directory -- a *different file* -- so the gate would read a ledger with no rows in it and abort
-    every pass. Falling back to the store is right for the in-process callers, which are the ones
-    that have no path to pass.
+    Resolved from the **published** state root (``ALETH_STATE_ROOT``) when there is one, else from
+    the store. A swarm *child* must use the published root: its own plan pointer is not the
+    parent's, so deriving there would read a ledger with no rows in it and abort every pass. That is
+    why the parent publishes the absolute directory once instead of threading a path through the
+    descriptor (Phase 29).
     """
     if not str(intent_id or "").strip():
         return None
+    from storage.connection import DB_FILENAME, published_state_root
     from storage.intents import IntentLedger
 
-    if str(db_path or "").strip():
-        return IntentLedger(str(db_path))
+    published = published_state_root()
+    if published:
+        return IntentLedger(os.path.join(published, DB_FILENAME))
     from storage.db import get_store
 
     return IntentLedger(get_store().path)
@@ -242,7 +244,6 @@ def _from_llm(
     role: str = DEFAULT_PLANNER_ROLE,
     capabilities: Optional[Sequence[str]] = None,
     intent_id: str = "",
-    ledger_path: str = "",
 ) -> Optional[ImplementationPlanArtifact]:
     """Ask System 2 for the artifact, or ``None`` when it cannot be produced.
 
@@ -296,7 +297,7 @@ def _from_llm(
         # Built *outside* the ``try`` below on purpose: a ledger that cannot be constructed is a
         # fault of the engine, and the broad handler there means "the model did not return a plan".
         # Swallowing this into ``PlanningUnavailable`` would report an engine fault as a model one.
-        ledger = _intent_ledger(intent_id, ledger_path)
+        ledger = _intent_ledger(intent_id)
 
         try:
             text, _transcript = run_tool_loop(
@@ -390,7 +391,6 @@ def plan_task(
     role: Optional[str] = None,
     capabilities: Optional[Sequence[str]] = None,
     intent_id: str = "",
-    ledger_path: str = "",
 ) -> ImplementationPlanArtifact:
     """The artifact for a task, produced by System 2. Raises when it cannot be planned.
 
@@ -420,7 +420,6 @@ def plan_task(
         model=resolved_model, base_url=base_url, api_key=api_key,
         completer=completer, session=session, role=str(role or DEFAULT_PLANNER_ROLE),
         capabilities=capabilities, intent_id=str(intent_id or ""),
-        ledger_path=str(ledger_path or ""),
     )
     if planned is None:
         raise PlanningUnavailable(

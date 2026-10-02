@@ -201,6 +201,74 @@ class MintedIdentityTests(IdentityTestCase):
         self.assertEqual(lines.count(workspace.IDENTITY_FILE), 1)
 
 
+class PublishedStateRootTests(unittest.TestCase):
+    """Phase 29: the state root is absolute, published once, and inherited -- never derived again.
+
+    The failure this pins: a spawned worker derives the state directory from *its own* plan pointer,
+    which is not the parent's, and silently opens a different database. So the parent publishes the
+    absolute answer and a child reads it; nothing a child does may overwrite it.
+    """
+
+    def setUp(self):
+        from storage.connection import STATE_ROOT_ENV
+
+        self._original = os.environ.get(STATE_ROOT_ENV)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        from storage.connection import STATE_ROOT_ENV
+
+        if self._original is None:
+            os.environ.pop(STATE_ROOT_ENV, None)
+        else:
+            os.environ[STATE_ROOT_ENV] = self._original
+
+    def test_the_derived_root_is_absolute_and_published(self):
+        from storage.connection import STATE_ROOT_ENV, default_db_path, published_state_root
+        from tools import workspace
+
+        published = workspace.publish_state_root()
+
+        self.assertTrue(os.path.isabs(published), published)
+        self.assertEqual(published_state_root(), published)
+        self.assertTrue(os.path.isabs(default_db_path()), default_db_path())
+        self.assertTrue(default_db_path().startswith(published))
+        self.assertEqual(os.environ[STATE_ROOT_ENV], published)
+
+    def test_a_derivation_in_a_child_cannot_clobber_what_it_inherited(self):
+        """The whole point of the channel: a worker's own derivation is a *different* project.
+
+        ``state_dir`` publishes without overwriting, so a child that derives (from its own plan
+        pointer) leaves the inherited absolute root in place. ``publish_state_root`` -- the forced
+        form -- is for the code that moves the pointer, and for nobody else.
+        """
+        from storage.connection import published_state_root
+        from tools import workspace
+
+        inherited = workspace.publish_state_root()
+        other = self._dir("someone-elses-project")
+        with mock.patch.object(workspace, "PLAN_DIR", other):
+            derived = workspace.state_dir()
+
+        self.assertNotEqual(derived, inherited, "the child's derivation must differ")
+        self.assertEqual(published_state_root(), inherited, "the inherited root was clobbered")
+
+    def test_a_relative_state_root_is_refused(self):
+        """Relative paths for state are banned: they resolve against wherever a process started."""
+        from storage.connection import STATE_ROOT_ENV, published_state_root
+
+        os.environ[STATE_ROOT_ENV] = os.path.join("relative", "state")
+        with self.assertRaises(ValueError) as caught:
+            published_state_root()
+        self.assertIn("must be absolute", str(caught.exception))
+
+    def _dir(self, name):
+        path = os.path.join(tempfile.mkdtemp(prefix="aleth_root_"), name)
+        os.makedirs(path, exist_ok=True)
+        self.addCleanup(shutil.rmtree, os.path.dirname(path), ignore_errors=True)
+        return path
+
+
 @unittest.skipUnless(os.name == "posix", "needs POSIX directory permissions")
 class LastResortIdentityTests(IdentityTestCase):
     """Tier 4: nothing else is possible, and the answer is reported as the weak one it is."""

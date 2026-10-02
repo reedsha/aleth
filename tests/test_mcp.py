@@ -53,6 +53,7 @@ class MCPServerTestCase(unittest.TestCase):
         workspace.PLAN_DIR = self.tmp
         workspace.PROJECT_DIR = self.tmp
         workspace.ACTIVE_PLAN_FILE = "PLAN.md"
+        workspace.publish_state_root()
         reset_stores()
         # The exec server runs its commands in a container; point it at the double so a test
         # exercises the real path without a daemon. The child inherits this at spawn time.
