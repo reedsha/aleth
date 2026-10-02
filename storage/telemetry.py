@@ -23,9 +23,11 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from storage.connection import connect as _sqlite_connect
+
 # A receipt is written by a child while the orchestrator may be writing task state to the same
 # file. WAL plus a bounded wait is what keeps a short append from failing under that contention.
-BUSY_TIMEOUT_SECONDS = 10.0
+# (Both now live in ``storage.connection``, applied to every connection in the engine.)
 
 TELEMETRY_DDL = """
                 CREATE TABLE IF NOT EXISTS execution_telemetry (
@@ -128,9 +130,10 @@ TELEMETRY_MIGRATIONS = (
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    connection = sqlite3.connect(str(db_path), timeout=BUSY_TIMEOUT_SECONDS)
-    connection.row_factory = sqlite3.Row
-    return connection
+    # One configured connection: WAL, ``synchronous=NORMAL``, a bounded wait and foreign keys
+    # (``storage.connection``). A receipt is written while the orchestrator may be writing task
+    # state to the same file, so the journal mode is what keeps a short append from failing.
+    return _sqlite_connect(db_path)
 
 
 def apply_telemetry_schema(connection: sqlite3.Connection) -> None:

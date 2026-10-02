@@ -566,48 +566,64 @@ class NetworkBoundaryTests(unittest.TestCase):
         env_patcher.start()
         self.addCleanup(env_patcher.stop)
 
-    def test_the_default_is_no_network(self):
+    def test_the_network_is_sealed_and_unseverable(self):
+        """There is no argument that opens it (Phase 28).
+
+        The opt-in used to exist and was removed: egress during tool execution is an exfiltration
+        primitive, so the argv builder has no parameter for it and the constant is the contract.
+        """
+        import inspect
+
         argv = docker_sandbox.build_command("echo hi", root=self.root, name="probe")
         self.assertIn("--network=none", argv)
         self.assertNotIn("--network=bridge", argv)
-
-    def test_the_opt_in_widens_it_explicitly(self):
-        argv = docker_sandbox.build_command(
-            "echo hi", root=self.root, name="probe", allow_network=True
+        self.assertNotIn(
+            "allow_network",
+            inspect.signature(docker_sandbox.build_command).parameters,
+            "the builder must have no way to widen the network",
         )
-        self.assertIn("--network=bridge", argv)
-        self.assertNotIn("--network=none", argv)
+        self.assertNotIn(
+            "allow_network",
+            inspect.signature(docker_sandbox.run_isolated).parameters,
+            "the runner must have no way to widen the network",
+        )
+        self.assertEqual(docker_sandbox.SANDBOX_NETWORK, "none")
 
-    def test_a_node_that_did_not_declare_the_capability_is_sealed(self):
+    def test_declaring_the_capability_does_not_unseal_it(self):
+        """The capability is recognised and refused, not honoured."""
         from orchestration.mcp_session import MCPSessionContext
 
-        self.assertFalse(MCPSessionContext(self.root, capabilities=["fs", "exec"])._allow_network())
-        self.assertFalse(MCPSessionContext(self.root, capabilities=[])._allow_network())
+        self.assertFalse(hasattr(MCPSessionContext(self.root), "_allow_network"))
+        # Every spelling a planner might write resolves to the same capability, and none of them
+        # reaches the exec server's command line.
+        for spelling in ("net", "network", "egress", "internet", "http", "web"):
+            with self.subTest(spelling=spelling):
+                session = MCPSessionContext(self.root, capabilities=[spelling])
+                self.assertNotIn("--allow-network", session._commands["exec"])
 
     def test_the_engine_session_is_sealed(self):
         """Its commands are verification; the baseline applies to it too."""
         from orchestration.mcp_session import MCPSessionContext
 
-        self.assertFalse(MCPSessionContext(self.root)._allow_network())
+        self.assertNotIn("--allow-network", MCPSessionContext(self.root)._commands["exec"])
 
-    def test_declaring_the_capability_unseals_it(self):
+    def test_a_declared_capability_is_reported_rather_than_silently_dropped(self):
+        """A tool that quietly loses its network is a debugging session nobody asked for."""
+        import contextlib
+        import io
+
         from orchestration.mcp_session import MCPSessionContext
 
-        self.assertTrue(MCPSessionContext(self.root, capabilities=["net"])._allow_network())
-        # And the spellings a planner might write are understood.
-        for spelling in ("network", "egress", "internet", "http", "web"):
-            with self.subTest(spelling=spelling):
-                session = MCPSessionContext(self.root, capabilities=[spelling])
-                self.assertTrue(session._allow_network())
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            MCPSessionContext(self.root, capabilities=["exec", "net"])
+        self.assertIn("has no effect", captured.getvalue())
+        self.assertIn("--network none", captured.getvalue())
 
-    def test_the_declaration_reaches_the_exec_server_command_line(self):
-        """Not a tool argument: the flag is on the server's own argv, decided before it starts."""
-        from orchestration.mcp_session import MCPSessionContext
-
-        sealed = MCPSessionContext(self.root, capabilities=["exec"])
-        opened = MCPSessionContext(self.root, capabilities=["exec", "net"])
-        self.assertNotIn("--allow-network", sealed._commands["exec"])
-        self.assertIn("--allow-network", opened._commands["exec"])
+        quiet = io.StringIO()
+        with contextlib.redirect_stderr(quiet):
+            MCPSessionContext(self.root, capabilities=["exec"])
+        self.assertEqual(quiet.getvalue(), "")
 
     def test_the_resource_declaration_reaches_the_exec_server_command_line(self):
         """The hardware budget is decided the way the network is, and is just as unreachable."""
@@ -698,15 +714,25 @@ class NetworkIsolationTests(unittest.TestCase):
             f"the failure did not look like a network refusal: {combined[:200]}",
         )
 
-    def test_a_declared_net_capability_actually_reaches_the_network(self):
-        """The other half: the opt-in is not a flag that does nothing."""
+    def test_a_declared_net_capability_is_still_sealed(self):
+        """The half that used to prove the opt-in worked now proves it cannot be honoured.
+
+        A plan can still *say* it needs the network; the container gets ``--network none`` anyway,
+        and the only way to install a package is before the loop starts.
+        """
         result = docker_sandbox.run_isolated(
             "python -c \"import socket;"
-            " s=socket.create_connection(('1.1.1.1', 53), timeout=5); print('CONNECTED')\"",
-            cwd=self.root, timeout=120, allow_network=True,
+            " socket.create_connection(('1.1.1.1', 53), timeout=5)\"",
+            cwd=self.root, timeout=120,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("CONNECTED", result.stdout)
+        self.assertNotEqual(result.returncode, 0, "the container reached the network")
+        # And the session refuses the capability rather than passing it through.
+        from orchestration.mcp_session import MCPSessionContext
+
+        self.assertNotIn(
+            "--allow-network",
+            MCPSessionContext(self.root, capabilities=["exec", "net"])._commands["exec"],
+        )
 
 
 if __name__ == "__main__":

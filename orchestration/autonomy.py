@@ -127,9 +127,12 @@ class DriverReport:
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    connection = sqlite3.connect(str(db_path), timeout=30)
-    connection.row_factory = sqlite3.Row
-    return connection
+    # One configured connection (``storage.connection``): WAL, ``synchronous=NORMAL``, a bounded
+    # wait and foreign keys. The breaker reads while the engine writes, so the journal mode is what
+    # keeps a status poll from colliding with a task write.
+    from storage.connection import connect
+
+    return connect(db_path)
 
 
 def plan_progress(

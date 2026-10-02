@@ -25,6 +25,7 @@ import os
 import sqlite3
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
+from storage.connection import connect as _sqlite_connect
 from storage.db import default_db_path
 from storage.intents import IntentLedger
 from tools import staging
@@ -36,6 +37,8 @@ BUSY_TIMEOUT_SECONDS = 10.0
 # The window the ledger keeps, per table. A thousand executions is far more history than a
 # single-machine engine is ever asked to explain, and it stays small enough that the reads the API
 # serves (``storage.telemetry.recent``, ``IntentLedger.recent``) are bounded, index-ordered slices.
+# The ledgers are trimmed while the orchestrator may be appending to the same file, and the trim
+# itself opens several connections. The bounded wait lives in ``storage.connection`` now.
 LEDGER_KEEP_ROWS = 1000
 
 # ``(table, the column its recency index is on)``. The tables belong to the modules that write
@@ -59,9 +62,10 @@ RECOVERY_REASON = "the engine stopped before this intent finished (recovered at 
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    connection = sqlite3.connect(str(db_path), timeout=BUSY_TIMEOUT_SECONDS)
-    connection.row_factory = sqlite3.Row
-    return connection
+    # One configured connection (``storage.connection``): WAL, ``synchronous=NORMAL``, a bounded
+    # wait and foreign keys. The trim runs at boot beside other writers, so the journal mode is
+    # what keeps it from colliding with them.
+    return _sqlite_connect(db_path)
 
 
 def _has_table(connection: sqlite3.Connection, name: str) -> bool:

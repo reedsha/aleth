@@ -34,9 +34,9 @@ import sqlite3
 import time
 from typing import Any, Dict, FrozenSet, List, Optional
 
-# A receipt is written while the orchestrator may be writing task state to the same file. WAL plus
-# a bounded wait is what keeps a short append from failing under that contention.
-BUSY_TIMEOUT_SECONDS = 10.0
+# The queue and the ledger share one file with the workflow's task writes, so the connection is
+# configured centrally (``storage.connection``: WAL, ``synchronous=NORMAL``, a bounded wait).
+from storage.connection import connect as _sqlite_connect
 
 INTENT_DDL = """
                 CREATE TABLE IF NOT EXISTS intent_ledger (
@@ -62,9 +62,9 @@ TERMINAL = ("completed", "stopped", "failed")
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    connection = sqlite3.connect(str(db_path), timeout=BUSY_TIMEOUT_SECONDS)
-    connection.row_factory = sqlite3.Row
-    return connection
+    # One configured connection: WAL, ``synchronous=NORMAL``, a bounded wait and foreign keys
+    # (``storage.connection``).
+    return _sqlite_connect(db_path)
 
 
 def apply_intent_schema(connection: sqlite3.Connection) -> None:

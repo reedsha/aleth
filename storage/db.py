@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict
 
 _STRICT = ConfigDict(extra="forbid", strict=False)
 
+from storage.connection import connect as _sqlite_connect
 from storage.telemetry import apply_telemetry_schema
 
 # The database file name. It lives in the project's *state* directory, not beside the plan:
@@ -474,10 +475,10 @@ class PlanStore:
 
     # -- connection / schema -----------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=30, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        # WAL, ``synchronous=NORMAL``, a bounded wait and foreign keys all come from the one
+        # helper (``storage.connection``); ``isolation_level=None`` is this store's own need,
+        # because it drives explicit transactions.
+        return _sqlite_connect(self._path, isolation_level=None)
 
     @contextmanager
     def _connection(self):

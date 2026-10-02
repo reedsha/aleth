@@ -157,11 +157,10 @@ def knowledge_connection() -> Iterator[sqlite3.Connection]:
     Opened here rather than borrowed from ``PlanStore`` because the store's own connections are
     per-call and private; this is the seam a caller outside ``storage`` uses to reach the graph.
     """
+    from storage.connection import connect
     from storage.db import get_store
 
-    connection = sqlite3.connect(get_store().path)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys=ON")
+    connection = connect(get_store().path)
     try:
         yield connection
     finally:
