@@ -13,11 +13,27 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 28)
+## ⚡ 0. Current State at This Handoff (Phase 29)
 
-- **Phases 5 → 28 are complete and CI-green.** Phase 28 (concurrency safety, SQLite WAL & network
-  airgaps) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what
-  changed most recently.
+- **Phases 5 → 29 are complete and CI-green.** Phase 29 (two-phase execution, the validation gate,
+  absolute state) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points
+  at what changed most recently.
+- **Setup runs with egress before the model is involved (Phase 29).** `tools/project_phases.py::run_setup`
+  installs the project's dependencies from its own manifests (or a human's `.aleth_phases.json`),
+  deterministically, in a container the model never gets. A failed install **refuses the run**. There
+  is no `docker network disconnect` because there is no long-lived container: one container per
+  command, `--rm`, so the setup namespace dies with it.
+- **A failing suite makes the shadow unmergeable (Phase 29).** `run_verification` runs the project's
+  suite **airgapped** over the finished shadow; a failure fails the intent and writes
+  `verified=false` into the staging manifest, so `workspace_merge` refuses it. `verified=None` means
+  "no suite declared", and a rejection is unaffected.
+- **`ALETH_STATE_ROOT` replaces the descriptor baton (Phase 29).** `storage/connection.py` derives
+  and publishes the absolute state directory **without overwriting** (a child cannot clobber what it
+  inherited), `published_state_root()` is what a worker reads, and a relative value is refused.
+  `publish_state_root()` -- the forced form -- runs only where the pointer *moves*: `set_plan_dir`,
+  `set_project_dir`, and test fixtures.
+- **The sandbox image carries node (Phase 29).** `npm install` / `npm test` are the setup and verify
+  commands for a JavaScript project; without the toolchain the two phases would be a no-op for it.
 - **The correlation id is thread-safe (Phase 28).** `tools/run_context.py` is a
   `contextvars.ContextVar`, not a module global: with a thread per run and a `threading.excepthook`,
   a global meant thread B's id filed thread A's crash. Anything off the run's thread asks
@@ -1476,12 +1492,16 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `6f45c37` (Phase 27) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `afe0591` (Phase 28) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.0 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1209 passed, 22 skipped, 236 subtests** in 81.69 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1225 passed, 5 skipped**, and **0 containers left behind** — this is the leg that exercises WAL under real parallelism and the airgap against a real daemon |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1229 passed, 23 skipped, 236 subtests** in 79.53 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1246 passed, 5 skipped**, and **0 containers left behind** — the leg that exercises the network toggle against a real daemon and the rebuilt image |
+| Two phases | `tests/test_project_phases.py` | **11 passed** — detection from manifests, the declaration winning over the table, a malformed declaration falling back, setup on `bridge` and verification on `none` (asserted on the argv), and the tool surface having no network parameter |
+| Merge gate | `tests/test_staging.py::MergeGateTests` | **6 passed** — a failed verdict refuses the merge and keeps the shadow, a pass merges, no-suite is mergeable, a rejection is unaffected, and the verdict survives a reload from the manifest |
+| State root | `tests/test_state_identity.py::PublishedStateRootTests` | **3 passed** — absolute and published, a child's derivation cannot clobber it, a relative value is refused |
+| Network toggle | `tests/test_chaos.py::NetworkIsolationTests` | **passed** — a setup-phase container connects, and a default one cannot |
 | Context isolation | `tests/test_run_context.py` | **5 passed** — two concurrent threads hold different ids (barrier-deterministic), a new thread does not inherit its parent's, and an unhandled exception reports `intent=<id>` with the traceback |
 | Supervisor faults | `tests/test_swarm.py::TestReactiveTick::test_a_dead_worker_is_recorded_by_the_parent` (+ the negative case) | **passed** — a dead worker writes one `WORKER_TERMINATED` row joined to the tick's intent, and a successful worker writes none |
 | Airgap | `tests/test_chaos.py::NetworkBoundaryTests` + `NetworkIsolationTests` | **passed** — no parameter can widen the network (pinned by `inspect.signature`), declaring `net` is reported and does not unseal, and on a live daemon the container cannot connect |

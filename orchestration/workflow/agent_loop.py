@@ -103,7 +103,7 @@ def run_tool_loop(
 
     for _step in range(max_steps):
         if not _live():
-            raise RunAborted(ABORTED_MESSAGE)
+            raise RunAborted(_abort_detail(ledger, intent_id))
         completion = completer(system=system_prompt, messages=list(messages), tools=schemas)
         text = str(getattr(completion, "text", "") or "")
         calls = list(getattr(completion, "tool_calls", None) or [])
@@ -116,7 +116,7 @@ def run_tool_loop(
             # Re-checked per call, not only per step: a tool *mutates*, and an abort that landed
             # while the model was thinking must not be overtaken by the write it was planning.
             if not _live():
-                raise RunAborted(ABORTED_MESSAGE)
+                raise RunAborted(_abort_detail(ledger, intent_id))
             name = str((call or {}).get("name") or "")
             arguments = dict((call or {}).get("arguments") or {})
             tool = by_name.get(name)
@@ -133,6 +133,16 @@ def run_tool_loop(
 
     _record_step_limit(ledger, intent_id, role, max_steps)
     raise AgentStepLimitExceeded(STEP_LIMIT_MESSAGE)
+
+
+def _abort_detail(ledger: Any, intent_id: str) -> str:
+    """Why the gate closed, naming the ledger it read.
+
+    A run aborted by a *misrouted* ledger -- a child reading a different database than its parent --
+    looks exactly like a run the user stopped, and the two need opposite fixes. Naming the file is
+    what makes that distinguishable in a log.
+    """
+    return f"{ABORTED_MESSAGE} (intent {intent_id!r} is not running in {getattr(ledger, 'path', '?')})"
 
 
 def _record_step_limit(ledger: Any, intent_id: str, role: str, steps: int) -> None:
