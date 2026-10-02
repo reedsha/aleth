@@ -428,9 +428,16 @@ class WorkspaceTestCase(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def write(self, filename, content):
-        with open(os.path.join(self.tmp, filename), "w", encoding="utf-8") as fh:
+        """Write a fixture file into the workspace, creating parents.
+
+        The engine's own writer is gone (Phase 25): ``executor.apply_artifact`` publishes through
+        the MCP filesystem server, so a test that needs bytes on disk writes them itself.
+        """
+        path = os.path.join(self.tmp, filename)
+        os.makedirs(os.path.dirname(path) or self.tmp, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(content)
-        return os.path.join(self.tmp, filename)
+        return path
 
     def read(self, filename):
         with open(os.path.join(self.tmp, filename), "r", encoding="utf-8") as fh:
@@ -453,35 +460,12 @@ class WorkspaceTestCase(unittest.TestCase):
 
 
 class FileOpTests(WorkspaceTestCase):
-    """read_file / write_file / append_to_file / list_workspace_files."""
+    """The engine's reader, and the workspace listing it sits beside."""
 
     def test_missing_file_message(self):
         # The engine reader answers "nothing to read" rather than writing an error string as
         # file content -- a caller can tell the difference.
         self.assertEqual(ft.read_source("nope.py"), "")
-
-    def test_write_then_read_round_trip(self):
-        result = ft.overwrite_source("pkg/mod.py", "x = 1\n")
-        self.assertEqual(result, "Successfully wrote 6 characters to pkg/mod.py.")
-        self.assertEqual(ft.read_source("pkg/mod.py"), "x = 1\n")
-
-    def test_a_whole_file_rewrite_cannot_escape_the_workspace(self):
-        """Containment is the engine writer's own guard, not a caller's convention.
-
-        The model's refuse-overwrite chokehold lived in the deleted ``write_file`` tool. What
-        replaces it for the engine's own writer is a resolved-path containment check, so a
-        deliverable can never be published outside the workspace.
-        """
-        with self.assertRaises(Exception) as caught:
-            ft.overwrite_source("../../escaped.py", "boom = True\n")
-        self.assertIn("Path traversal denied", str(caught.exception))
-
-    def test_a_file_is_refreshed_in_place(self):
-        # The engine's writer is not the model's tool: re-running a task must be able to
-        # refresh a deliverable that already exists.
-        ft.overwrite_source("once.py", "first\n")
-        ft.overwrite_source("once.py", "second\n")
-        self.assertEqual(ft.read_source("once.py"), "second\n")
 
     def test_read_source_is_never_truncated(self):
         """A caller that writes the text back must get the whole file.
@@ -491,14 +475,14 @@ class FileOpTests(WorkspaceTestCase):
         silently deleted when the text is written back.
         """
         body = "A" * 7000 + "B" * 7000
-        ft.overwrite_source("big.py", body)
+        self.write("big.py", body)
         self.assertEqual(ft.read_source("big.py"), body)
 
     def test_list_workspace_files_prunes_internal_dirs(self):
-        ft.overwrite_source("sub/a.py", "")
-        ft.overwrite_source("__pycache__/b.pyc", "")
-        ft.overwrite_source(".aleth_backups/task-1/c.py", "")
-        ft.overwrite_source("node_modules/d.js", "")
+        self.write("sub/a.py", "")
+        self.write("__pycache__/b.pyc", "")
+        self.write(".aleth_backups/task-1/c.py", "")
+        self.write("node_modules/d.js", "")
 
         paths = [f["path"] for f in ft.list_workspace_files()]
         self.assertIn("sub/a.py", paths)
@@ -724,11 +708,11 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
                 ],
             }],
         })
-        ft.overwrite_source("kept.py", "k\n")
-        ft.overwrite_source("built.py", "b\n")
+        self.write("kept.py", "k\n")
+        self.write("built.py", "b\n")
 
     def test_backup_records_modified_and_created(self):
-        ft.overwrite_source("existing.py", "v1\n")
+        self.write("existing.py", "v1\n")
         backup_path = ft.backup_file_for_task("task-9", "existing.py")
         self.assertTrue(backup_path and os.path.isfile(backup_path))
 
@@ -741,7 +725,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
 
     def test_audit_detects_both_discrepancy_classes(self):
         self._seed_completed_task_with_missing_deliverable()
-        ft.overwrite_source("untracked.py", "u\n")
+        self.write("untracked.py", "u\n")
 
         audit = ft.audit_codebase_plan_sync()
         self.assertFalse(audit["in_sync"])
@@ -759,7 +743,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
                  "details": [], "files": ["only.py"]},
             ]}],
         })
-        ft.overwrite_source("only.py", "x\n")
+        self.write("only.py", "x\n")
 
         audit = ft.audit_codebase_plan_sync()
         self.assertTrue(audit["in_sync"])
@@ -790,12 +774,12 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
         self.assertEqual(statuses["task-3"], "pending")
 
     def test_rollback_restores_modified_file_and_archives_new_file(self):
-        ft.overwrite_source("restored.py", "original\n")
+        self.write("restored.py", "original\n")
         ft.backup_file_for_task("task-1", "restored.py")
-        ft.overwrite_source("restored.py", "patched\n")
+        self.write("restored.py", "patched\n")
 
         ft.backup_file_for_task("task-1", "flaky.py")
-        ft.overwrite_source("flaky.py", "new\n")
+        self.write("flaky.py", "new\n")
 
         self.save_state({
             "title": "RB",
@@ -822,7 +806,7 @@ class BackupAuditRollbackTests(WorkspaceTestCase):
     def test_rollback_reports_a_failed_file_restore_instead_of_success(self):
         # A rollback that could not put a file back must not report success: the task's status
         # was reset but the workspace still holds the patched code (audit M7).
-        ft.overwrite_source("restored.py", "original\n")
+        self.write("restored.py", "original\n")
         ft.backup_file_for_task("task-1", "restored.py")
         self.save_state({
             "title": "RB2",
@@ -883,12 +867,12 @@ class TaskDiffTests(WorkspaceTestCase):
     """The read-only diff surface behind the UI's tracked-edits pane."""
 
     def _seed_diffable_task(self):
-        ft.overwrite_source("existing.py", "v1\n")
+        self.write("existing.py", "v1\n")
         ft.backup_file_for_task("task-9", "existing.py")
-        ft.overwrite_source("existing.py", "v2\n")
+        self.write("existing.py", "v2\n")
 
         ft.backup_file_for_task("task-9", "brand_new.py")
-        ft.overwrite_source("brand_new.py", "b\n")
+        self.write("brand_new.py", "b\n")
 
     def test_task_diff_reports_modified_and_created(self):
         self._seed_diffable_task()
@@ -987,7 +971,7 @@ class PreviewSourceTests(WorkspaceTestCase):
     """
 
     def test_reads_the_interface_file(self):
-        ft.overwrite_source(ft.PREVIEW_FILENAME, "<h1>hi</h1>\n")
+        self.write(ft.PREVIEW_FILENAME, "<h1>hi</h1>\n")
         res = ft.read_preview_source()
 
         self.assertTrue(res["success"])
@@ -1030,7 +1014,7 @@ class PreviewSourceTests(WorkspaceTestCase):
         self.assertFalse(res["found"])
 
     def test_an_oversized_file_is_truncated_not_refused(self):
-        ft.overwrite_source(ft.PREVIEW_FILENAME, "0123456789ABCDEF")
+        self.write(ft.PREVIEW_FILENAME, "0123456789ABCDEF")
         with mock.patch("tools.workspace_io.MAX_PREVIEW_CHARS", 10):
             res = ft.read_preview_source()
 
@@ -1782,13 +1766,13 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         # fixture has to return one for the suite to be a passing check rather than an
         # accidental failure -- the "always failed" trap the compile gate was fixed for,
         # in a second guise.
-        ft.overwrite_source("main.py", (
+        self.write("main.py", (
             "from typing import Dict, Any\n\n"
             "class SolutionEngine:\n"
             "    def run(self) -> Dict[str, Any]:\n"
             "        return {'status': 'success', 'verified': True}\n"
         ))
-        ft.overwrite_source("test_main.py", "def test_ok():\n    assert True\n")
+        self.write("test_main.py", "def test_ok():\n    assert True\n")
 
     def test_an_unapproved_fix_bug_is_planned_and_the_run_yields(self):
         """Phase 1 for a fix: the report is planned and the run halts, writing nothing.
@@ -2342,14 +2326,15 @@ class FacadeContractTests(WorkspaceTestCase):
 
     # Names that other modules import from tools.file_tools (plus the helpers that
     # only ever appear via the facade). Adding to this list is safe; dropping any
-    # name from the module is a breaking change.
+    # name from the module is a breaking change -- which is why ``overwrite_source``
+    # was removed deliberately in Phase 25, with its last caller already deleted.
     EXPECTED_EXPORTS = (
         "get_project_dir", "set_project_dir", "get_active_plan_filename",
         "set_active_plan_filename", "list_plan_files",
         "walk_workspace", "IGNORE_DIRS", "PROJECT_DIR", "ACTIVE_PLAN_FILE",
         "parse_markdown_to_plan_dict", "compile_plan_json_to_markdown",
         "parse_plan_tree", "load_plan_state", "save_plan_state",
-        "sync_plan_on_disk", "update_plan_task_status", "read_source", "overwrite_source",
+        "sync_plan_on_disk", "update_plan_task_status", "read_source",
         "list_workspace_files", "read_preview_source",
         "get_backup_dir", "backup_file_for_task",
         "audit_codebase_plan_sync", "resolve_sync_plan_to_codebase",
@@ -2383,8 +2368,11 @@ class FacadeContractTests(WorkspaceTestCase):
         """
         namespace = {}
         exec("from tools.file_tools import *", namespace)
-        self.assertIs(namespace["overwrite_source"], ft.overwrite_source)
         self.assertIs(namespace["read_source"], ft.read_source)
+        # The engine's writer is gone (Phase 25): the executor publishes through the MCP
+        # filesystem server, so a second writer with a second set of rules has no caller.
+        self.assertNotIn("overwrite_source", namespace)
+        self.assertFalse(hasattr(ft, "overwrite_source"))
         self.assertNotIn("all_file_tools", namespace)
         self.assertNotIn("write_file", namespace)
 
@@ -2997,7 +2985,7 @@ class SourceSpanBridgeTests(WorkspaceTestCase):
         self.app = app
 
     def test_it_returns_the_bytes_at_the_recorded_span(self):
-        ft.overwrite_source("main.py", "abcdef\n")
+        self.write("main.py", "abcdef\n")
 
         res = self.app.EngineService().get_source_span("main.py", 1, 4)
 
@@ -3019,7 +3007,7 @@ class SourceSpanBridgeTests(WorkspaceTestCase):
         self.assertEqual(res["text"], "")
 
     def test_a_span_past_the_end_is_clamped(self):
-        ft.overwrite_source("main.py", "abc")
+        self.write("main.py", "abc")
 
         res = self.app.EngineService().get_source_span("main.py", 0, 999)
 

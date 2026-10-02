@@ -33,9 +33,10 @@ def fake_docker_env(**extra):
 
 
 def _write(root: str, name: str, text: str) -> None:
+    """Write exactly these bytes: no newline translation, so a fixture is platform-independent."""
     path = os.path.join(root, name)
     os.makedirs(os.path.dirname(path) or root, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
+    with open(path, "w", encoding="utf-8", newline="") as handle:
         handle.write(text)
 
 
@@ -626,13 +627,13 @@ class ManifestShapeTests(unittest.TestCase):
 
 
 class ExecutionRootBifurcationTests(unittest.TestCase):
-    """Phase 23: the run's file I/O and the frontend's file reads resolve opposite roots.
+    """Phase 23: the run's file reads and the frontend's file reads resolve opposite roots.
 
-    The Phase 20 breach, formalized. ``overwrite_source`` lived beside the UI readers and resolved
-    against the *project* directory, so the engine's own deliverable writer wrote into the user's
-    live tree while every other execution path wrote into the shadow. ``read_source`` is the read
-    half of a read-modify-write patch and had the same defect -- it read the host while the patch
-    landed in the shadow, which is a patch against a stale base.
+    The Phase 20 breach, formalized. ``read_source`` is the read half of a read-modify-write patch
+    and resolved against the *project* directory, so it read the host while the patch landed in the
+    shadow -- a patch against a stale base, and a second step that could not see the first step's
+    edit. (Its writing counterpart, ``overwrite_source``, was deleted in Phase 25: the executor
+    publishes through the MCP filesystem server, whose root is already the shadow.)
     """
 
     def setUp(self):
@@ -649,21 +650,18 @@ class ExecutionRootBifurcationTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
         self.service = EngineService()
 
-    def test_the_engine_writer_lands_in_the_shadow_not_the_host(self):
-        with self.service._staged_execution("intent-bifurcated") as shadow:
-            execution_io.overwrite_source("deliverable.py", "x = 1\n")
+    def test_a_read_resolves_the_execution_root_not_the_project(self):
+        """The read half of a read-modify-write patch must come from the root the write targets.
 
-            self.assertTrue(os.path.isfile(os.path.join(shadow.path, "deliverable.py")))
-            self.assertFalse(os.path.isfile(os.path.join(self.host, "deliverable.py")))
-
-    def test_a_read_sees_the_agents_own_writes_across_steps(self):
-        """The read half of a read-modify-write patch resolves the same root as the write."""
-        with self.service._staged_execution("intent-steps"):
-            execution_io.overwrite_source("pkg/mod.py", "value = 2\n")
+        The write itself goes over MCP (``executor.apply_artifact``); this pins the *read* side,
+        which is the half that was resolving the user's tree while the patch landed in the shadow.
+        """
+        with self.service._staged_execution("intent-steps") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 2\n")
 
             self.assertEqual(execution_io.read_source("pkg/mod.py"), "value = 2\n")
 
-        # The host still holds the pre-run bytes: the read never left the shadow either.
+        # The host still holds the pre-run bytes: the read never left the shadow.
         self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
 
     def test_the_ui_reads_still_see_the_live_project(self):
@@ -677,22 +675,19 @@ class ExecutionRootBifurcationTests(unittest.TestCase):
     def test_an_injected_root_is_the_only_root(self):
         granted = tempfile.mkdtemp(prefix="aleth_granted_")
         self.addCleanup(shutil.rmtree, granted, ignore_errors=True)
+        _write(granted, "injected.py", "x = 1\n")
 
-        execution_io.overwrite_source("injected.py", "x = 1\n", root=granted)
-
-        self.assertTrue(os.path.isfile(os.path.join(granted, "injected.py")))
-        self.assertFalse(os.path.isfile(os.path.join(self.host, "injected.py")))
+        self.assertEqual(execution_io.read_source("injected.py", root=granted), "x = 1\n")
+        # The project's own copy is not what answered -- the injected root is the only one.
+        self.assertEqual(execution_io.read_source("injected.py"), "")
 
     def test_an_injected_root_cannot_be_escaped(self):
         granted = tempfile.mkdtemp(prefix="aleth_granted_")
         self.addCleanup(shutil.rmtree, granted, ignore_errors=True)
 
         with self.assertRaises(ValueError) as caught:
-            execution_io.overwrite_source("../escape.py", "x = 1\n", root=granted)
-        self.assertIn("Path traversal denied", str(caught.exception))
-
-        with self.assertRaises(ValueError):
             execution_io.read_source("../../escape.py", root=granted)
+        self.assertIn("Path traversal denied", str(caught.exception))
 
     def test_the_execution_module_never_reaches_for_the_project_root(self):
         """The bifurcation is a property of the module, not of one code path inside it.

@@ -6,7 +6,7 @@ decomposed by concern into focused siblings:
     workspace.py    - where work happens (project dir + active plan pointer)
     plan_parser.py  - markdown <-> plan dict translation (pure)
     plan_state.py   - SQLite-backed plan state + the read-only markdown projection
-    execution_io.py - the run's file I/O, bound to the execution root (the shadow)
+    execution_io.py - the run's file reads, bound to the execution root (the shadow)
     workspace_io.py - the frontend's file reads (listing/preview/env), bound to the project
     recovery.py     - backups, codebase audit, sync resolution, rollback
 
@@ -62,7 +62,6 @@ from tools.workspace import (
     walk_workspace,
 )
 from tools.execution_io import (
-    overwrite_source,
     read_source,
 )
 from tools.workspace_io import (
@@ -104,7 +103,6 @@ __all__ = [
     "update_plan_task_status",
     # file operations (engine-internal; the model's file tools are MCP tools now)
     "read_source",
-    "overwrite_source",
     "list_workspace_files",
     "read_preview_source",
     "PREVIEW_FILENAME",

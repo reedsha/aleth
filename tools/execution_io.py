@@ -1,23 +1,24 @@
-"""Phase 23: the execution surface's file I/O, bound to the shadow and to nothing else.
+"""Phase 23/25: the execution surface's file *reads*, bound to the shadow and to nothing else.
 
 The engine's file access has two halves with **opposed** security contracts, and until Phase 23 they
-were one module behind one resolver. That is how ``overwrite_source`` came to resolve against the
-user's live project directory while every other execution path resolved against the shadow -- a
-titanium cage with a pipeline out of it (Phase 20).
+were one module behind one resolver. That is how ``read_source`` came to resolve against the user's
+live project directory while the patch it was reading *for* landed in the shadow -- a
+read-modify-write sequence split across two roots, so the second step could not see the first
+step's edit.
 
-* **This module is the run's half.** ``overwrite_source`` and ``read_source`` are what the workflow
-  writes and reads *as the agent*: a deliverable, and the current contents of a file it is about to
-  patch. Both resolve against the **execution root** -- the active shadow
-  (``tools.workspace.get_execution_dir``), or the root the orchestrator injects -- and this module
-  does not import ``get_project_dir`` at all. That is the boundary: an edit here cannot reach the
-  user's tree by accident, because the name is not in scope.
+* **This module is the run's half.** ``read_source`` is what the workflow reads *as the agent*: the
+  current contents of a file it is about to patch. It resolves against the **execution root** -- the
+  active shadow (``tools.workspace.get_execution_dir``), or the root the orchestrator injects -- and
+  this module does not import ``get_project_dir`` at all. That is the boundary: an edit here cannot
+  reach the user's tree by accident, because the name is not in scope.
 * **``tools.workspace_io`` is the frontend's half**: the file listing, the preview and the ``.env``
   reader. Those are reads of the *user's project* and stay on ``get_project_dir``.
 
-``read_source`` belongs here rather than with the readers for a sharper reason than symmetry: it is
-the read half of a read-modify-write patch. Reading the host while the patch lands in the shadow
-patches a stale base -- the first step's edit would be invisible to the second -- so the two halves
-of that sequence have to resolve the same root or the sequence is simply wrong.
+**The writing half is gone, and deliberately.** ``overwrite_source`` lived here until Phase 25. It
+had no production caller -- ``executor.apply_artifact`` publishes through the **MCP filesystem
+server** (``client.write_file``), whose root is the shadow -- so it was a second writer with a
+second set of rules and nothing left to use it. The executor is the one writer; a reader is all
+this module needs to be.
 
 **The root is injected, not guessed.** ``root=`` is a parameter: the orchestrator passes the run's
 root (``WorkflowContext.execution_root``, captured from the shadow when the run starts), and a
@@ -32,7 +33,6 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from tools import atomic_io
 from tools.workspace import get_execution_dir
 
 
@@ -70,22 +70,6 @@ def _resolve(filename: str, *, root: str) -> Path:
     return candidate
 
 
-def overwrite_source(filename: str, content: str, *, root: Optional[str] = None) -> str:
-    """Create or replace a file in the execution root. **Not an LLM tool.**
-
-    The workflow publishes its own deliverables through this, because a deliverable may already
-    exist from a previous run and re-running a task must be able to refresh it. The chokehold is on
-    the model's write tool (the MCP filesystem server's ``create_file``, which refuses to
-    overwrite), not on the engine publishing its own artifact.
-
-    Atomic (``tools.atomic_io``): a run can be severed mid-write by the plan TTL or the OOM killer,
-    and a half-written deliverable presented as a finished one is worse than no write at all.
-    """
-    filepath = _resolve(filename, root=execution_root(root))
-    atomic_io.write_text_atomic(str(filepath), content)
-    return f"Successfully wrote {len(content)} characters to {filename}."
-
-
 def read_source(filename: str, *, root: Optional[str] = None) -> str:
     """The file's full text from the execution root, or ``""`` when it is missing or unreadable.
 
@@ -105,4 +89,4 @@ def read_source(filename: str, *, root: Optional[str] = None) -> str:
         return ""
 
 
-__all__ = ["PathDenied", "execution_root", "overwrite_source", "read_source"]
+__all__ = ["PathDenied", "execution_root", "read_source"]
