@@ -235,7 +235,7 @@ class Swarm:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
-    def _descriptor_for(self, node: Dict[str, Any]) -> Dict[str, Any]:
+    def _descriptor_for(self, node: Dict[str, Any], *, intent_id: str = "") -> Dict[str, Any]:
         """The role payload for a node, with its prompt, critique and *route* snapshotted now.
 
         The router picks the role from the node's title and tag -- the same zero-token decision the
@@ -300,6 +300,8 @@ class Swarm:
             # What the node says it needs, also hydrated by the dispatch query. The child scopes
             # its session to exactly this, so an empty declaration is enforced as "no tools".
             capabilities=node.get("required_capabilities") or [],
+            # The parent's run identity, carried across the process boundary (Phase 27).
+            intent_id=str(intent_id or ""),
         )
 
     # -- the reactive loop -------------------------------------------------------
@@ -308,12 +310,16 @@ class Swarm:
         self.tick()
         return self
 
-    def tick(self) -> List[str]:
+    def tick(self, *, intent_id: str = "") -> List[str]:
         """Dispatch every runnable node not already in flight. Fires and forgets.
 
         Returns the ids it submitted, which is what a test asserts on. A node that is executable
         but already in flight is skipped -- that is the whole of the de-duplication, because the
         pool holds the truth about what is running.
+
+        ``intent_id`` is the run this tick belongs to, and it travels to the children in their
+        descriptors (Phase 27): a swarm child plans with a tool loop, so it records telemetry, and a
+        fault it records has to be joinable to the intent that caused it.
         """
         if self._closed:
             # Closed while a callback was still in flight. Dispatching now would either raise on a
@@ -339,7 +345,7 @@ class Swarm:
             if node_id in self._in_flight:
                 continue
             try:
-                descriptor = self._descriptor_for(node)
+                descriptor = self._descriptor_for(node, intent_id=intent_id)
             except TaskUnroutable as error:
                 # The fleet cannot run this node, and no retry will change that: it is a
                 # configuration fact, not a transient fault. Failed once, with the reason, rather

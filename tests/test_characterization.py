@@ -1363,11 +1363,13 @@ class CoderDelegationEventTests(WorkspaceTestCase):
         from orchestration.workflow import generation, planner, templates
 
         def _canned(task, *, plan_id=None, workspace_dir=None, completer=None, session=None,
-                    model=None, base_url=None, api_key=None):
+                    model=None, base_url=None, api_key=None, role=None, capabilities=None,
+                    intent_id=""):
             # ``model``/``base_url``/``api_key`` are part of ``plan_task``'s contract now: the
             # caller names the route the router selected and the endpoint that reaches it. The
             # canned planner ignores them -- it is a fixture, not a router -- but it must accept
-            # them, exactly as the real planner does.
+            # them, exactly as the real planner does. ``intent_id`` joined that contract in
+            # Phase 27 for the same reason, and is ignored here too.
             title = str(task.get("title") or "")
             deliverable = templates.select(title, task.get("tag"))
             files = [str(name) for name in (task.get("files") or []) if str(name).strip()]

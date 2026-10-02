@@ -11,6 +11,13 @@ for _shadowed in load_environment():
 # bypasses the exec server's SIGTERM handler, so those containers are still running, still
 # burning CPU and still holding their file locks; the next boot is the only thing that will ever
 # collect them. It reports what it found, because a silent collector hides a systemic crash.
+# Unhandled exceptions get the run's correlation id (Phase 27). Installed **first**, before the
+# sweeps below: an exception raised by the boot itself is exactly the kind that used to arrive as a
+# naked traceback with nothing saying which run it belonged to.
+from tools.run_context import install_exception_logging
+
+install_exception_logging()
+
 from tools.docker_sandbox import install_shutdown_sweep, sweep_orphaned_containers
 
 sweep_orphaned_containers("boot")

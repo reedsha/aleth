@@ -183,6 +183,50 @@ class IntentLedger:
         finally:
             connection.close()
 
+    def is_live(self, intent_id: str) -> bool:
+        """Whether ``intent_id`` is still ``running``. One indexed read (``idx_intent_status``).
+
+        The workflow layer's liveness gate (Phase 27). Before it mutates a file or records a fault it
+        asks whether the intent it is working for has been aborted underneath it -- a stop the user
+        asked for, a breaker that tripped, a supervisor killing the run. A blank id answers ``False``:
+        an operation that cannot name its intent has nothing to be live *for*.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return False
+        connection = _connect(self.path)
+        try:
+            row = connection.execute(
+                "SELECT 1 FROM intent_ledger WHERE intent_id = ? AND status = 'running'",
+                (resolved,),
+            ).fetchone()
+            return row is not None
+        finally:
+            connection.close()
+
+    def abort(self, intent_id: str, reason: str = "") -> bool:
+        """Mark a *running* intent failed from outside its own run. ``True`` when it took.
+
+        What a parallel abort calls, so an in-flight pass can **see** it: the workflow layer's
+        liveness gate reads this row, and a run that has been aborted stops instead of finishing work
+        whose result nobody will accept. Conditional on ``running``, so it cannot rewrite an intent
+        that already settled -- the engine's own terminal write always wins.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return False
+        connection = _connect(self.path)
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE intent_ledger SET status = 'failed', error = ?, updated_at = ?"
+                    " WHERE intent_id = ? AND status = 'running'",
+                    (str(reason or ""), time.time(), resolved),
+                )
+                return int(cursor.rowcount or 0) == 1
+        finally:
+            connection.close()
+
     def recent(self, limit: int = 20) -> List[Dict[str, Any]]:
         """The newest intents first, bounded. Uses ``idx_intent_created``."""
         connection = _connect(self.path)

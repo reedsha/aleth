@@ -39,6 +39,17 @@ class AgentStepLimitExceeded(RuntimeError):
     """
 
 
+class RunAborted(RuntimeError):
+    """The intent this pass belongs to was aborted underneath it (Phase 27).
+
+    Raised by the liveness gate, which is checked before every step and before every tool call: the
+    engine must not mutate a file, or write telemetry, for an intent that has already been aborted.
+    """
+
+
+ABORTED_MESSAGE = "the intent was aborted before this pass finished"
+
+
 def _tool_schemas(tools: List[Any]) -> List[Dict[str, Any]]:
     if not tools:
         return []
@@ -55,6 +66,8 @@ def run_tool_loop(
     user_message: str,
     completer: Callable[..., Any],
     max_steps: int = MAX_AGENT_STEPS,
+    intent_id: str = "",
+    ledger: Any = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Drive ``completer`` through the tools bound for ``role``.
 
@@ -70,15 +83,27 @@ def run_tool_loop(
     ceiling is a hard stop *and a fault*: it records the fault and raises
     :class:`AgentStepLimitExceeded`, so a model that loops forever cannot hang the run and cannot
     be mistaken for one that answered.
+
+    ``intent_id``/``ledger`` are the correlation and the liveness gate (Phase 27). ``ledger`` is an
+    object with ``path`` and ``is_live(intent_id)`` -- injected rather than resolved here, because
+    this loop also runs in a swarm *child* process where the plan directory is not the parent's. The
+    gate only applies when both are present, so a caller with neither (a bare unit test) still gets
+    the step ceiling.
     """
     tools = session.get_bound_tools(role) if session is not None else []
     by_name = {tool.name: tool for tool in tools}
     schemas = _tool_schemas(tools)
+    gated = bool(ledger is not None and str(intent_id or "").strip())
+
+    def _live() -> bool:
+        return not gated or bool(ledger.is_live(intent_id))
 
     messages: List[Dict[str, Any]] = [{"role": "user", "content": user_message}]
     transcript: List[Dict[str, Any]] = []
 
     for _step in range(max_steps):
+        if not _live():
+            raise RunAborted(ABORTED_MESSAGE)
         completion = completer(system=system_prompt, messages=list(messages), tools=schemas)
         text = str(getattr(completion, "text", "") or "")
         calls = list(getattr(completion, "tool_calls", None) or [])
@@ -88,6 +113,10 @@ def run_tool_loop(
 
         messages.append({"role": "assistant", "content": text, "tool_calls": calls})
         for call in calls:
+            # Re-checked per call, not only per step: a tool *mutates*, and an abort that landed
+            # while the model was thinking must not be overtaken by the write it was planning.
+            if not _live():
+                raise RunAborted(ABORTED_MESSAGE)
             name = str((call or {}).get("name") or "")
             arguments = dict((call or {}).get("arguments") or {})
             tool = by_name.get(name)
@@ -102,24 +131,35 @@ def run_tool_loop(
             transcript.append({"tool": name, "arguments": arguments, "result": result})
             messages.append({"role": "tool", "name": name, "content": result})
 
-    _record_step_limit(role, max_steps)
+    _record_step_limit(ledger, intent_id, role, max_steps)
     raise AgentStepLimitExceeded(STEP_LIMIT_MESSAGE)
 
 
-def _record_step_limit(role: str, steps: int) -> None:
-    """Write the fault to the forensic ledger. Best effort, and it never replaces the fault.
+def _record_step_limit(ledger: Any, intent_id: str, role: str, steps: int) -> None:
+    """Write the fault to the forensic ledger, joined to the intent. Best effort.
 
-    The loop records its own row because it is the only thing that knows for certain, the same
-    reasoning that has the exec server record its own receipt. A telemetry write that fails is
-    reported and the raise goes ahead regardless: losing the *record* of a runaway loop is bad, and
-    losing the *stop* would be worse.
+    Skipped outright when the intent is no longer live: the engine must not write telemetry for a
+    run that has already been aborted, and a fault row for one would be exactly the detached noise
+    the correlation id exists to remove.
+
+    A telemetry write that fails is reported and the raise goes ahead regardless: losing the
+    *record* of a runaway loop is bad, and losing the *stop* would be worse.
     """
+    if ledger is None:
+        print(
+            "[agent-loop] the step-limit fault has no ledger to be recorded in",
+            file=sys.stderr,
+        )
+        return
+    if intent_id and not ledger.is_live(intent_id):
+        return
+
     from storage import telemetry
-    from storage.db import default_db_path
 
     try:
         telemetry.record_agent_fault(
-            default_db_path(),
+            ledger.path,
+            intent_id=intent_id,
             kind="STEP_LIMIT_EXCEEDED",
             role=str(role),
             detail=STEP_LIMIT_MESSAGE,

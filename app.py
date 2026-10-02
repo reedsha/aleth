@@ -38,6 +38,7 @@ from tools.file_tools import (
     read_preview_source,
     read_environment_variables
 )
+from tools.run_context import get_current_intent, set_current_intent
 from tools.settings import read_settings, save_settings as write_settings
 from tools.plan_state import append_pending_task, plan_structure_report, write_plan_markdown
 from tools.task_tags import UI_TAG
@@ -481,7 +482,9 @@ class EngineService:
                         (user_message or "").strip(),
                         self.emit_event,
                         action_type=action_type or "custom",
-                        action_params=action_params or {}
+                        action_params=action_params or {},
+                        # The correlation id, threaded all the way to the agent loop (Phase 27).
+                        intent_id=str(intent_id or ""),
                     )
                 finally:
                     # The run has ended, so whatever it completed has unblocked its children. The
@@ -633,13 +636,20 @@ class EngineService:
             from api.intents import RunDeferred
 
             raise RunDeferred("a run is already in progress")
-        with self._staged_execution(str(intent.id)):
-            if str(intent.action_type) == "execute_plan":
-                return self._drive_plan(intent)
-            outcome = self._run_blocking(
-                intent.message, intent.action_type, dict(intent.action_params), str(intent.id)
-            )
-            self._settle_from_outcome(intent, outcome)
+        # The process's correlation id, for anything that has no argument to thread -- an
+        # unhandled exception's report being the one that matters (Phase 27). Cleared in the
+        # ``finally`` so it cannot outlive the run that set it.
+        set_current_intent(str(intent.id))
+        try:
+            with self._staged_execution(str(intent.id)):
+                if str(intent.action_type) == "execute_plan":
+                    return self._drive_plan(intent)
+                outcome = self._run_blocking(
+                    intent.message, intent.action_type, dict(intent.action_params), str(intent.id)
+                )
+                self._settle_from_outcome(intent, outcome)
+        finally:
+            set_current_intent(None)
 
     # -------------------------------------------------------------
     # The autonomous loop: drive the DAG to the human gate (Phase 18)
@@ -926,8 +936,24 @@ class EngineService:
         longer declares the run halted while the backend is still writing. Only when no
         run is live does this emit the terminal event itself, so a stray Stop click still
         returns the UI to a resting state.
+
+        The stop is also written to the **ledger** (Phase 27), not only to the in-process flag: the
+        workflow layer's liveness gate reads that row, so a run that is deep inside an agent loop
+        finds out that it has been aborted and drops the operation instead of finishing work whose
+        result nobody will accept. A flag can only be seen by the thread that holds it.
         """
         registry.stop_workflow()
+        if self._ledger is not None:
+            running = get_current_intent()
+            if running:
+                try:
+                    self._ledger.abort(running, "stopped by the user")
+                except Exception as error:  # the flag above is what actually stops the run
+                    print(
+                        f"[engine] could not record the abort of intent {running}: "
+                        f"{type(error).__name__}: {error}",
+                        file=sys.stderr,
+                    )
         if not (self._execution_thread and self._execution_thread.is_alive()):
             self.emit_event({
                 "type": "workflow_stopped",
@@ -1159,7 +1185,7 @@ class EngineService:
         undone by the pool being unavailable.
         """
         try:
-            return self._ensure_swarm().tick()
+            return self._ensure_swarm().tick(intent_id=get_current_intent())
         except Exception as error:
             print(f"[Swarm] tick skipped: {type(error).__name__}: {error}", file=sys.stderr)
             return []

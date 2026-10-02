@@ -920,14 +920,30 @@ class ToolLoopTests(MCPServerTestCase):
 
         self.assertEqual(str(caught.exception), STEP_LIMIT_MESSAGE)
 
-    def test_the_ceiling_is_recorded_in_the_telemetry(self):
-        """The fault is written where a forensic read will find it, not only raised."""
+    def test_the_ceiling_is_recorded_against_the_intent(self):
+        """The fault is written where a forensic read will find it -- and joined to its run.
+
+        A fault row that cannot be joined to the intent that caused it is observability theater:
+        in a concurrent engine it reads as noise, not evidence.
+        """
+        from api.intents import Intent
         from orchestration.mcp_session import MCPSessionContext
-        from orchestration.workflow.agent_loop import MAX_AGENT_STEPS, STEP_LIMIT_MESSAGE, run_tool_loop
+        from orchestration.workflow.agent_loop import (
+            MAX_AGENT_STEPS,
+            STEP_LIMIT_MESSAGE,
+            run_tool_loop,
+        )
         from storage import telemetry
         from storage.db import default_db_path
+        from storage.intents import IntentLedger
 
         self.assertEqual(MAX_AGENT_STEPS, 30, "the ceiling is a deliberate number")
+        ledger = IntentLedger(default_db_path())
+        intent = Intent(id="i-loop", action_type="custom", message="go",
+                        action_params={}, enqueued_at=0.0)
+        ledger.record(intent)
+        self.assertTrue(ledger.claim(intent))
+
         self._write("mod.py", "x = 1\n")
         forever = [self._Completion(tool_calls=[{"name": "read_file", "arguments": {"path": "mod.py"}}])] * 4
         completer = self._scripted(*forever)
@@ -937,14 +953,112 @@ class ToolLoopTests(MCPServerTestCase):
                 run_tool_loop(
                     session=session, role="coder", system_prompt="sys",
                     user_message="loop", completer=completer, max_steps=2,
+                    intent_id="i-loop", ledger=ledger,
                 )
 
-        rows = telemetry.agent_faults(default_db_path(), limit=5)
+        rows = telemetry.agent_faults(default_db_path(), intent_id="i-loop", limit=5)
         self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]["intent_id"], "i-loop")
         self.assertEqual(rows[0]["kind"], "STEP_LIMIT_EXCEEDED")
         self.assertEqual(rows[0]["detail"], STEP_LIMIT_MESSAGE)
         self.assertEqual(rows[0]["steps"], 2)
         self.assertEqual(rows[0]["role"], "coder")
+
+
+class RunLivenessGateTests(MCPServerTestCase):
+    """Phase 27: an aborted intent's work is dropped, not finished.
+
+    A flag can only be seen by the thread that holds it; the ledger row can be seen by every thread
+    and every process. That is why the abort is durable and the gate reads it.
+    """
+
+    def _ledger_with_running(self, intent_id):
+        from api.intents import Intent
+        from storage.db import default_db_path, get_store
+        from storage.intents import IntentLedger
+
+        # The store is what applies the telemetry schema at boot, so a test that reads the fault
+        # ledger has to have built one -- exactly as production has by the time a run starts.
+        get_store()
+        ledger = IntentLedger(default_db_path())
+        intent = Intent(id=intent_id, action_type="custom", message="go",
+                        action_params={}, enqueued_at=0.0)
+        ledger.record(intent)
+        self.assertTrue(ledger.claim(intent))
+        return ledger
+
+    class _Completion:
+        def __init__(self, text="", tool_calls=None):
+            self.text = text
+            self.tool_calls = tool_calls or []
+
+    def _scripted(self, *turns):
+        """A completer that answers with ``turns`` in order, then a plain answer."""
+        remaining = list(turns)
+
+        def completer(*, system, messages, tools):
+            return remaining.pop(0) if remaining else self._Completion(text="done")
+
+        return completer
+
+    def test_an_aborted_intent_stops_before_the_next_tool_call(self):
+        """The mutation is dropped: a dead run's plan is not executed."""
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import RunAborted, run_tool_loop
+
+        ledger = self._ledger_with_running("i-abort")
+        self._write("mod.py", "x = 1\n")
+        calls = {"n": 0}
+
+        def completer(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Aborted while the model was "thinking": the call it just asked for must not run.
+                ledger.abort("i-abort", "stopped by the user")
+            return self._Completion(tool_calls=[{
+                "name": "create_file", "arguments": {"path": "written.py", "content": "x = 1\n"},
+            }])
+
+        with MCPSessionContext(self.tmp) as session:
+            with self.assertRaises(RunAborted):
+                run_tool_loop(
+                    session=session, role="coder", system_prompt="sys", user_message="go",
+                    completer=completer, intent_id="i-abort", ledger=ledger,
+                )
+
+        self.assertFalse(
+            os.path.exists(os.path.join(self.tmp, "written.py")),
+            "a tool mutated the workspace for an intent that had been aborted",
+        )
+
+    def test_the_fault_write_is_skipped_for_a_dead_intent(self):
+        """Belt and braces: an abort landing between the last gate check and the record."""
+        from orchestration.workflow.agent_loop import _record_step_limit
+        from storage import telemetry
+        from storage.db import default_db_path
+
+        ledger = self._ledger_with_running("i-dead")
+        ledger.abort("i-dead", "the plan's TTL expired")
+
+        _record_step_limit(ledger, "i-dead", "coder", 3)
+
+        self.assertEqual(telemetry.agent_faults(default_db_path(), intent_id="i-dead"), [])
+
+    def test_an_ungated_loop_still_has_its_ceiling(self):
+        """No ledger, no intent: the gate is simply not armed, and the ceiling still fires."""
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import AgentStepLimitExceeded, run_tool_loop
+
+        self._write("mod.py", "x = 1\n")
+        forever = [self._Completion(tool_calls=[{"name": "read_file", "arguments": {"path": "mod.py"}}])] * 4
+        completer = self._scripted(*forever)
+
+        with MCPSessionContext(self.tmp) as session:
+            with self.assertRaises(AgentStepLimitExceeded):
+                run_tool_loop(
+                    session=session, role="coder", system_prompt="sys",
+                    user_message="loop", completer=completer, max_steps=2,
+                )
 
 
 class ToolResultBudgetTests(MCPServerTestCase):

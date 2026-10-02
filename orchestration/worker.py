@@ -195,6 +195,10 @@ def execute_node(
                 # The same declaration the session was scoped to, so the planning pass can select
                 # the skill playbooks for exactly these capabilities (Phase 7.5).
                 capabilities=capabilities,
+                # The parent's run identity, carried in the descriptor (Phase 27): a fault this
+                # child records has to be joinable to the intent the parent is executing, and the
+                # child has no other way to know it.
+                intent_id=str(role_descriptor.get("intent_id") or ""),
             )
     finally:
         connection.close()
@@ -205,7 +209,8 @@ def role_payload(role: Any, *, plan_id: str, workspace_dir: str,
                  rejection_feedback: Optional[list] = None,
                  model: Optional[str] = None,
                  routing: Optional[Dict[str, Any]] = None,
-                 capabilities: Optional[list] = None) -> Dict[str, Any]:
+                 capabilities: Optional[list] = None,
+                 intent_id: str = "") -> Dict[str, Any]:
     """A role descriptor as a picklable payload, snapshotted at dispatch time.
 
     This is the fix for the hot-reload/concurrency hazard: the prompt is copied into a plain dict
@@ -224,6 +229,10 @@ def role_payload(role: Any, *, plan_id: str, workspace_dir: str,
     list when there are none. The key is never omitted, because for the child "absent" and "empty"
     would be indistinguishable, and the whole point of the diet is that an empty declaration means
     no tools rather than all of them.
+
+    ``intent_id`` is the parent's run identity (Phase 27). It travels for the same reason as
+    everything else here: the child records telemetry, and a fault it records has to be joinable to
+    the intent the parent is executing. The child cannot look it up -- it is a different process.
     """
     payload: Dict[str, Any] = {
         "name": str(getattr(role, "name", "")),
@@ -236,6 +245,7 @@ def role_payload(role: Any, *, plan_id: str, workspace_dir: str,
         # Always present, empty list included: the child must be able to tell a node that declared
         # nothing from a descriptor that forgot to say.
         "required_capabilities": [str(name) for name in (capabilities or [])],
+        "intent_id": str(intent_id or ""),
     }
     if routing:
         # Plain JSON-able data: it crosses a process boundary and must stay picklable.

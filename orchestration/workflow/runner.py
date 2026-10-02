@@ -54,6 +54,7 @@ def run_agent_workflow(
     emit_fn: Callable[[Dict[str, Any]], None],
     action_type: str = "custom",
     action_params: Optional[Dict[str, Any]] = None,
+    intent_id: str = "",
 ) -> None:
     """Executes an intent-driven agent workflow anchored to plan.json machine state.
 
@@ -122,6 +123,9 @@ def run_agent_workflow(
                 # The same root the MCP session is caged in, injected rather than looked up
                 # later: an action that writes a file is handed the run's root (Phase 23).
                 execution_root=get_execution_dir(),
+                # ...and the run's identity, so a fault is joinable and the loop can tell when
+                # this run has been aborted (Phase 27).
+                intent_id=str(intent_id or ""),
             )
 
             emit({

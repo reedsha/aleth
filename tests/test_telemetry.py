@@ -235,5 +235,77 @@ class SourceTreeIsReadOnlyTests(TelemetryTestCase):
         self.assertEqual(changed, [], f"a run modified files in the source tree: {changed}")
 
 
+class AgentFaultSchemaTests(unittest.TestCase):
+    """Phase 27: a fault must belong to an intent, and the schema has to say so."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aleth_faults_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.db_path = os.path.join(self.tmp, "ledger.db")
+
+    def _build(self):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            telemetry.apply_telemetry_schema(connection)
+        finally:
+            connection.close()
+
+    def test_a_fault_without_an_intent_is_refused(self):
+        """The column is NOT NULL; this is what makes it *never empty* as well."""
+        self._build()
+        for blank in ("", "   ", None):
+            with self.subTest(intent_id=blank):
+                with self.assertRaises(ValueError):
+                    telemetry.record_agent_fault(
+                        self.db_path, intent_id=blank, kind="STEP_LIMIT_EXCEEDED"
+                    )
+        self.assertEqual(telemetry.agent_faults(self.db_path), [])
+
+    def test_a_fault_is_joinable_to_its_intent(self):
+        self._build()
+        telemetry.record_agent_fault(self.db_path, intent_id="i-1", kind="STEP_LIMIT_EXCEEDED")
+        telemetry.record_agent_fault(self.db_path, intent_id="i-2", kind="STEP_LIMIT_EXCEEDED")
+
+        narrowed = telemetry.agent_faults(self.db_path, intent_id="i-1")
+        self.assertEqual(len(narrowed), 1)
+        self.assertEqual(narrowed[0]["intent_id"], "i-1")
+        self.assertEqual(len(telemetry.agent_faults(self.db_path)), 2)
+
+    def test_a_ledger_written_before_the_correlation_id_is_upgraded(self):
+        """The phase the table shipped in had no intent_id -- and no migration framework either."""
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                "CREATE TABLE agent_faults ("
+                " fault_id TEXT PRIMARY KEY, session_id TEXT NOT NULL DEFAULT '',"
+                " kind TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT '',"
+                " detail TEXT NOT NULL DEFAULT '', steps INTEGER NOT NULL DEFAULT 0,"
+                " recorded_at REAL NOT NULL)"
+            )
+            # The index the old shape created, which is what makes DROP COLUMN refuse first.
+            connection.execute(
+                "CREATE INDEX idx_agent_faults_session ON agent_faults(session_id)"
+            )
+            connection.execute(
+                "INSERT INTO agent_faults (fault_id, session_id, kind, recorded_at)"
+                " VALUES ('old', 's-1', 'STEP_LIMIT_EXCEEDED', 1.0)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        self._build()
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_faults)")}
+        finally:
+            connection.close()
+        self.assertIn("intent_id", columns)
+        self.assertNotIn("session_id", columns, "the uncorrelated column must not linger")
+        # The old row survives, carrying the new column's default.
+        self.assertEqual(telemetry.agent_faults(self.db_path)[0]["intent_id"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

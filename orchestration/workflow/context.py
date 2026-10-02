@@ -47,6 +47,10 @@ class WorkflowContext:
     should_stop: Any
     plan_file: str
     mcp_session: Any = None
+    # The run's identity (Phase 27): the correlation id a fault is recorded against, and the key
+    # the workflow layer's liveness gate reads. Empty for a caller that has no intent (a unit
+    # test driving an action directly), in which case the gate is simply not armed.
+    intent_id: str = ""
     # The root agent I/O is granted for this run (Phase 23): the active shadow, captured once when
     # the run starts and injected into every write and read-modify-write read. A tool resolves the
     # root it was handed, never one of its own, so it cannot be pointed at the user's live tree.

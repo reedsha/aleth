@@ -77,26 +77,44 @@ ROUTING_DDL = """
                     ON routing_decisions(decided_at);
 """
 
-# The agent-fault ledger (Phase 26): one append-only row per *loop* fault -- the model that kept
+# The agent-fault ledger (Phase 26/27): one append-only row per *loop* fault -- the model that kept
 # calling tools past its ceiling, rather than a container that misbehaved or a route that was
 # chosen. Its own table for the same reason as ``routing_decisions``: the fault has no container,
 # no exit code and no route, so a row in either of the other two would make their queries wrong.
 AGENT_FAULT_DDL = """
                 CREATE TABLE IF NOT EXISTS agent_faults (
                     fault_id    TEXT PRIMARY KEY,
-                    session_id  TEXT NOT NULL DEFAULT '',
+                    -- Required, and never blank: a fault that cannot be joined to the intent that
+                    -- caused it is observability theater, and in a concurrent engine a detached row
+                    -- reads as noise rather than evidence. ``record_agent_fault`` refuses a blank
+                    -- one, which is what makes the constraint real -- SQLite cannot add a NOT NULL
+                    -- column without a default, so the column carries one and the boundary enforces
+                    -- it.
+                    intent_id   TEXT NOT NULL DEFAULT '',
                     kind        TEXT NOT NULL DEFAULT '',
                     role        TEXT NOT NULL DEFAULT '',
                     detail      TEXT NOT NULL DEFAULT '',
                     steps       INTEGER NOT NULL DEFAULT 0,
                     recorded_at REAL NOT NULL
                 );
+"""
 
-                CREATE INDEX IF NOT EXISTS idx_agent_faults_session
-                    ON agent_faults(session_id);
+# Created *after* the migrations below, and that ordering is load-bearing: this index names
+# ``intent_id``, which a table written by an earlier build does not have yet.
+AGENT_FAULT_INDEXES = """
+                CREATE INDEX IF NOT EXISTS idx_agent_faults_intent
+                    ON agent_faults(intent_id);
                 CREATE INDEX IF NOT EXISTS idx_agent_faults_recorded
                     ON agent_faults(recorded_at);
 """
+
+# New columns go here *and* in the DDL above -- ``CREATE TABLE IF NOT EXISTS`` never adds a column
+# to a table that already exists.
+AGENT_FAULT_MIGRATIONS = (
+    # Phase 27: the correlation id. The table shipped without one for exactly one phase, and a
+    # fault recorded then could not be joined to the run that caused it.
+    ("intent_id", "TEXT NOT NULL DEFAULT ''"),
+)
 
 # New columns go here *and* in the DDL above. ``CREATE TABLE IF NOT EXISTS`` never adds a column to
 # a table that already exists, so a ledger written by an earlier build is upgraded by the guarded
@@ -126,6 +144,22 @@ def apply_telemetry_schema(connection: sqlite3.Connection) -> None:
     for name, ddl in TELEMETRY_MIGRATIONS:
         if name not in existing:
             connection.execute(f"ALTER TABLE execution_telemetry ADD COLUMN {name} {ddl}")
+    faults = {row[1] for row in connection.execute("PRAGMA table_info(agent_faults)")}
+    for name, ddl in AGENT_FAULT_MIGRATIONS:
+        if name not in faults:
+            connection.execute(f"ALTER TABLE agent_faults ADD COLUMN {name} {ddl}")
+    # The phase this ledger shipped in keyed a fault on a "session", which nothing ever filled and
+    # which ``intent_id`` replaces. The index goes first -- SQLite refuses to drop a column an index
+    # still names -- and both steps are tolerated where the engine cannot do them (a pre-3.35
+    # SQLite): a column nothing reads is better than rebuilding a ledger that may hold evidence.
+    if "session_id" in faults:
+        try:
+            connection.execute("DROP INDEX IF EXISTS idx_agent_faults_session")
+            connection.execute("ALTER TABLE agent_faults DROP COLUMN session_id")
+        except sqlite3.OperationalError:  # pragma: no cover - a pre-3.35 SQLite
+            pass
+    # Last, so the index can name a column the migrations above may have just added.
+    connection.executescript(AGENT_FAULT_INDEXES)
 
 
 def record(
@@ -233,30 +267,34 @@ def recent_routing_decisions(db_path: str, limit: int = 50) -> List[Dict[str, An
 def record_agent_fault(
     db_path: str,
     *,
+    intent_id: str,
     kind: str,
     detail: str = "",
     role: str = "",
     steps: int = 0,
-    session_id: str = "",
 ) -> str:
     """Append one loop fault, returning its id. **Raises** on failure, like :func:`record`.
 
-    Written by the loop that hit the ceiling, because that is the only thing that knows for
-    certain -- the same reasoning that has the exec server record its own receipt. ``session_id``
-    is empty from there: the workflow layer is handed a message and an action, not an intent id, so
-    the *intent's* failure is recorded in the intent ledger by the engine, which is the layer that
-    has the id.
+    ``intent_id`` is required and must not be blank: a fault that cannot be joined to the run that
+    caused it is not evidence. In a concurrent engine it is worse than nothing -- a detached row
+    reads as noise, and the reader cannot tell which of the night's runs it belongs to.
+
+    Written by the loop that hit the ceiling, because that is the only thing that knows for certain,
+    exactly as the exec server records its own receipt.
     """
+    resolved = str(intent_id or "").strip()
+    if not resolved:
+        raise ValueError("a fault must belong to an intent; intent_id is required")
     fault_id = str(uuid.uuid4())
     connection = _connect(db_path)
     try:
         with connection:
             connection.execute(
                 "INSERT INTO agent_faults"
-                " (fault_id, session_id, kind, role, detail, steps, recorded_at)"
+                " (fault_id, intent_id, kind, role, detail, steps, recorded_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    fault_id, str(session_id), str(kind), str(role), str(detail), int(steps),
+                    fault_id, resolved, str(kind), str(role), str(detail), int(steps),
                     time.time(),
                 ),
             )
@@ -265,14 +303,27 @@ def record_agent_fault(
     return fault_id
 
 
-def agent_faults(db_path: str, limit: int = 50) -> List[Dict[str, Any]]:
-    """The newest loop faults first, bounded by ``limit``. Uses ``idx_agent_faults_recorded``."""
+def agent_faults(
+    db_path: str, *, intent_id: str = "", limit: int = 50
+) -> List[Dict[str, Any]]:
+    """The newest loop faults first, bounded by ``limit``. Uses ``idx_agent_faults_recorded``.
+
+    ``intent_id`` narrows it to one run, which is the join the correlation id exists for; without it
+    the answer is the engine's recent fault history. The narrowed read uses ``idx_agent_faults_intent``.
+    """
     connection = _connect(db_path)
     try:
-        rows = connection.execute(
-            "SELECT * FROM agent_faults ORDER BY recorded_at DESC LIMIT ?",
-            (max(1, int(limit)),),
-        ).fetchall()
+        if str(intent_id or "").strip():
+            rows = connection.execute(
+                "SELECT * FROM agent_faults WHERE intent_id = ?"
+                " ORDER BY recorded_at DESC LIMIT ?",
+                (str(intent_id), max(1, int(limit))),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT * FROM agent_faults ORDER BY recorded_at DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
         return [dict(row) for row in rows]
     finally:
         connection.close()

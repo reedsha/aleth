@@ -129,7 +129,8 @@ class AgentRegistry:
         user_message: str,
         emit_fn: Callable[[Dict[str, Any]], None],
         action_type: str = "custom",
-        action_params: Optional[Dict[str, Any]] = None
+        action_params: Optional[Dict[str, Any]] = None,
+        intent_id: str = "",
     ):
         """Runs a workflow, handing the runner the registry state it needs.
 
@@ -141,6 +142,10 @@ class AgentRegistry:
         Reusing one event and clearing it at the start of each run let a new run clear
         the flag a previous, still-winding-down run was stopping on -- un-cancelling it,
         so two workflows then wrote the same plan and files concurrently.
+
+        ``intent_id`` is the run's identity, threaded to the workflow layer so a fault can be
+        joined to the intent that caused it and so the layer can tell when it has been aborted
+        (Phase 27). It is not used for anything else here.
         """
         run_stop_event = threading.Event()
         self.stop_event = run_stop_event
@@ -151,6 +156,7 @@ class AgentRegistry:
             emit_fn=emit_fn,
             action_type=action_type,
             action_params=action_params,
+            intent_id=intent_id,
         )
 
 

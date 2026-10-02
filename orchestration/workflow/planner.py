@@ -208,6 +208,20 @@ def _skills_for(capabilities: Optional[Sequence[str]]) -> str:
         return ""
 
 
+def _intent_ledger(intent_id: str) -> Any:
+    """The ledger the loop's liveness gate reads, or ``None`` when there is no intent to gate on.
+
+    Built from the same store the plan state comes from, so it is the right database in whichever
+    process is planning -- parent or swarm child.
+    """
+    if not str(intent_id or "").strip():
+        return None
+    from storage.db import get_store
+    from storage.intents import IntentLedger
+
+    return IntentLedger(get_store().path)
+
+
 def _from_llm(
     task: Mapping[str, Any],
     *,
@@ -221,6 +235,7 @@ def _from_llm(
     session: Any = None,
     role: str = DEFAULT_PLANNER_ROLE,
     capabilities: Optional[Sequence[str]] = None,
+    intent_id: str = "",
 ) -> Optional[ImplementationPlanArtifact]:
     """Ask System 2 for the artifact, or ``None`` when it cannot be produced.
 
@@ -276,6 +291,12 @@ def _from_llm(
                 # An injected completer drives the loop too, so a test can script the model's
                 # decisions while the tools still go over the real MCP transport.
                 completer=completer if completer is not None else _loop_completer,
+                # The correlation id and the liveness gate (Phase 27). The ledger is built here
+                # rather than looked up inside the loop, because the loop also runs in a swarm
+                # *child* process, where ``default_db_path()`` would resolve against the child's
+                # own idea of the plan directory rather than the parent's.
+                intent_id=intent_id,
+                ledger=_intent_ledger(intent_id),
             )
         except AgentStepLimitExceeded:
             # A model that ran away is a fault, not a planner that returned nothing. Letting it fall
@@ -348,6 +369,7 @@ def plan_task(
     api_key: Optional[str] = None,
     role: Optional[str] = None,
     capabilities: Optional[Sequence[str]] = None,
+    intent_id: str = "",
 ) -> ImplementationPlanArtifact:
     """The artifact for a task, produced by System 2. Raises when it cannot be planned.
 
@@ -376,7 +398,7 @@ def plan_task(
         task, plan_id=resolved_plan, workspace_dir=resolved_workspace, files=files,
         model=resolved_model, base_url=base_url, api_key=api_key,
         completer=completer, session=session, role=str(role or DEFAULT_PLANNER_ROLE),
-        capabilities=capabilities,
+        capabilities=capabilities, intent_id=str(intent_id or ""),
     )
     if planned is None:
         raise PlanningUnavailable(
@@ -560,6 +582,8 @@ def plan_and_yield(
         model=endpoint["route"],
         base_url=endpoint["base_url"],
         api_key=endpoint["api_key"],
+        # The run's identity, for the loop's correlation and its liveness gate (Phase 27).
+        intent_id=str(getattr(ctx, "intent_id", "") or ""),
     )
     recorded = execution_gate.plan_artifact(
         plan_id=artifact.plan_id,
