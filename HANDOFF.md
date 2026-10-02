@@ -13,12 +13,24 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 23)
+## ⚡ 0. Current State at This Handoff (Phase 24)
 
-- **Phases 5 → 23 are complete and CI-green.** Phase 23 (I/O root bifurcation & context strictness)
-  is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
+- **Phases 5 → 24 are complete and CI-green.** Phase 24 (vestige removal & identity atomicity) is
+  the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
   most recently.
-- **The run's file I/O and the frontend's reads are two modules now (Phase 23).** Phase 20 said
+- **The uncalled writer is gone (Phase 24).** `orchestration/workflow/actions_impl._write_checked`
+  had no production caller — `executor.apply_artifact` writes through the **MCP filesystem server**
+  (`client.write_file`), whose root is the shadow. It and `WorkflowWriteGuardTests` are deleted:
+  code that does not run in production is a liability waiting to be wired up incorrectly.
+- **The last non-atomic state write is closed (Phase 24).** `tools/workspace.py::_mint_identity`
+  wrote `.aleth_id` with a truncating write. `_identity_from_file` accepts any prefix of the token
+  that matches `_SAFE_ID_RE`, so a kill mid-write would not fail validation — it would answer as a
+  **different project** and orphan the whole state directory silently. It now goes through
+  `tools.atomic_io`. `_ignore_identity_file`'s append is deliberately left alone (harmless,
+  self-correcting).
+- **`overwrite_source` now has no production caller either.** Recorded, not acted on: it survives
+  as the façade-pinned engine primitive with `FileOpTests` coverage and the Phase 23 shadow binding.
+- **The run's file I/O and the frontend's reads are two modules (Phase 23).** Phase 20 said
   reads resolve the user's tree and execution writes resolve the shadow, but both halves sat behind
   one resolver in `tools/workspace_io.py` — and `overwrite_source`/`read_source` resolved against
   the **project** directory. `tools/execution_io.py` now owns the run's half: it imports
@@ -27,9 +39,8 @@
   `tools/file_tools.py` re-exports both halves, so no import site moved.
 - **`read_source` was the live defect (Phase 23).** `fix_bug` and `next_step` read the host while
   the patch was applied to the shadow over MCP, so a patch was computed against a stale base — a
-  second step could not see the first step's edit. `overwrite_source` was latent: its only caller,
-  `actions_impl._write_checked`, has no production caller (the executor writes through the MCP
-  server, whose root is already the shadow). Both are bound correctly now.
+  second step could not see the first step's edit. `overwrite_source` was latent, and Phase 24
+  deleted its only (uncalled) caller, `actions_impl._write_checked`. Both are bound correctly now.
 - **The root is injected, not guessed (Phase 23).** `WorkflowContext.execution_root` is captured
   from the shadow when the run starts and threaded into the writer and the read-modify-write reads;
   `tools.execution_io._resolve` raises a hard `PathDenied` (**a `ValueError`**) for any path outside
@@ -943,9 +954,12 @@ The action parameter form is **not** here — it is the docked command drawer in
     - *Cause:* `tools/file_ops.py::write_file` returns an error **string** on failure rather
       than raising, and the workflow branches ignored the return value — so a failed write
       still emitted "Successfully patched" and `next_step` still marked the task completed.
-    - *Fix:* one `_write_checked()` guard at all six call sites raises, so the runner's
-      existing `agent_error` + terminal `workflow_complete` path aborts the action before a
-      false verdict (or a completed mark) is recorded.
+    - *Fix:* a failed deliverable write must abort the action before a false verdict is recorded.
+      The guard used to be one `_write_checked()` at six call sites; Phase 24 deleted that function
+      along with the write path it wrapped, because the executor publishes through the MCP
+      filesystem server (`client.write_file`). The invariant now rests on that boundary: a refused
+      write raises `MCPError`, and `executor._apply_one` turns it into a reported
+      `AppliedEdit(success=False)` — never a returned success string.
 17. **A Plan "Saved" When It Was Not, And A Corrupt Plan Looked Empty:**
     - *Cause:* `save_plan_state` caught its write/compile failures, printed them, and still
       returned the dict — so every caller emitted `plan_updated` for state the disk never
@@ -1403,11 +1417,12 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `9fe11d8` (Phase 22) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `b538467` (Phase 23) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.1 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1185 passed, 18 skipped, 233 subtests** in 94.06 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1184 passed, 18 skipped, 233 subtests** in 97.29 s (`-n auto`; CI adds `-m "not llm"`) — the count *fell* by one net: `WorkflowWriteGuardTests` (2) deleted, the torn-mint test (1) added |
+| Identity atomicity | `tests/test_state_identity.py::MintedIdentityTests::test_a_torn_mint_cannot_become_a_different_project` | **passed** — a refused rename leaves no partial token and no scratch file, so a torn mint cannot answer as a different project |
 | I/O roots | `tests/test_staging.py::ExecutionRootBifurcationTests` | **7 passed** — the writer lands in the shadow and not the host, a read sees the agent's own writes across steps, the UI reads still see the live project, an injected root is the only root, an out-of-root path is a `ValueError`, `execution_io`'s code never names `get_project_dir` (AST-pinned), and the run context carries the shadow root |
 | Durability + bounding | `tests/test_retention.py` (new) + `tests/test_staging.py` | **48 passed** — ledger retention per table, a ledger-below-its-bound no-op, a never-created ledger skipped, `ids_with_status`, and the boot sweep end-to-end (a crashed intent failed *and* its shadow collected, a completed one kept, a never-ran project's strays collected, the report line, and a failing sweep reported rather than raised); plus the sibling-temporary assertion, a failed merge leaving the host file whole with no litter, and orphaned/manifest-less shadow collection |
 | Atomic writes | `tests/test_mcp.py::AtomicFilesystemWriteTests` | **4 passed** — no scratch beside a write, a refused `os.replace` leaving the original whole and no litter, the temporary sharing the target's directory, and `create_file` still create-never-replace |
