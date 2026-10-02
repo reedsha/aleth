@@ -13,11 +13,28 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 22)
+## ⚡ 0. Current State at This Handoff (Phase 23)
 
-- **Phases 5 → 22 are complete and CI-green.** Phase 22 (I/O durability & state bounding) is the
-  latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most
-  recently.
+- **Phases 5 → 23 are complete and CI-green.** Phase 23 (I/O root bifurcation & context strictness)
+  is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
+  most recently.
+- **The run's file I/O and the frontend's reads are two modules now (Phase 23).** Phase 20 said
+  reads resolve the user's tree and execution writes resolve the shadow, but both halves sat behind
+  one resolver in `tools/workspace_io.py` — and `overwrite_source`/`read_source` resolved against
+  the **project** directory. `tools/execution_io.py` now owns the run's half: it imports
+  `get_execution_dir` and **cannot** import `get_project_dir`. `tools/workspace_io.py` keeps the
+  frontend's reads (listing, preview, `.env`) and cannot reach the execution root.
+  `tools/file_tools.py` re-exports both halves, so no import site moved.
+- **`read_source` was the live defect (Phase 23).** `fix_bug` and `next_step` read the host while
+  the patch was applied to the shadow over MCP, so a patch was computed against a stale base — a
+  second step could not see the first step's edit. `overwrite_source` was latent: its only caller,
+  `actions_impl._write_checked`, has no production caller (the executor writes through the MCP
+  server, whose root is already the shadow). Both are bound correctly now.
+- **The root is injected, not guessed (Phase 23).** `WorkflowContext.execution_root` is captured
+  from the shadow when the run starts and threaded into the writer and the read-modify-write reads;
+  `tools.execution_io._resolve` raises a hard `PathDenied` (**a `ValueError`**) for any path outside
+  the granted root, so an injected root cannot be escaped with a filename.
+- **An agent can no longer write to the user's live tree.** Every run copies the
 - **Every durable write lands whole or not at all (Phase 22).** `tools/atomic_io.py` writes a
   temporary **sibling of its target** and then `os.replace`s it. The sibling is not a style
   choice: `os.replace` is `rename(2)`, atomic only *within one filesystem* and `EXDEV` across
@@ -1386,11 +1403,12 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `d37d3fe` (Phase 21) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `9fe11d8` (Phase 22) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.1 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1178 passed, 18 skipped, 233 subtests** in 95.03 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1185 passed, 18 skipped, 233 subtests** in 94.06 s (`-n auto`; CI adds `-m "not llm"`) |
+| I/O roots | `tests/test_staging.py::ExecutionRootBifurcationTests` | **7 passed** — the writer lands in the shadow and not the host, a read sees the agent's own writes across steps, the UI reads still see the live project, an injected root is the only root, an out-of-root path is a `ValueError`, `execution_io`'s code never names `get_project_dir` (AST-pinned), and the run context carries the shadow root |
 | Durability + bounding | `tests/test_retention.py` (new) + `tests/test_staging.py` | **48 passed** — ledger retention per table, a ledger-below-its-bound no-op, a never-created ledger skipped, `ids_with_status`, and the boot sweep end-to-end (a crashed intent failed *and* its shadow collected, a completed one kept, a never-ran project's strays collected, the report line, and a failing sweep reported rather than raised); plus the sibling-temporary assertion, a failed merge leaving the host file whole with no litter, and orphaned/manifest-less shadow collection |
 | Atomic writes | `tests/test_mcp.py::AtomicFilesystemWriteTests` | **4 passed** — no scratch beside a write, a refused `os.replace` leaving the original whole and no litter, the temporary sharing the target's directory, and `create_file` still create-never-replace |
 | Merge boundary | `tests/test_api_gateway.py::WorkspaceBoundaryTests` | **4 passed** — a missing `intent_id` is a 400, a held lock is a **409**, and an accepted merge reaches the service |
