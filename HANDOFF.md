@@ -13,11 +13,22 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 29)
+## ⚡ 0. Current State at This Handoff (Phase 30)
 
-- **Phases 5 → 29 are complete and CI-green.** Phase 29 (two-phase execution, the validation gate,
-  absolute state) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points
-  at what changed most recently.
+- **Phases 5 → 30 are complete and CI-green.** Phase 30 (dynamic runtimes, syntax fallbacks,
+  supply-chain bounding) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only
+  points at what changed most recently.
+- **One runtime per project, not a monolith (Phase 30).** `docker/sandbox.Dockerfile` is the Python
+  toolchain and carries no other language; `tools.project_phases.detect_runtime` reads the project's
+  manifests and `detect_image` picks `aleth-sandbox:latest` or `node:20-alpine` (pulled on first use
+  by `pull_image`). A **polyglot** project is refused rather than guessed and declares its image in
+  `.aleth_phases.json`. `run_isolated(..., image=…)` takes the resolved tag.
+- **The merge gate has no free pass (Phase 30).** `verified=None` used to merge; now only
+  `verified is True` merges. A project with no suite gets a **structural syntax check**
+  (`python -m compileall -q .`, or `npm run build` / a `node --check` sweep skipping
+  `node_modules`), and an undeterminable runtime is a *failure*, not a pass.
+- **The egress phase is bounded (Phase 30).** `DEFAULT_SETUP_TIMEOUT_SECONDS = 120`, clamped to a
+  600 s ceiling a human may raise in the declaration. A timeout kills the container and its network.
 - **Setup runs with egress before the model is involved (Phase 29).** `tools/project_phases.py::run_setup`
   installs the project's dependencies from its own manifests (or a human's `.aleth_phases.json`),
   deterministically, in a container the model never gets. A failed install **refuses the run**. There
@@ -1492,12 +1503,15 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `afe0591` (Phase 28) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `3544896` (Phase 29) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
 | Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
 | UI tests | `npx playwright test` | **63 passed** in 22.0 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1229 passed, 23 skipped, 236 subtests** in 79.53 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1246 passed, 5 skipped**, and **0 containers left behind** — the leg that exercises the network toggle against a real daemon and the rebuilt image |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1235 passed, 23 skipped, 236 subtests** in 78.38 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1252 passed, 5 skipped**, and **0 containers left behind** — on the rebuilt image, verified in-container as Python-only |
+| Runtime selection | `tests/test_project_phases.py` | **17 passed** — the manifests decide the runtime and the image, a polyglot project is refused until it declares one, the syntax fallback fires for Python and Node, and the setup timeout is hard and clamped |
+| Gate sealing | `tests/test_staging.py::MergeGateTests` | **7 passed** — a failed verdict refuses, a pass merges, an **unrun** gate refuses, a shadow with no verdict refuses, a rejection is unaffected, and the verdict survives a reload |
+| Image contract | `tests/test_docker_sandbox.py::ImageContractTests` | **passed** — an absent runtime image is *pulled*, not built under its tag, and a failed pull is a refusal naming `docker pull` |
 | Two phases | `tests/test_project_phases.py` | **11 passed** — detection from manifests, the declaration winning over the table, a malformed declaration falling back, setup on `bridge` and verification on `none` (asserted on the argv), and the tool surface having no network parameter |
 | Merge gate | `tests/test_staging.py::MergeGateTests` | **6 passed** — a failed verdict refuses the merge and keeps the shadow, a pass merges, no-suite is mergeable, a rejection is unaffected, and the verdict survives a reload from the manifest |
 | State root | `tests/test_state_identity.py::PublishedStateRootTests` | **3 passed** — absolute and published, a child's derivation cannot clobber it, a relative value is refused |
