@@ -13,10 +13,10 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 20)
+## ⚡ 0. Current State at This Handoff (Phase 21)
 
-- **Phases 5 → 20 are complete and CI-green.** Phase 20 (workspace staging & the merge
-  boundary) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only
+- **Phases 5 → 21 are complete and CI-green.** Phase 21 (I/O optimization & concurrency
+  mutexes) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only
   points at what changed most recently.
 - **An agent can no longer write to the user's live tree.** Every run copies the
   workspace into a shadow under `<state_root>/staging/<staging_id>` (`tools/staging.py`);
@@ -27,6 +27,22 @@
   `test_runner`'s cwd). `EngineService._staged_execution` sets the execution root for the
   duration of the intent; a nested call reuses the active shadow, so the autonomous
   loop's passes accumulate into one copy.
+- **The copy is the project as git sees it (Phase 21).** `create_staging` filters the
+  copy with `git ls-files --cached --others --exclude-standard`, so a virtualenv, a
+  `node_modules` tree and a build output never enter a shadow. The ignore rules are
+  pushed down to **git**, not re-derived in Python and not delegated to `rsync`; a
+  non-repository workspace falls back to a walk pruned by `IGNORE_DIRS`. The host side of
+  a diff is filtered the same way, so an ignored file is never reported as deleted.
+- **A shadow answers to exactly one execution id (Phase 21).** `find_staging` resolves by
+  `staging_id` or `intent_id` and **never** by plan; the plan fallback is deleted. The
+  diff/merge requests model `intent_id: str` (required), and a blank id is refused, so an
+  orphaned shadow is dead by construction. `_staged_execution` mints an id when none is
+  given and reuses a run's existing shadow, so a manual approval joins the delta it releases.
+- **Merges are serialised (Phase 21).** `tools/staging.py::merge_lock()` is a per-project
+  `filelock` (`<state_dir>/merge.lock`) held across the gate check **and** the apply,
+  acquired non-blocking. A concurrent merge raises `StagingLocked`, which
+  `api/gateway.py` maps to a **409** (its one service-exception translation). The UI
+  remembers the run's id (`state.activeIntentId`) and sends it with `approve_artifact`.
 - **The delta leaves only through a merge gate.** `GET /api/workspace/diff` returns the
   content-addressed delta (added/modified/deleted + a capped unified patch);
   `POST /api/workspace/merge` applies it and purges the shadow, or (approve=false)
@@ -1339,12 +1355,13 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `786d69d` (Phase 19) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `b4d279b` (Phase 20) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
-| Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.79 kB |
-| UI tests | `npx playwright test` | **62 passed** in 20.1 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1146 passed, 18 skipped, 233 subtests** in 80.36 s (`-n auto`; CI adds `-m "not llm"`) |
-| Staging | `tests/test_staging.py` | **24 passed** — copy, delta, merge, purge, the plan-finished gate, and the execution-root wiring of `run_approved_artifact` / `test_runner` |
+| Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
+| UI tests | `npx playwright test` | **63 passed** in 17.8 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1158 passed, 18 skipped, 233 subtests** in 88.06 s (`-n auto`; CI adds `-m "not llm"`) |
+| Staging | `tests/test_staging.py` | **32 passed** — copy, git-filter, delta, merge, purge, the plan-finished gate, the execution-root wiring of `run_approved_artifact` / `test_runner`, strict intent keying, the same-intent reuse, and the held-lock conflict |
+| Merge boundary | `tests/test_api_gateway.py::WorkspaceBoundaryTests` | **4 passed** — a missing `intent_id` is a 400, a held lock is a **409**, and an accepted merge reaches the service |
 | Rust core | `cargo test` (in crate) | not re-run this pass |
 | Isolation | `tests/test_docker_sandbox.py` | daemon-backed tests skip on Windows (no docker client); the Linux CI runner is the authority |
 | State invariant | `tools/check_ui_state.py` | not re-run this pass |
