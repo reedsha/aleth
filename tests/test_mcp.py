@@ -1183,6 +1183,44 @@ class ContextWindowTests(MCPServerTestCase):
 
         self.assertIn(TRUNCATION_NOTICE, completer.seen[-1]["messages"][0]["content"])
 
+    def test_the_summary_is_capped_however_long_the_summariser_answers(self):
+        """The recursion rewrites the summary every compression, so an unbounded answer would
+        grow the payload on every fold. The cap is the guarantee the prompt cannot be."""
+        from orchestration.workflow.agent_loop import MAX_SUMMARY_TOKENS, SUMMARY_HEADING
+        from tools import token_budget
+
+        def huge(older, previous):
+            return "lorem ipsum dolor sit amet " * 5000
+
+        completer = self._scripted(*self._forever(11))
+        self._run(completer, max_steps=12, summarizer=huge)
+
+        last = completer.seen[-1]["messages"]
+        summary = next(
+            message["content"] for message in last
+            if message["role"] == "system" and SUMMARY_HEADING in message["content"]
+        )
+        body = summary[len(SUMMARY_HEADING):]
+        self.assertLessEqual(token_budget.count_tokens(body), MAX_SUMMARY_TOKENS)
+        self.assertIn("[summary truncated]", body)
+
+    def test_the_compressor_is_handed_the_previous_summary(self):
+        """Recursive, not append-only: the second fold is handed the first fold's result, so the
+        summary is *rewritten* and its size does not depend on how long the run has gone."""
+        seen = []
+
+        def summarizer(older, previous):
+            seen.append(previous)
+            return f"summary-{len(seen)}"
+
+        completer = self._scripted(*self._forever(19))
+        self._run(completer, max_steps=20, summarizer=summarizer)
+
+        self.assertGreaterEqual(len(seen), 2, "the compressor never ran twice")
+        self.assertEqual(seen[0], "", "the first compression has no previous summary")
+        self.assertEqual(seen[1], "summary-1",
+                         "the recursion must fold into the previous summary, not start over")
+
 
 class TokenBudgetTests(MCPServerTestCase):
     """Phase 32: the bill is bounded, and the number is durable."""
@@ -1282,6 +1320,192 @@ class TokenBudgetTests(MCPServerTestCase):
             return remaining.pop(0) if remaining else self._Completion(text="done")
 
         return completer
+
+
+class SteeringAndStreamTests(MCPServerTestCase):
+    """Phase 33: a live run is steerable and observable while it is happening.
+
+    An interrupt *holds* a run -- it does not fail it -- and a resume carries the user's correction
+    into the context window. The same loop streams its thoughts, tool executions and token spend as
+    they happen, so the UI can follow a run instead of polling for its corpse.
+    """
+
+    class _Completion:
+        def __init__(self, text="", tool_calls=None):
+            self.text = text
+            self.tool_calls = tool_calls or []
+
+    def _scripted(self, *turns):
+        """A completer that answers with ``turns`` in order, recording what it was sent."""
+        remaining = list(turns)
+        seen = []
+
+        def completer(*, system, messages, tools):
+            seen.append({"messages": messages, "tools": tools})
+            return remaining.pop(0) if remaining else self._Completion(text="done")
+
+        completer.seen = seen
+        return completer
+
+    def _ledger_with_running(self, intent_id):
+        from api.intents import Intent
+        from storage.db import default_db_path, get_store
+        from storage.intents import IntentLedger
+
+        get_store()  # applies the telemetry schema, as a boot does
+        ledger = IntentLedger(default_db_path())
+        intent = Intent(id=intent_id, action_type="custom", message="go",
+                        action_params={}, enqueued_at=0.0)
+        ledger.record(intent)
+        self.assertTrue(ledger.claim(intent))
+        return ledger
+
+    def _run(self, completer, **kwargs):
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import run_tool_loop
+
+        self._write("mod.py", "x = 1\n")
+        with MCPSessionContext(self.tmp) as session:
+            return run_tool_loop(
+                session=session, role="coder", system_prompt="SYS",
+                user_message="loop", completer=completer, **kwargs
+            )
+
+    def _resume_when_paused(self, ledger, intent_id, correction, events):
+        """A second thread plays the user: it waits for the hold, then releases it.
+
+        A real interrupt arrives from *another* thread while the run is blocked waiting -- so the
+        test uses one too. It waits for the loop to *announce* the pause before resuming, so the
+        resume lands while the run is genuinely holding rather than racing the gate.
+        """
+        import threading
+        import time
+
+        result = {}
+
+        def run():
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if any(event.get("type") == "intent_paused" for event in list(events)):
+                    result["resumed"] = ledger.resume(intent_id, correction)
+                    return
+                time.sleep(0.02)
+            result["resumed"] = False
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread, result
+
+    def test_an_interrupt_holds_the_run_and_the_correction_steers_it(self):
+        ledger = self._ledger_with_running("i-steer")
+        scripted = self._scripted(
+            self._Completion(tool_calls=[
+                {"name": "read_file", "arguments": {"path": "mod.py"}}
+            ]),
+            self._Completion(text="done"),
+        )
+        state = {"n": 0}
+
+        def completer(*, system, messages, tools):
+            state["n"] += 1
+            if state["n"] == 1:
+                # The user grabs the wheel while the model is "thinking".
+                self.assertTrue(ledger.interrupt("i-steer", "hold on"))
+            return scripted(system=system, messages=messages, tools=tools)
+
+        events = []
+        thread, result = self._resume_when_paused(
+            ledger, "i-steer", "stop refactoring the CSS; fix the API endpoint only", events
+        )
+        self._run(completer, intent_id="i-steer", ledger=ledger,
+                  pause_timeout=10.0, emit=events.append)
+        thread.join(timeout=10)
+
+        self.assertTrue(result.get("resumed"), "the run never reached the paused state")
+        # The correction is in the high-fidelity window, as the user's own words, at the end.
+        last = scripted.seen[-1]["messages"]
+        self.assertEqual(
+            last[-1],
+            {"role": "user", "content": "stop refactoring the CSS; fix the API endpoint only"},
+        )
+        types = [event["type"] for event in events]
+        self.assertIn("intent_paused", types)
+        self.assertIn("intent_steered", types)
+        self.assertIn("intent_resumed", types)
+        # Held, not killed: the run carried on and is still the live intent.
+        self.assertEqual(ledger.status_of("i-steer"), "running")
+
+    def test_a_correction_that_lands_before_the_pause_is_seen_still_steers(self):
+        """The race the running-path drain closes: a resume that beats the loop's next gate.
+
+        If the interrupt and the resume both land between two gates, the loop never observes the
+        pause -- so draining only on the pause path would strand the correction forever. It must be
+        taken on the running path too.
+        """
+        ledger = self._ledger_with_running("i-race")
+        # Interrupt and resume before the loop ever runs, so the pause is never observed.
+        self.assertTrue(ledger.interrupt("i-race", "hold"))
+        self.assertTrue(ledger.resume("i-race", "use the existing helper"))
+        self.assertEqual(ledger.status_of("i-race"), "running")
+
+        scripted = self._scripted(self._Completion(text="done"))
+        events = []
+        self._run(scripted, intent_id="i-race", ledger=ledger, emit=events.append)
+
+        last = scripted.seen[-1]["messages"]
+        self.assertEqual(last[-1], {"role": "user", "content": "use the existing helper"})
+        types = [event["type"] for event in events]
+        self.assertIn("intent_steered", types)
+        # The run never stopped, so it never announced a pause or a resume.
+        self.assertNotIn("intent_paused", types)
+        self.assertNotIn("intent_resumed", types)
+
+    def test_a_pause_nobody_answers_gives_the_intent_up(self):
+        from orchestration.workflow.agent_loop import RunAborted
+
+        ledger = self._ledger_with_running("i-timeout")
+        scripted = self._scripted(self._Completion(tool_calls=[
+            {"name": "read_file", "arguments": {"path": "mod.py"}}
+        ]))
+
+        def completer(*, system, messages, tools):
+            ledger.interrupt("i-timeout", "hold")
+            return scripted(system=system, messages=messages, tools=tools)
+
+        with self.assertRaises(RunAborted) as caught:
+            self._run(completer, intent_id="i-timeout", ledger=ledger, pause_timeout=0.4)
+        # Nothing may wait forever: a hold that outlives the timeout is a failure, not a hang.
+        self.assertIn("nothing arrived", str(caught.exception))
+
+    def test_the_loop_streams_thoughts_tools_and_spend_in_order(self):
+        from tools import payloads
+
+        ledger = self._ledger_with_running("i-stream")
+        scripted = self._scripted(
+            self._Completion(text="reading", tool_calls=[
+                {"name": "read_file", "arguments": {"path": "mod.py"}}
+            ]),
+            self._Completion(text="done"),
+        )
+        events = []
+        self._run(scripted, intent_id="i-stream", ledger=ledger, emit=events.append)
+
+        types = [event["type"] for event in events]
+        self.assertEqual(
+            types[:4],
+            ["agent_thought", "token_budget_update",
+             "tool_execution_start", "tool_execution_complete"],
+        )
+        # Every frame names the run it belongs to, which is what a per-intent stream filters on,
+        # and every frame satisfies the bus's own contract -- the loop emits on the same wire.
+        for event in events:
+            self.assertEqual(event["intent_id"], "i-stream")
+            payloads.validated_bus_event(event)
+        start = next(e for e in events if e["type"] == "tool_execution_start")
+        self.assertEqual(start["tool"], "read_file")
+        self.assertEqual(start["arguments"], {"path": "mod.py"})
+        budget = next(e for e in events if e["type"] == "token_budget_update")
+        self.assertGreater(budget["limit"], 0)
 
 
 class ToolResultBudgetTests(MCPServerTestCase):

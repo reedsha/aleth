@@ -186,6 +186,16 @@ class RoutingTests(GatewayTestCase):
     def test_the_event_route_streams(self):
         self.assertIsInstance(self._get("/api/events"), StreamResponse)
 
+    def test_the_per_intent_stream_route_names_its_intent(self):
+        """Phase 33: the same stream, narrowed to one run -- and the firehose is not narrowed."""
+        answer = self._get("/api/intents/i-1/stream")
+        self.assertIsInstance(answer, StreamResponse)
+        self.assertEqual(answer.intent_id, "i-1")
+        self.assertEqual(self._get("/api/events").intent_id, "")
+        # The intent *operation* namespace is untouched: a per-intent stream is a route, not a
+        # privileged operation beside the table, and it lives under the plural name.
+        self.assertEqual(self._get("/api/intent/status").status, 200)
+
     def test_a_valid_intent_is_queued_and_not_executed(self):
         response = self._post("/api/intent/execute", {"action_type": "next_step", "message": "go"})
         self.assertEqual(response.status, 200)
@@ -276,6 +286,52 @@ class OperationTableTests(unittest.TestCase):
                     re.compile(pattern).match(path),
                     f"{path} is served by a gateway route as well as the operation table",
                 )
+
+
+class SteeringOperationTests(unittest.TestCase):
+    """Phase 33: the two steering operations are on the table and reach the service.
+
+    The logic lives in the service (``test_characterization.SteeringBridgeTests``); this pins the
+    transport -- the paths are served, the body is validated, and the answer is the envelope.
+    """
+
+    class _Service:
+        def __init__(self):
+            self.calls = []
+
+        def interrupt_intent(self, intent_id=None, note=""):
+            self.calls.append(("interrupt", intent_id, note))
+            return {"success": True, "intent_id": intent_id, "status": "paused_awaiting_input"}
+
+        def resume_intent(self, intent_id=None, correction=""):
+            self.calls.append(("resume", intent_id, correction))
+            return {"success": True, "intent_id": intent_id, "status": "running"}
+
+    def test_interrupt_is_served(self):
+        service = self._Service()
+        response = Gateway(service=service).dispatch(
+            Request(method="POST", path="/api/intent/interrupt",
+                    body=b'{"intent_id": "i-1", "note": "hold"}')
+        )
+        self.assertEqual(response.status, 200)
+        data = json.loads(response.body)["data"]
+        self.assertTrue(data["success"])
+        self.assertEqual(service.calls, [("interrupt", "i-1", "hold")])
+
+    def test_resume_is_served(self):
+        service = self._Service()
+        response = Gateway(service=service).dispatch(
+            Request(method="POST", path="/api/intent/resume",
+                    body=b'{"intent_id": "i-1", "correction": "focus"}')
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(service.calls, [("resume", "i-1", "focus")])
+
+    def test_an_intent_id_is_required(self):
+        response = Gateway(service=self._Service()).dispatch(
+            Request(method="POST", path="/api/intent/interrupt", body=b"{}")
+        )
+        self.assertEqual(response.status, 400)
 
 
 class WorkspaceBoundaryTests(GatewayTestCase):
@@ -571,6 +627,50 @@ class LiveServerTests(GatewayTestCase):
         bridge_bus.emit(_LOG_EVENT)
         thread.join(timeout=10)
         self.assertEqual(received, [_LOG_EVENT])
+
+    def test_the_per_intent_stream_delivers_only_that_intent(self):
+        """A client following one run must not see a neighbour's events.
+
+        Two frames are published on the bus; only the one naming the requested intent reaches the
+        wire. The other is dropped by the server, not by the client -- the filter is the boundary.
+        """
+        received = []
+        ready = threading.Event()
+
+        def reader():
+            connection = http.client.HTTPConnection("127.0.0.1", self.server.bound_port, timeout=15)
+            try:
+                connection.request("GET", "/api/intents/i-want/stream")
+                response = connection.getresponse()
+                ready.set()
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    line = response.readline()
+                    if not line:
+                        break
+                    if line.startswith(b"data: "):
+                        received.append(json.loads(line[len(b"data: "):]))
+                        return
+            except Exception:
+                pass
+            finally:
+                connection.close()
+
+        thread = threading.Thread(target=reader, daemon=True)
+        thread.start()
+        self.assertTrue(ready.wait(timeout=5), "the stream never opened")
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and self.server.gateway.hub.subscriber_count == 0:
+            time.sleep(0.02)
+        import bridge_bus
+
+        bridge_bus.emit({"type": "agent_thought", "intent_id": "someone-else",
+                         "step": 1, "text": "not yours"})
+        bridge_bus.emit({"type": "agent_thought", "intent_id": "i-want",
+                         "step": 2, "text": "yours"})
+        thread.join(timeout=10)
+
+        self.assertEqual([event["intent_id"] for event in received], ["i-want"])
 
     def test_the_bus_listener_is_detached_when_the_server_stops(self):
         self.server.stop()

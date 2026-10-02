@@ -64,7 +64,14 @@ class StreamResponse:
 
     The gateway decides that a route streams; it never builds the bytes, because a stream has no
     end. ``api.server`` owns the loop that turns the hub's subscribers into a wire.
+
+    ``intent_id`` narrows the stream to one run (Phase 33): empty is the firehose every client
+    already reads (``/api/events``), and a set id tells the server to deliver only the frames that
+    name that intent. The filtering is the server's because the *hub* is the server's; the gateway
+    only says which stream a path asked for.
     """
+
+    intent_id: str = ""
 
 
 Handler = Callable[[Request, "Gateway", re.Match], Union[Response, StreamResponse]]
@@ -140,6 +147,16 @@ def _events(request: Request, gateway: "Gateway", match: re.Match) -> StreamResp
     return StreamResponse()
 
 
+def _intent_stream(request: Request, gateway: "Gateway", match: re.Match) -> StreamResponse:
+    """The same stream, narrowed to one run (Phase 33).
+
+    A *route* and not an operation: an operation answers once, and a stream does not answer at
+    all. The id is carried out on the :class:`StreamResponse` so the server can filter the hub's
+    frames to it -- the client sees exactly the run it asked about, never a neighbour's.
+    """
+    return StreamResponse(intent_id=match.group("intent_id"))
+
+
 # The bare infrastructure reads -- health, the plan projections, the telemetry ledger and the
 # event stream -- are the gateway's own. Everything the *engine* can do is in
 # ``api.operations``: one typed table, so the intent surface has no privileged route beside it.
@@ -151,6 +168,14 @@ ROUTES: Tuple[Tuple[str, str, Handler], ...] = (
     ("GET", r"^/api/telemetry$", _telemetry),
     ("GET", r"^/api/telemetry/(?P<execution_id>[A-Za-z0-9_.\-]+)$", _receipt),
     ("GET", r"^/api/events$", _events),
+    # The per-intent stream (Phase 33). A distinct namespace from the singular ``/api/intent/*``
+    # operation table on purpose: the intent *surface* has no privileged route beside the table,
+    # and this is a stream, not an operation -- a different kind of thing, so a different path.
+    (
+        "GET",
+        r"^/api/intents/(?P<intent_id>[A-Za-z0-9_.\-]+)/stream$",
+        _intent_stream,
+    ),
 )
 
 

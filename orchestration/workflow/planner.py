@@ -292,6 +292,7 @@ def _from_llm(
     role: str = DEFAULT_PLANNER_ROLE,
     capabilities: Optional[Sequence[str]] = None,
     intent_id: str = "",
+    emit: Any = None,
 ) -> Optional[ImplementationPlanArtifact]:
     """Ask System 2 for the artifact, or ``None`` when it cannot be produced.
 
@@ -365,6 +366,10 @@ def _from_llm(
                 # The rolling compressor (Phase 31): a cheap secondary model folds the older turns
                 # into a summary. Absent or failing, the loop drops them and says so.
                 summarizer=_context_summarizer(),
+                # The live stream (Phase 33): the loop's own events reach the same bus the engine
+                # emits on, so a client following this intent sees the run as it happens. A swarm
+                # child has no bus to reach, so this stays ``None`` there.
+                emit=emit,
             )
         except AgentStepLimitExceeded:
             # A model that ran away is a fault, not a planner that returned nothing. Letting it fall
@@ -447,6 +452,7 @@ def plan_task(
     role: Optional[str] = None,
     capabilities: Optional[Sequence[str]] = None,
     intent_id: str = "",
+    emit: Any = None,
 ) -> ImplementationPlanArtifact:
     """The artifact for a task, produced by System 2. Raises when it cannot be planned.
 
@@ -475,7 +481,7 @@ def plan_task(
         task, plan_id=resolved_plan, workspace_dir=resolved_workspace, files=files,
         model=resolved_model, base_url=base_url, api_key=api_key,
         completer=completer, session=session, role=str(role or DEFAULT_PLANNER_ROLE),
-        capabilities=capabilities, intent_id=str(intent_id or ""),
+        capabilities=capabilities, intent_id=str(intent_id or ""), emit=emit,
     )
     if planned is None:
         raise PlanningUnavailable(
@@ -661,6 +667,9 @@ def plan_and_yield(
         api_key=endpoint["api_key"],
         # The run's identity, for the loop's correlation and its liveness gate (Phase 27).
         intent_id=str(getattr(ctx, "intent_id", "") or ""),
+        # ...and the live stream (Phase 33): the loop's events go out on the same bus the engine
+        # emits on, so the UI can follow this run's thoughts and tools as they happen.
+        emit=getattr(ctx, "emit_fn", None),
     )
     recorded = execution_gate.plan_artifact(
         plan_id=artifact.plan_id,

@@ -30,6 +30,7 @@ state to the same file, so it is short transactions and WAL, not an ORM.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
@@ -52,7 +53,11 @@ INTENT_DDL = """
                     -- memory because the loop is one process of several -- a swarm child spends
                     -- tokens too -- and a budget that only one of them can see is not a budget.
                     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
-                    completion_tokens INTEGER NOT NULL DEFAULT 0
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    -- Phase 33: the user's steering payload, as a JSON array of corrections. Written
+                    -- by the interrupt API while the run is paused, drained by the loop when it
+                    -- resumes -- so a correction cannot be lost between the two.
+                    pending_input     TEXT NOT NULL DEFAULT '[]'
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_intent_status
@@ -66,11 +71,28 @@ INTENT_DDL = """
 INTENT_MIGRATIONS = (
     ("prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("pending_input", "TEXT NOT NULL DEFAULT '[]'"),
 )
+
+# The status a run takes when the user interrupts it (Phase 33). Not terminal: the run is *held*, and
+# resumes when the user says what to change. Distinct from ``failed`` on purpose -- nothing went
+# wrong, a person intervened.
+PAUSED = "paused_awaiting_input"
 
 # The terminal states. `failed` is the one that gates new work; `stopped` is terminal but was the
 # user's own doing, so it is acknowledged by the act of stopping.
 TERMINAL = ("completed", "stopped", "failed")
+
+
+def _loads_input(raw: Any) -> List[str]:
+    """The queued corrections, from the JSON column. A malformed value is an empty queue."""
+    try:
+        value = json.loads(str(raw or "[]"))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -280,6 +302,104 @@ class IntentLedger:
             if row is None:
                 return (0, 0)
             return (int(row["prompt_tokens"] or 0), int(row["completion_tokens"] or 0))
+        finally:
+            connection.close()
+
+    def interrupt(self, intent_id: str, note: str = "") -> bool:
+        """Hold a *running* intent for the user. ``True`` when it took.
+
+        Phase 33's hard interruption: the loop checks this state before every LLM call and every
+        tool execution, exactly as it checks the abort, and *pauses* rather than failing -- the run
+        is not wrong, a person wants to steer it. Conditional on ``running`` so it cannot hold an
+        intent that already settled.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return False
+        connection = _connect(self.path)
+        try:
+            with connection:
+                cursor = connection.execute(
+                    "UPDATE intent_ledger SET status = ?, error = ?, updated_at = ?"
+                    " WHERE intent_id = ? AND status = 'running'",
+                    (PAUSED, str(note or "interrupted by the user"), time.time(), resolved),
+                )
+                return int(cursor.rowcount or 0) == 1
+        finally:
+            connection.close()
+
+    def resume(self, intent_id: str, correction: str = "") -> bool:
+        """Release a paused intent, carrying the user's correction. ``True`` when it took.
+
+        The correction is **queued in the ledger**, not handed to the loop directly: the two are
+        different processes of the same run (the API thread and the run thread), and the ledger is
+        the only thing they share. :meth:`drain_input` is the loop's half of the handoff.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return False
+        text = str(correction or "").strip()
+        connection = _connect(self.path)
+        try:
+            with connection:
+                row = connection.execute(
+                    "SELECT pending_input FROM intent_ledger WHERE intent_id = ? AND status = ?",
+                    (resolved, PAUSED),
+                ).fetchone()
+                if row is None:
+                    return False
+                queued = _loads_input(row["pending_input"])
+                if text:
+                    queued.append(text)
+                cursor = connection.execute(
+                    "UPDATE intent_ledger SET status = 'running', error = '', pending_input = ?,"
+                    " updated_at = ? WHERE intent_id = ? AND status = ?",
+                    (json.dumps(queued), time.time(), resolved, PAUSED),
+                )
+                return int(cursor.rowcount or 0) == 1
+        finally:
+            connection.close()
+
+    def drain_input(self, intent_id: str) -> List[str]:
+        """Take the queued corrections for an intent, clearing them. One transaction.
+
+        Read-and-clear together, so a correction is delivered exactly once even if the loop is
+        paused again while it is being drained. The loop injects what it gets as ``[user]`` messages
+        into the high-fidelity window -- that is the steering wheel.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return []
+        connection = _connect(self.path)
+        try:
+            with connection:
+                row = connection.execute(
+                    "SELECT pending_input FROM intent_ledger WHERE intent_id = ?", (resolved,)
+                ).fetchone()
+                if row is None:
+                    return []
+                queued = _loads_input(row["pending_input"])
+                if queued:
+                    connection.execute(
+                        "UPDATE intent_ledger SET pending_input = '[]', updated_at = ?"
+                        " WHERE intent_id = ?",
+                        (time.time(), resolved),
+                    )
+                return queued
+        finally:
+            connection.close()
+
+    def status_of(self, intent_id: str) -> str:
+        """The intent's current status, or ``""`` when it is unknown. One indexed read."""
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return ""
+        connection = _connect(self.path)
+        try:
+            row = connection.execute(
+                "SELECT status FROM intent_ledger WHERE intent_id = ?", (resolved,)
+            ).fetchone()
+            return str(row["status"]) if row is not None else ""
         finally:
             connection.close()
 

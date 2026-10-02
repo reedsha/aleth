@@ -66,6 +66,10 @@ export const OPERATIONS = {
   // the server's and there is no privileged route beside it.
   get_intent_status: { verb: "GET", path: "/api/intent/status", args: [] },
   acknowledge_intent: { verb: "POST", path: "/api/intent/acknowledge", args: ["intent_id"] },
+  // The steering wheel (Phase 33): `interrupt_intent` holds a live run, and `resume_intent`
+  // releases it carrying the user's correction, which is injected into the agent's context.
+  interrupt_intent: { verb: "POST", path: "/api/intent/interrupt", args: ["intent_id", "note"] },
+  resume_intent: { verb: "POST", path: "/api/intent/resume", args: ["intent_id", "correction"] },
   ui_ready: { verb: "POST", path: "/api/ui/ready", args: [] },
   // The one intent. It is an operation -- it is *queued* rather than executed, which is a fact
   // about the service behind it, not a second transport. `execute_plan` asks the engine to drive

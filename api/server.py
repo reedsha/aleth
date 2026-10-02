@@ -24,6 +24,7 @@ client goes away.
 from __future__ import annotations
 
 import dataclasses
+import json
 import mimetypes
 import os
 import socket
@@ -34,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from api.events import HEARTBEAT_FRAME, EventHub
+from api.events import FRAME_PREFIX, FRAME_SUFFIX, HEARTBEAT_FRAME, EventHub
 from api.gateway import Gateway, Request, Response, StreamResponse
 from api.intents import IntentQueue, run_worker
 from api.schemas import ErrorResponse
@@ -117,6 +118,25 @@ def origin_allowed(origin: str, port: int, extra: Iterable[str] = ()) -> bool:
     if not value:
         return True
     return value in set(extra) or value in loopback_origins(port)
+
+
+def _frame_for_intent(frame: str, intent_id: str) -> bool:
+    """Whether an SSE data frame's payload names ``intent_id``. One comparison, one place.
+
+    A frame that cannot be parsed, or whose payload carries no ``intent_id``, is **not** for the
+    requested run: a filtered stream that guessed would hand a client another run's events, which
+    is exactly what the filter exists to prevent.
+    """
+    if not frame.startswith(FRAME_PREFIX):
+        return False
+    body = frame[len(FRAME_PREFIX):]
+    if body.endswith(FRAME_SUFFIX):
+        body = body[: -len(FRAME_SUFFIX)]
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and str(payload.get("intent_id") or "") == intent_id
 
 
 class _ThreadingServer(ThreadingHTTPServer):
@@ -262,8 +282,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response.body)
 
-    def _stream(self) -> None:
-        """Server-sent events: the hub's subscriber, framed onto the wire until the client goes."""
+    def _stream(self, intent_id: str = "") -> None:
+        """Server-sent events: the hub's subscriber, framed onto the wire until the client goes.
+
+        ``intent_id`` narrows the stream to one run (Phase 33). When it is set, a frame whose
+        payload names a different intent is dropped before it reaches the wire, so a client
+        following one run never sees a neighbour's events. Empty is the firehose, and that path is
+        byte-for-byte what it always was.
+        """
         hub = self._server.gateway.hub
         subscriber = hub.subscribe()
         try:
@@ -284,6 +310,11 @@ class _Handler(BaseHTTPRequestHandler):
             deadline = time.monotonic() + SSE_MAX_SECONDS
             while not self._server.stop_event.is_set() and time.monotonic() < deadline:
                 frame = subscriber.next_frame(timeout=SSE_HEARTBEAT_SECONDS)
+                # A frame that is for another run is not written at all: the client asked for one
+                # intent, and a filtered stream that leaked its neighbours would be worse than no
+                # stream. The wait still elapsed for a heartbeat, so the loop stays responsive.
+                if frame is not None and intent_id and not _frame_for_intent(frame, intent_id):
+                    continue
                 self.wfile.write((frame or HEARTBEAT_FRAME).encode("utf-8"))
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
@@ -365,7 +396,7 @@ class _Handler(BaseHTTPRequestHandler):
         )
         answer = self._server.gateway.dispatch(request)
         if isinstance(answer, StreamResponse):
-            self._stream()
+            self._stream(intent_id=answer.intent_id)
             return
         self._write(answer)
 

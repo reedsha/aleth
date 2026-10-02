@@ -136,6 +136,26 @@ class AcknowledgeRequest(BaseModel):
     intent_id: Optional[str] = None
 
 
+class InterruptRequest(BaseModel):
+    """Hold a running intent for the user (Phase 33)."""
+
+    model_config = _STRICT
+    intent_id: str
+    note: str = ""
+
+
+class ResumeRequest(BaseModel):
+    """Release a paused intent, carrying the user's correction.
+
+    ``correction`` is what makes this the steering wheel rather than a resume button: it is injected
+    into the run's context window as a ``[user]`` message before the loop continues.
+    """
+
+    model_config = _STRICT
+    intent_id: str
+    correction: str = ""
+
+
 class ConsoleOpenRequest(BaseModel):
     model_config = _STRICT
     backlog: List[Dict[str, Any]] = []
@@ -243,6 +263,11 @@ OPERATIONS: tuple = (
     Operation("get_intent_status", "GET", "/api/intent/status", _Empty, _invoke("get_intent_status")),
     Operation("submit_intent", "POST", "/api/intent/execute", IntentRequest, _invoke("submit_intent")),
     Operation("acknowledge_intent", "POST", "/api/intent/acknowledge", AcknowledgeRequest, _invoke("acknowledge_intent")),
+    # The steering wheel (Phase 33). Interrupting *holds* the run -- nothing failed, a person wants
+    # to change its course -- and resuming carries their correction into the context window. Both
+    # are operations, so the intent surface still has no privileged route beside the table.
+    Operation("interrupt_intent", "POST", "/api/intent/interrupt", InterruptRequest, _invoke("interrupt_intent")),
+    Operation("resume_intent", "POST", "/api/intent/resume", ResumeRequest, _invoke("resume_intent")),
 )
 
 

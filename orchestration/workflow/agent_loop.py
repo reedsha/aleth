@@ -33,6 +33,10 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from tools import token_budget
 
+# The paused status is the ledger's vocabulary, not this module's: one spelling, defined where the
+# state is written.
+from storage.intents import PAUSED
+
 # The hard ceiling on model-driven tool calls in one pass. Generous for real work -- a plan needs a
 # handful of reads and one edit -- and small enough that a hallucinated loop cannot run all day.
 MAX_AGENT_STEPS = 30
@@ -44,6 +48,19 @@ STEP_LIMIT_MESSAGE = "Exceeded maximum execution steps"
 # longer than ``COMPRESS_AFTER_TURNS`` everything outside that window is folded into the summary.
 CONTEXT_WINDOW_TURNS = 4
 COMPRESS_AFTER_TURNS = 5
+
+# The summary's hard ceiling, in tokens (Phase 33). The compressor is *recursive* -- it is handed the
+# previous summary plus the newly dropped turns -- and its prompt asks for at most 500 words, but a
+# model is not a bound. This is: without it, a summariser that ignored its instructions would make the
+# summary grow every time it ran, and the payload would breach the window it exists to protect.
+MAX_SUMMARY_TOKENS = 400
+SUMMARY_WORD_LIMIT = 500
+
+# How long the loop holds for a person after an interruption before giving the intent up. The run is
+# paused, not failed -- but nothing may wait forever, and the plan TTL is the engine's own answer to
+# "how long is too long".
+PAUSE_TIMEOUT_SECONDS = 900.0
+PAUSE_POLL_SECONDS = 0.25
 
 # The fallback's message, and it is a *system* message on purpose: it is an instruction about the
 # model's own memory, not something the user said.
@@ -111,12 +128,16 @@ def _payload(
     dropped: bool,
     user_message: str,
     turns: Sequence[Sequence[Dict[str, Any]]],
+    steering: Sequence[Dict[str, Any]] = (),
 ) -> List[Dict[str, Any]]:
     """The three-block payload: summary, the pinned task, then the verbatim window.
 
     The original user message is pinned rather than compressible. It is the instruction the whole
     pass exists to satisfy, and a compressor that dropped it would let the model drift onto
     whatever the summary happened to emphasise -- the one thing a bounded context must not lose.
+
+    ``steering`` is where an interruption's correction lands (Phase 33): the user's own words, in the
+    high-fidelity block and at the *end* of it, which is the position a course correction wants.
     """
     head: List[Dict[str, Any]] = []
     if dropped:
@@ -124,7 +145,27 @@ def _payload(
     if summary:
         head.append({"role": "system", "content": SUMMARY_HEADING + summary})
     head.append({"role": "user", "content": user_message})
-    return head + [message for turn in turns for message in turn]
+    body = [message for turn in turns for message in turn]
+    return head + body + list(steering)
+
+
+def _cap_summary(text: str) -> str:
+    """Hold the summary to :data:`MAX_SUMMARY_TOKENS`, keeping both ends.
+
+    A *hard* cap rather than the prompt's word count: the recursion means the summary is rewritten
+    from the previous summary every time, so an unbounded output would grow the payload on every
+    compression and undo the window it exists to protect. Truncating keeps the newest material (the
+    tail) and the standing context (the head).
+    """
+    value = str(text or "").strip()
+    if not value or token_budget.count_tokens(value) <= MAX_SUMMARY_TOKENS:
+        return value
+    # Halve by characters until it fits: ``count_tokens`` is exact, so this converges immediately in
+    # practice, and the loop is bounded regardless.
+    while value and token_budget.count_tokens(value) > MAX_SUMMARY_TOKENS:
+        half = max(1, len(value) // 2)
+        value = value[: half // 2] + "\n... [summary truncated] ...\n" + value[-half:]
+    return value
 
 
 def _compact(
@@ -135,14 +176,17 @@ def _compact(
 ) -> Tuple[str, bool]:
     """Fold everything outside the window into ``summary``. Returns ``(summary, dropped)``.
 
-    A summarizer that answers gives a *compressed* history; one that is absent, fails, or answers
-    with nothing leaves the fallback -- drop the turns and tell the model so. Both are bounded, which
-    is the property that matters: the payload never grows past the window plus the summary.
+    **Recursive.** The summariser is handed ``(newly dropped turns, previous summary)`` and returns
+    the replacement summary, so the block is *rewritten* rather than appended to and its size does
+    not depend on how long the run has been going. The result is then capped by :func:`_cap_summary`,
+    because a prompt is a request and the cap is the guarantee.
 
-    ``dropped`` is **sticky**: once history has been folded away, the model is told so on every
-    later payload, not only on the step that happened to cross the threshold. A notice that flickered
-    on for one turn and off again would be worse than none -- it would tell the model its memory is
-    intact.
+    A summariser that answers gives a compressed history; one that is absent, fails, or answers with
+    nothing leaves the fallback -- drop the turns and tell the model so. Both are bounded, which is
+    the property that matters: the payload never grows past the window plus the summary.
+
+    ``dropped`` is **sticky**: once history has been folded away, the model is told so on every later
+    payload, not only on the step that happened to cross the threshold.
     """
     if len(turns) <= COMPRESS_AFTER_TURNS:
         return summary, dropped
@@ -152,7 +196,7 @@ def _compact(
         return summary, True
     rendered = "\n\n".join(_render_turn(turn) for turn in older)
     try:
-        produced = str(summarizer(rendered, summary) or "").strip()
+        produced = _cap_summary(summarizer(rendered, summary))
     except Exception as error:
         print(
             f"[agent-loop] the context compressor failed: {type(error).__name__}: {error}",
@@ -163,6 +207,133 @@ def _compact(
         return summary, True
     # A summary *is* the compressed history, so the model has been told: no truncation notice.
     return produced, False
+
+
+def _emit(emit: Optional[Callable[[Dict[str, Any]], None]], event: Dict[str, Any]) -> None:
+    """Publish one structured event. Best effort: the stream is an observer of the run.
+
+    A UI that has gone away must not take the run with it, so a failing emitter is reported once per
+    call and the loop continues. The *durable* record is the ledger; this is the live view.
+    """
+    if emit is None:
+        return
+    try:
+        emit(dict(event))
+    except Exception as error:
+        print(
+            f"[agent-loop] an event could not be published: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+
+
+def _gate(
+    ledger: Any,
+    intent_id: str,
+    *,
+    emit: Optional[Callable[[Dict[str, Any]], None]],
+    pause_timeout: float,
+    steering: List[Dict[str, Any]],
+) -> None:
+    """The liveness, interrupt and steering gate. Called before every call and every tool.
+
+    Three questions in one place, because they are the same question -- *may this run continue?*
+
+    * **aborted** (the intent is no longer ``running`` and not paused either): raise
+      :class:`RunAborted`, as it always has;
+    * **interrupted** (the user asked for the wheel): *pause*, announce it, and hold for a payload;
+      a correction arrives through the ledger, is drained exactly once, and is injected into the
+      window as a ``[user]`` message. A hold that outlives :data:`PAUSE_TIMEOUT_SECONDS` is a
+      failure -- nothing may wait forever;
+    * **running**: continue -- and still take any queued correction. The pause and the resume are
+      two writes from another thread, and a fast resume can land *before* this gate ever observes
+      the pause; draining on the running path is what keeps a correction from being stranded.
+    """
+    if ledger is None or not str(intent_id or "").strip():
+        return
+    status = _status_of(ledger, intent_id)
+    if status == PAUSED:
+        _await_resume(
+            ledger, intent_id, emit=emit, pause_timeout=pause_timeout, steering=steering
+        )
+        return
+    if status != "running":
+        raise RunAborted(_abort_detail(ledger, intent_id))
+    _take_steering(ledger, intent_id, emit=emit, steering=steering)
+
+
+def _take_steering(
+    ledger: Any,
+    intent_id: str,
+    *,
+    emit: Optional[Callable[[Dict[str, Any]], None]],
+    steering: List[Dict[str, Any]],
+) -> int:
+    """Drain the queued corrections into the window as ``[user]`` messages. Returns the count.
+
+    The steering wheel: the user's own words, appended to the high-fidelity block. Drained rather
+    than peeked, so a correction is delivered exactly once even if the run is paused again.
+    """
+    corrections = _drain_input(ledger, intent_id)
+    for correction in corrections:
+        steering.append({"role": "user", "content": correction})
+        _emit(emit, {"type": "intent_steered", "intent_id": intent_id,
+                     "correction": correction})
+    return len(corrections)
+
+
+def _status_of(ledger: Any, intent_id: str) -> str:
+    """The intent's status, or ``"running"`` when the ledger cannot say. Never raises."""
+    try:
+        return str(ledger.status_of(intent_id) or "")
+    except Exception as error:
+        print(
+            f"[agent-loop] the intent status could not be read: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return "running"
+
+
+def _await_resume(
+    ledger: Any,
+    intent_id: str,
+    *,
+    emit: Optional[Callable[[Dict[str, Any]], None]],
+    pause_timeout: float,
+    steering: List[Dict[str, Any]],
+) -> None:
+    """Hold the run while the user decides, then take their correction. Raises on timeout/abort."""
+    import time
+
+    _emit(emit, {"type": "intent_paused", "intent_id": intent_id,
+                 "message": "paused for user input"})
+    deadline = time.monotonic() + max(0.0, float(pause_timeout))
+    while True:
+        status = _status_of(ledger, intent_id)
+        if status == "running":
+            break
+        if status != PAUSED:
+            raise RunAborted(_abort_detail(ledger, intent_id))
+        if time.monotonic() >= deadline:
+            raise RunAborted(
+                f"the intent was paused for user input and nothing arrived within "
+                f"{int(pause_timeout)}s"
+            )
+        time.sleep(PAUSE_POLL_SECONDS)
+    corrections = _take_steering(ledger, intent_id, emit=emit, steering=steering)
+    _emit(emit, {"type": "intent_resumed", "intent_id": intent_id,
+                 "corrections": corrections})
+
+
+def _drain_input(ledger: Any, intent_id: str) -> List[str]:
+    """Take the queued corrections, or ``[]``. Never raises."""
+    try:
+        return list(ledger.drain_input(intent_id))
+    except Exception as error:
+        print(
+            f"[agent-loop] the steering payload could not be read: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return []
 
 
 def _spent(ledger: Any, intent_id: str) -> int:
@@ -215,6 +386,8 @@ def run_tool_loop(
     ledger: Any = None,
     summarizer: Optional[Callable[[str, str], str]] = None,
     max_tokens: Optional[int] = None,
+    emit: Optional[Callable[[Dict[str, Any]], None]] = None,
+    pause_timeout: float = PAUSE_TIMEOUT_SECONDS,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Drive ``completer`` through the tools bound for ``role``.
 
@@ -232,27 +405,28 @@ def run_tool_loop(
     injected rather than resolved here, because this loop also runs in a swarm *child* process where
     the plan directory is not the parent's. Each gate applies only when its inputs are present, so a
     bare unit test still gets the step ceiling.
+
+    ``emit`` is the live stream (Phase 33): structured ``agent_thought``,
+    ``tool_execution_start``/``_complete`` and ``token_budget_update`` events as they happen. It is
+    an observer -- the durable record is the ledger -- so a failing emitter never stops a run.
     """
     tools = session.get_bound_tools(role) if session is not None else []
     by_name = {tool.name: tool for tool in tools}
     schemas = _tool_schemas(tools)
-    gated = bool(ledger is not None and str(intent_id or "").strip())
-
-    def _live() -> bool:
-        return not gated or bool(ledger.is_live(intent_id))
 
     turns: List[List[Dict[str, Any]]] = []
+    steering: List[Dict[str, Any]] = []
     summary = ""
     dropped = False
     transcript: List[Dict[str, Any]] = []
 
     for _step in range(max_steps):
-        if not _live():
-            raise RunAborted(_abort_detail(ledger, intent_id))
+        _gate(ledger, intent_id, emit=emit, pause_timeout=pause_timeout, steering=steering)
         _check_budget(ledger, intent_id, max_tokens)
 
         payload = _payload(
-            summary=summary, dropped=dropped, user_message=user_message, turns=turns
+            summary=summary, dropped=dropped, user_message=user_message, turns=turns,
+            steering=steering,
         )
         prompt_tokens = token_budget.count_tokens(
             system_prompt + "\n" + "\n".join(str(m.get("content") or "") for m in payload)
@@ -260,9 +434,18 @@ def run_tool_loop(
         completion = completer(system=system_prompt, messages=payload, tools=schemas)
         text = str(getattr(completion, "text", "") or "")
         calls = list(getattr(completion, "tool_calls", None) or [])
-        _record_spend(
-            ledger, intent_id, prompt_tokens, token_budget.count_tokens(text)
-        )
+        completion_tokens = token_budget.count_tokens(text)
+        _record_spend(ledger, intent_id, prompt_tokens, completion_tokens)
+        _emit(emit, {
+            "type": "agent_thought", "intent_id": intent_id, "step": _step + 1,
+            "text": text, "tool_calls": [str((c or {}).get("name") or "") for c in calls],
+        })
+        _emit(emit, {
+            "type": "token_budget_update", "intent_id": intent_id,
+            "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+            "spent": _spent(ledger, intent_id),
+            "limit": int(max_tokens or token_budget.max_intent_tokens()),
+        })
 
         if not calls:
             return text, transcript
@@ -271,14 +454,18 @@ def run_tool_loop(
             {"role": "assistant", "content": text, "tool_calls": calls}
         ]
         for call in calls:
-            # Re-checked per call, not only per step: a tool *mutates*, and an abort or a budget
-            # that landed while the model was thinking must not be overtaken by the write it planned.
-            if not _live():
-                raise RunAborted(_abort_detail(ledger, intent_id))
+            # Re-checked per call, not only per step: a tool *mutates*, and an abort, an interruption
+            # or a budget that landed while the model was thinking must not be overtaken by the write
+            # it planned.
+            _gate(ledger, intent_id, emit=emit, pause_timeout=pause_timeout, steering=steering)
             _check_budget(ledger, intent_id, max_tokens)
             name = str((call or {}).get("name") or "")
             arguments = dict((call or {}).get("arguments") or {})
             tool = by_name.get(name)
+            _emit(emit, {
+                "type": "tool_execution_start", "intent_id": intent_id,
+                "tool": name, "arguments": arguments,
+            })
             if tool is None:
                 result = f"Error: no tool named {name!r} is bound for role {role!r}."
             else:
@@ -287,6 +474,10 @@ def run_tool_loop(
                     result = str(tool.invoke(arguments))
                 except Exception as error:
                     result = f"Error: {type(error).__name__}: {error}"
+            _emit(emit, {
+                "type": "tool_execution_complete", "intent_id": intent_id,
+                "tool": name, "result": result,
+            })
             transcript.append({"tool": name, "arguments": arguments, "result": result})
             turn.append({"role": "tool", "name": name, "content": result})
         turns.append(turn)

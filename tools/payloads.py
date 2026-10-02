@@ -657,6 +657,90 @@ class IntentFailedEvent(BaseModel):
     error: str = ""
 
 
+# -- the live run (Phase 33): the agent loop's own telemetry, as it happens --
+# These are the events a per-intent stream carries. Each names its ``intent_id`` so a client can
+# follow exactly one run: the unfiltered ``/api/events`` stream is the firehose, and the per-intent
+# stream is the same frames, filtered to one intent. Nothing here is a *durable* record -- the
+# ledger is -- so these are observers and may be dropped without changing the run.
+class AgentThoughtEvent(BaseModel):
+    """One model turn: what it said, and which tools it asked for."""
+
+    model_config = _STRICT
+
+    type: Literal["agent_thought"]
+    intent_id: str = ""
+    step: int = 0
+    text: str = ""
+    # The names of the tools this turn requested, in order. The arguments travel on the
+    # ``tool_execution_start`` that follows, so this is the shape of the plan, not its payload.
+    tool_calls: List[str] = []
+
+
+class ToolExecutionStartEvent(BaseModel):
+    """A bound tool is about to run, with the arguments the model produced."""
+
+    model_config = _STRICT
+
+    type: Literal["tool_execution_start"]
+    intent_id: str = ""
+    tool: str = ""
+    arguments: Dict[str, Any] = {}
+
+
+class ToolExecutionCompleteEvent(BaseModel):
+    """The result a bound tool returned, exactly as the model will see it."""
+
+    model_config = _STRICT
+
+    type: Literal["tool_execution_complete"]
+    intent_id: str = ""
+    tool: str = ""
+    result: str = ""
+
+
+class TokenBudgetUpdateEvent(BaseModel):
+    """What one call cost and where the intent now stands against its ceiling."""
+
+    model_config = _STRICT
+
+    type: Literal["token_budget_update"]
+    intent_id: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    spent: int = 0
+    limit: int = 0
+
+
+class IntentPausedEvent(BaseModel):
+    """The user interrupted a live run; the loop is holding for their input."""
+
+    model_config = _STRICT
+
+    type: Literal["intent_paused"]
+    intent_id: str = ""
+    message: str = ""
+
+
+class IntentSteeredEvent(BaseModel):
+    """One correction was taken from the pause and injected into the run's context."""
+
+    model_config = _STRICT
+
+    type: Literal["intent_steered"]
+    intent_id: str = ""
+    correction: str = ""
+
+
+class IntentResumedEvent(BaseModel):
+    """A paused run is running again, carrying how many corrections it took on board."""
+
+    model_config = _STRICT
+
+    type: Literal["intent_resumed"]
+    intent_id: str = ""
+    corrections: int = 0
+
+
 # The event envelope: any event the backend may push, discriminated on ``type``.
 EventEnvelope = Annotated[
     Union[
@@ -682,6 +766,13 @@ EventEnvelope = Annotated[
         ArtifactPlannedEvent,
         ArtifactApprovedEvent,
         IntentFailedEvent,
+        AgentThoughtEvent,
+        ToolExecutionStartEvent,
+        ToolExecutionCompleteEvent,
+        TokenBudgetUpdateEvent,
+        IntentPausedEvent,
+        IntentSteeredEvent,
+        IntentResumedEvent,
         ToolCallEvent,
         ToolResultEvent,
         LogEvent,

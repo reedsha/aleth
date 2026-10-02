@@ -74,6 +74,21 @@ const SCHEMAS = {
     action_type: isString,
     error: isString,
   },
+  // The live run's telemetry (Phase 33): the loop's own events, each naming its intent so a
+  // per-intent stream can filter to one run. Mirrors tools/payloads.py.
+  agent_thought: { intent_id: isString, step: isNumber, text: isString, tool_calls: isArray },
+  tool_execution_start: { intent_id: isString, tool: isString, arguments: isObject },
+  tool_execution_complete: { intent_id: isString, tool: isString, result: isString },
+  token_budget_update: {
+    intent_id: isString,
+    prompt_tokens: isNumber,
+    completion_tokens: isNumber,
+    spent: isNumber,
+    limit: isNumber,
+  },
+  intent_paused: { intent_id: isString, message: isString },
+  intent_steered: { intent_id: isString, correction: isString },
+  intent_resumed: { intent_id: isString, corrections: isNumber },
   log: { agent: isString, log_type: isString, text: isString },
   tool_call: { agent: isString, tool: isString, args: isObject, description: isString },
   tool_result: { agent: isString, tool: isString, result: isString },

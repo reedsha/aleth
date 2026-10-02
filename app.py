@@ -866,6 +866,48 @@ class EngineService:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def interrupt_intent(self, intent_id=None, note=""):
+        """Hold a *running* intent so the user can steer it (Phase 33).
+
+        The agent loop's gate reads this state before every model call and every tool execution,
+        so the hold lands at the next boundary rather than cutting a call in flight. Nothing is
+        failed -- the run pauses and waits -- which is why the status is its own state and not
+        ``failed``.
+
+        The pause *event* is the loop's to announce: it is the thing that actually pauses, and it
+        emits ``intent_paused`` the moment it reaches the gate. Emitting a second one here would
+        be the same transition reported twice.
+        """
+        if self._ledger is None:
+            return {"success": False, "error": "no intent ledger is attached"}
+        try:
+            held = self._ledger.interrupt(intent_id, note)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if not held:
+            return {"success": False, "error": "the intent is not running, so it cannot be held"}
+        from storage.intents import PAUSED
+
+        return {"success": True, "intent_id": str(intent_id or ""), "status": PAUSED}
+
+    def resume_intent(self, intent_id=None, correction=""):
+        """Release a paused intent, carrying the user's correction into its context (Phase 33).
+
+        The correction is written to the **ledger**, not handed to the loop: the API thread and the
+        run thread are different threads of the same run, and the ledger is the only thing they
+        share. The loop drains it when it wakes and injects it as a ``[user]`` message, so a
+        correction cannot be lost between the request and the resume.
+        """
+        if self._ledger is None:
+            return {"success": False, "error": "no intent ledger is attached"}
+        try:
+            released = self._ledger.resume(intent_id, correction)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        if not released:
+            return {"success": False, "error": "the intent is not paused, so it cannot be resumed"}
+        return {"success": True, "intent_id": str(intent_id or ""), "status": "running"}
+
     def start_api(self):
         """Bind the local gateway, serving the built frontend and the API from one origin.
 

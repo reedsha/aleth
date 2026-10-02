@@ -43,6 +43,10 @@ dependencies = [
     # that builds an agent. Declared on purpose: without it a clean environment cannot construct
     # ``ChatOpenAI`` at all, which only shows up where the dependency was not already present.
     "langchain-openai>=1.0",
+    # Exact token accounting for the intent budget (Phase 32/33). Declared rather than inherited:
+    # correctness rests on it, and its encoding is **vendored** under ``vendor/tiktoken/`` so the
+    # count is exact offline instead of approximated.
+    "tiktoken>=0.7",
     "astchunk>=0.1.0",
     # --- the app shell ---
     "python-dotenv>=1.2",
@@ -72,3 +76,9 @@ test = [
 # be a manifest nobody can use. These are the importable packages and top-level modules.
 packages = ["agents", "api", "core", "orchestration", "storage", "tools"]
 py-modules = ["app", "bridge_bus", "env_boot", "main", "registry"]
+
+# The vendored tokenizer encoding (Phase 33). It ships as data rather than inside a package because
+# it is not importable -- it is a blob tiktoken looks up by name in ``TIKTOKEN_CACHE_DIR``, which the
+# boot sequence points at this directory.
+[tool.setuptools.data-files]
+"vendor/tiktoken" = ["vendor/tiktoken/*"]

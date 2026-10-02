@@ -13,11 +13,27 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 32)
+## ⚡ 0. Current State at This Handoff (Phase 33)
 
-- **Phases 5 → 32 are complete and CI-green.** Phases 31-32 (rolling context compression, hard token
-  bounding) are the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what
-  changed most recently.
+- **Phases 5 → 33 are complete and CI-green.** Phase 33 (real-time observability and hard
+  interruption) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
+  what changed most recently.
+- **The run streams itself (Phase 33).** The agent loop emits `agent_thought`,
+  `tool_execution_start`/`_complete` and `token_budget_update` through an injected `emit` threaded
+  from `EngineService.emit_event` down to `run_tool_loop`; each is a member of the strict bus union
+  (`tools/payloads.py`) and mirrored in `ui/js/bridge-bus.js`. `GET /api/intents/{id}/stream` is a
+  gateway *route* that filters the hub's frames to one run; `/api/events` stays the unfiltered
+  firehose, byte-for-byte.
+- **A run is steerable (Phase 33).** `POST /api/intent/interrupt` holds a running intent
+  (`paused_awaiting_input`, not `failed`) and `POST /api/intent/resume` releases it with the
+  correction queued in the ledger. The loop's gate announces `intent_paused`, waits (≤ 900 s), drains
+  the correction exactly once and injects it as a `[user]` message; the gate drains on the *running*
+  path too, so a resume that beats the next gate cannot strand the correction.
+- **The summary cannot grow (Phase 33).** `_compact` is recursive and its output is hard-capped at
+  `MAX_SUMMARY_TOKENS = 400`, so a summariser that ignores its prompt cannot grow the payload.
+- **The tokenizer is vendored (Phase 33).** `cl100k_base` ships at `vendor/tiktoken/<sha1>`;
+  `token_budget.install_cache_dir()` points `TIKTOKEN_CACHE_DIR` at it at boot, so the count is exact
+  and offline (a fallback warns once on stderr).
 - **The context is not linear (Phase 31).** The payload is the immutable system prompt, a **rolling
   summary** of the older turns, and the last `CONTEXT_WINDOW_TURNS = 4` turns verbatim. Past
   `COMPRESS_AFTER_TURNS = 5`, `_compact` folds the rest with an injected `summarizer` (the cheapest
@@ -1517,13 +1533,17 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `93460f1` (Phase 30) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `c4314b6` (Phase 32) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (33 modules, 173 dependencies) |
-| Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 168.87 kB |
-| UI tests | `npx playwright test` | **63 passed** in 22.0 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1256 passed, 23 skipped, 236 subtests** in 81.58 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1273 passed, 5 skipped**, and **0 containers left behind** |
-| Rolling window | `tests/test_mcp.py::ContextWindowTests` | **6 passed** — a summary leads the payload and the window is bounded; without a compressor the exact notice appears; a failing compressor falls back; a short run has neither; and the payload stops growing once the window fills |
+| Build | `npm run build` | 57 modules; `dist/index.html` 66.32 kB, `index-*.css` 91.82 kB, `index-*.js` 169.25 kB |
+| UI tests | `npx playwright test` | **64 passed** in 13.7 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1273 passed, 23 skipped, 243 subtests** in 79.45 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1291 passed, 5 skipped**, and **0 containers left behind** |
+| Live stream | `tests/test_mcp.py::SteeringAndStreamTests` | **4 passed** — the loop emits `agent_thought`/`token_budget_update`/`tool_execution_start`/`tool_execution_complete` in order and every frame validates against the bus union; an interrupt holds a run and the correction lands as the last `[user]` message; a pause nobody answers raises; and a correction that beats the next gate is still taken |
+| Per-intent stream | `tests/test_api_gateway.py` (route + live filter) + `SteeringOperationTests` | **passed** — the route names its intent, `/api/events` stays unfiltered, a filtered stream delivers only its own frames, and both operations are served with their bodies validated |
+| Steering operations | `tests/test_characterization.py::SteeringBridgeTests` | **5 passed** — interrupt holds a running intent, resume releases it and queues the correction, and both refuse the wrong state |
+| Vendored tokenizer | `tests/test_token_budget.py::VendoredEncodingTests` | **2 passed** — the blob is present with tiktoken's published SHA-256, and the count is tiktoken-exact with no fallback warning |
+| Rolling window | `tests/test_mcp.py::ContextWindowTests` | **8 passed** — a summary leads the payload and the window is bounded; without a compressor the exact notice appears; a failing compressor falls back; a short run has neither; the payload stops growing once the window fills; the compressor is handed the previous summary (recursive); and the summary is hard-capped however long the summariser answers (Phase 33) |
 | Token bounding | `tests/test_mcp.py::TokenBudgetTests` + `tests/test_token_budget.py` | **passed** — the spend is recorded in the ledger, the breaker stops the loop before the next call and names the count, an already-spent budget refuses immediately, an ungated loop still hits the step ceiling, the columns migrate, and the Node check batches its arguments |
 | Runtime selection | `tests/test_project_phases.py` | **17 passed** — the manifests decide the runtime and the image, a polyglot project is refused until it declares one, the syntax fallback fires for Python and Node, and the setup timeout is hard and clamped |
 | Gate sealing | `tests/test_staging.py::MergeGateTests` | **7 passed** — a failed verdict refuses, a pass merges, an **unrun** gate refuses, a shadow with no verdict refuses, a rejection is unaffected, and the verdict survives a reload |

@@ -18,6 +18,14 @@ from tools.run_context import install_exception_logging
 
 install_exception_logging()
 
+# The tokenizer's encoding is vendored, and pointing tiktoken at it here is what makes the intent
+# budget **exact** rather than estimated -- and offline, because tiktoken otherwise downloads its
+# BPE file on first use (Phase 33). ``tools.token_budget`` resolves the same directory itself, so a
+# swarm child is covered too; this is the boot's own statement of it.
+from tools import token_budget
+
+token_budget.install_cache_dir()
+
 from tools.docker_sandbox import install_shutdown_sweep, sweep_orphaned_containers
 
 sweep_orphaned_containers("boot")

@@ -128,6 +128,66 @@ class IntentTokenLedgerTests(unittest.TestCase):
         self.assertEqual(ledger.recent(1)[0]["status"], "running")
 
 
+class VendoredEncodingTests(unittest.TestCase):
+    """Phase 33: the counter is exact and offline.
+
+    tiktoken downloads its BPE file on first use, and this engine cannot fetch one mid-run. The blob
+    is vendored, so the count is tiktoken's own -- not a characters-per-token guess that fails on
+    minified code, base64 and non-English text.
+    """
+
+    # tiktoken's published digest for ``cl100k_base``. If it changes, the vendored file changed, and
+    # the count can no longer be trusted to match the model's own tokenizer.
+    PUBLISHED_SHA256 = "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7"
+
+    def setUp(self):
+        # The module caches its encoding and its "already reported" flag. Reset both so this class
+        # observes the load it is testing rather than a neighbour's.
+        self._saved = (
+            token_budget._ENCODING_CACHE,
+            token_budget._ENCODING_TRIED,
+            token_budget._ESTIMATE_REPORTED,
+        )
+        token_budget._ENCODING_CACHE = None
+        token_budget._ENCODING_TRIED = False
+        token_budget._ESTIMATE_REPORTED = False
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        (
+            token_budget._ENCODING_CACHE,
+            token_budget._ENCODING_TRIED,
+            token_budget._ESTIMATE_REPORTED,
+        ) = self._saved
+
+    def test_the_vendored_blob_is_present_and_is_the_published_one(self):
+        import hashlib
+
+        found = token_budget.vendor_dir()
+        self.assertTrue(found, "the vendored encoding is not where the counter looks for it")
+        blob = os.path.join(found, token_budget.ENCODING_CACHE_KEY)
+        self.assertTrue(os.path.isfile(blob), blob)
+        with open(blob, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        self.assertEqual(digest, self.PUBLISHED_SHA256)
+
+    def test_the_count_is_tiktoken_exact_and_does_not_fall_back(self):
+        import contextlib
+        import io
+
+        import tiktoken
+
+        self.assertTrue(token_budget.install_cache_dir(), "no vendored cache directory to use")
+        text = "def alpha():\n    return 1\n"
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            count = token_budget.count_tokens(text)
+        self.assertEqual(stderr.getvalue(), "", "the counter fell back to the estimate")
+        # tiktoken's own answer, computed here so the test is not the function asserting itself.
+        expected = len(tiktoken.get_encoding(token_budget.ENCODING_NAME).encode(text))
+        self.assertEqual(count, expected)
+
+
 class NodeSyntaxFallbackTests(unittest.TestCase):
     """The JavaScript check must not expand a whole frontend into one argv (E2BIG)."""
 

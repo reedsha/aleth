@@ -108,6 +108,9 @@ class IntentLedgerEntry(BaseModel):
     # cost, and the ledger is the only durable answer.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # The queued steering payload (Phase 33): corrections a paused run has been handed and not yet
+    # drained. On the wire so the UI can show that its input is pending rather than lost.
+    pending_input: str = "[]"
 
 
 class IntentQueueStatus(BaseModel):

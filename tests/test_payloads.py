@@ -297,6 +297,8 @@ class BusVocabularyTests(unittest.TestCase):
         "laya_tagging_started", "laya_tagging_progress", "laya_tagging_done",
         "console_detached", "console_detach_failed", "console_line", "task_state_updated",
         "artifact_planned", "artifact_approved", "intent_failed",
+        "agent_thought", "tool_execution_start", "tool_execution_complete",
+        "token_budget_update", "intent_paused", "intent_steered", "intent_resumed",
         "tool_call", "tool_result", "log",
     })
 

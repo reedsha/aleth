@@ -1364,12 +1364,12 @@ class CoderDelegationEventTests(WorkspaceTestCase):
 
         def _canned(task, *, plan_id=None, workspace_dir=None, completer=None, session=None,
                     model=None, base_url=None, api_key=None, role=None, capabilities=None,
-                    intent_id=""):
+                    intent_id="", emit=None):
             # ``model``/``base_url``/``api_key`` are part of ``plan_task``'s contract now: the
             # caller names the route the router selected and the endpoint that reaches it. The
             # canned planner ignores them -- it is a fixture, not a router -- but it must accept
             # them, exactly as the real planner does. ``intent_id`` joined that contract in
-            # Phase 27 for the same reason, and is ignored here too.
+            # Phase 27 for the same reason, and is ignored here too; ``emit`` joined it in Phase 33.
             title = str(task.get("title") or "")
             deliverable = templates.select(title, task.get("tag"))
             files = [str(name) for name in (task.get("files") or []) if str(name).strip()]
@@ -2732,6 +2732,87 @@ class RunLockBridgeTests(WorkspaceTestCase):
         res = self._api_with_live_run().set_active_plan("OTHER.md")
         self.assertFalse(res["success"])
         self.assertIn("run is in progress", res["error"])
+
+
+class SteeringBridgeTests(WorkspaceTestCase):
+    """Phase 33: the two steering operations, on the real service and a real ledger.
+
+    An interrupt *holds* a running intent -- it does not fail it -- and a resume releases it with
+    the user's correction queued in the ledger, where the loop will drain it. The refusals matter
+    as much as the successes: a hold that cannot name a running intent must not pretend to have
+    taken one.
+    """
+
+    def setUp(self):
+        super().setUp()
+        try:
+            import app
+        except Exception as exc:  # pragma: no cover - only when credentials are absent
+            raise unittest.SkipTest(f"app needs credentials: {exc}")
+        self.app = app
+
+    def _api_with_running(self, intent_id):
+        from api.intents import Intent
+        from storage.db import default_db_path, get_store
+        from storage.intents import IntentLedger
+
+        get_store()  # applies the telemetry schema, as a boot does
+        api = self.app.EngineService()
+        api._ledger = IntentLedger(default_db_path())
+        intent = Intent(id=intent_id, action_type="custom", message="go",
+                        action_params={}, enqueued_at=0.0)
+        api._ledger.record(intent)
+        self.assertTrue(api._ledger.claim(intent))
+        return api
+
+    def test_interrupt_holds_a_running_intent(self):
+        from storage.intents import PAUSED
+
+        api = self._api_with_running("i-hold")
+
+        res = api.interrupt_intent("i-hold", "hold on")
+
+        self.assertTrue(res["success"], res)
+        self.assertEqual(res["status"], PAUSED)
+        self.assertEqual(api._ledger.status_of("i-hold"), PAUSED)
+
+    def test_resume_releases_it_and_queues_the_correction(self):
+        api = self._api_with_running("i-resume")
+        api.interrupt_intent("i-resume", "hold")
+
+        res = api.resume_intent("i-resume", "fix the API endpoint only")
+
+        self.assertTrue(res["success"], res)
+        self.assertEqual(res["status"], "running")
+        self.assertEqual(api._ledger.status_of("i-resume"), "running")
+        # The correction is queued where the loop drains it -- the handoff between the API thread
+        # and the run thread is the ledger, so losing it here would lose it everywhere.
+        self.assertEqual(api._ledger.drain_input("i-resume"), ["fix the API endpoint only"])
+
+    def test_interrupt_refuses_an_intent_that_is_not_running(self):
+        from storage.db import default_db_path
+        from storage.intents import IntentLedger
+
+        api = self.app.EngineService()
+        api._ledger = IntentLedger(default_db_path())
+
+        res = api.interrupt_intent("never-accepted", "hold")
+
+        self.assertFalse(res["success"])
+        self.assertIn("not running", res["error"])
+
+    def test_resume_refuses_an_intent_that_is_not_paused(self):
+        api = self._api_with_running("i-running")
+
+        res = api.resume_intent("i-running", "steer")
+
+        self.assertFalse(res["success"])
+        self.assertIn("not paused", res["error"])
+
+    def test_an_unattached_service_refuses_both(self):
+        api = self.app.EngineService()
+        self.assertFalse(api.interrupt_intent("x")["success"])
+        self.assertFalse(api.resume_intent("x")["success"])
 
 
 class ApproveArtifactBridgeTests(WorkspaceTestCase):

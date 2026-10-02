@@ -271,6 +271,32 @@ test.describe("the agent event wire", () => {
     expect(busErrors.length).toBeGreaterThan(0);
   });
 
+  test("the live run's telemetry events pass the strict sink", async ({ page }) => {
+    // Phase 33: the agent loop's own events are part of the vocabulary the frontend validates
+    // (ui/js/bridge-bus.js mirrors tools/payloads.py). The sink must accept them rather than
+    // reject them as unknown -- a rejected frame is a run the UI cannot follow.
+    const busErrors = [];
+    page.on("console", (msg) => {
+      if (msg.type() === "error" && msg.text().includes("deepAgentsBus")) busErrors.push(msg.text());
+    });
+    await openApp(page);
+
+    const frames = [
+      { type: "agent_thought", intent_id: "i-1", step: 1, text: "thinking", tool_calls: ["read_file"] },
+      { type: "tool_execution_start", intent_id: "i-1", tool: "read_file", arguments: { path: "a.py" } },
+      { type: "tool_execution_complete", intent_id: "i-1", tool: "read_file", result: "ok" },
+      { type: "token_budget_update", intent_id: "i-1", prompt_tokens: 10, completion_tokens: 2, spent: 12, limit: 250000 },
+      { type: "intent_paused", intent_id: "i-1", message: "hold" },
+      { type: "intent_steered", intent_id: "i-1", correction: "focus" },
+      { type: "intent_resumed", intent_id: "i-1", corrections: 1 },
+    ];
+    for (const frame of frames) {
+      await dispatchAgentEvent(page, frame);
+    }
+
+    expect(busErrors, busErrors.join("\n")).toEqual([]);
+  });
+
   test("a coder_spawn event brings the coder card on screen", async ({ page }) => {
     await openApp(page);
 
