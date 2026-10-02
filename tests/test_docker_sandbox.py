@@ -597,22 +597,32 @@ class ShutdownSweepTests(unittest.TestCase):
 
         purge.assert_called_once_with()
 
-    def test_the_shutdown_sweep_ignores_ownership(self):
-        """It removes what the *app* made, whoever owns it -- that is the whole point.
+    @unittest.skipUnless(os.name == "posix", "walks /proc")
+    def test_our_own_tree_is_recognised_and_a_stranger_is_not(self):
+        self.assertTrue(docker_sandbox._is_our_child(str(os.getpid())))
+        # pid 1 is alive and is an *ancestor* of this process, not a descendant of it.
+        self.assertFalse(docker_sandbox._is_our_child("1"))
+        self.assertFalse(docker_sandbox._is_our_child("999999999"), "a missing pid is not ours")
+        self.assertFalse(docker_sandbox._is_our_child(""), "a blank label is not ours")
 
-        The owner here is this very process, alive, which is exactly the case the boot sweep is
-        right to spare and the shutdown sweep must not.
+    @unittest.skipUnless(os.name == "posix", "walks /proc")
+    def test_the_shutdown_sweep_takes_only_its_own(self):
+        """Scoped to this process's tree, because the label alone is the whole host's.
+
+        The bug this closes: a sweep matching ``aleth.managed`` alone killed a neighbour engine's
+        in-flight containers the moment this one exited.
         """
+        ours = docker_sandbox.ManagedContainer("mine", "e1", str(os.getpid()), "1")
+        theirs = docker_sandbox.ManagedContainer("theirs", "e2", "1", "1")
         with mock.patch.object(
-            docker_sandbox, "managed_containers",
-            return_value=[docker_sandbox.ManagedContainer("id1", "e1", str(os.getpid()), "1")],
+            docker_sandbox, "managed_containers", return_value=[ours, theirs]
         ), mock.patch.object(docker_sandbox, "remove_container", return_value=True) as remove:
             removed = docker_sandbox.purge_managed_containers()
 
-        self.assertEqual(removed, ["id1"])
+        self.assertEqual(removed, ["mine"])
         # Detached: this process may be killed a moment later, and a removal the kill can
         # interrupt is a removal that did not happen.
-        remove.assert_called_once_with("id1", detached=True)
+        remove.assert_called_once_with("mine", detached=True)
 
     def test_a_sweep_with_nothing_to_clean_is_silent(self):
         """A machine with no client has nothing to clean, and must not raise on the way out."""

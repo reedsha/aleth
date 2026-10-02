@@ -427,6 +427,35 @@ class ContainerLifecycleTests(unittest.TestCase):
             short_id, [container.id for container in docker_sandbox.managed_containers()]
         )
 
+    def test_the_shutdown_sweep_leaves_a_neighbours_container_alone(self):
+        """The collateral-damage bug, pinned on a live daemon.
+
+        A second engine on the same host -- a CI matrix leg, a background processor, another
+        project -- must not lose its in-flight containers because this one exited. The label is
+        global; the *ownership* is what decides.
+        """
+        name = "aleth-chaos-neighbour"
+        created = subprocess.run(
+            [*docker_sandbox.docker_bin(), "run", "-d", "--rm", "--name", name,
+             "--label", "aleth.managed=true",
+             # pid 1: alive, and an ancestor of this process rather than a descendant of it.
+             "--label", "aleth.owner_pid=1",
+             docker_sandbox.image(), "/bin/sh", "-c", "sleep 300"],
+            capture_output=True, text=True, timeout=180,
+        )
+        self.assertEqual(created.returncode, 0, created.stderr)
+        short_id = created.stdout.strip()[:12]
+        self.addCleanup(lambda: docker_sandbox.remove_container(name))
+
+        removed = docker_sandbox.purge_managed_containers()
+
+        self.assertNotIn(short_id, removed, "the sweep murdered a neighbour's container")
+        self.assertIn(
+            short_id,
+            [container.id for container in docker_sandbox.managed_containers()],
+            "the neighbour's container should still be running",
+        )
+
     @unittest.skipUnless(IS_POSIX, "/proc is a Linux interface")
     def test_the_sweeper_removes_a_container_whose_owner_is_gone(self):
         """The boot/teardown sweep: a dead owner is the definition of an orphan."""

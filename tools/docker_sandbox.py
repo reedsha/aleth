@@ -646,24 +646,67 @@ def managed_containers() -> List["ManagedContainer"]:
     return rows
 
 
-def _process_start_time(pid: int) -> Optional[str]:
-    """The kernel's start time for ``pid``, or ``None`` when it does not exist.
+def _stat_fields(pid: int) -> List[str]:
+    """``/proc/<pid>/stat``'s fields after the parenthesised comm, or ``[]``.
 
-    ``/proc/<pid>/stat`` field 22, counted *after* the parenthesised comm -- which may itself
-    contain spaces and parentheses, so the split is on the last ``)``. The field is stable for
-    the life of a process, which is exactly what makes it an identity rather than a number.
+    Split on the **last** ``)``: the comm may itself contain spaces and parentheses, so a plain
+    split would misnumber every field after it. After the comm, ``state`` is field 3 -- so the
+    returned list is indexed from field 3.
     """
     try:
         with open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="replace") as handle:
             raw = handle.read()
     except OSError:
-        return None
+        return []
     _head, separator, rest = raw.rpartition(")")
     if not separator:
-        return None
-    fields = rest.split()
+        return []
+    return rest.split()
+
+
+def _process_start_time(pid: int) -> Optional[str]:
+    """The kernel's start time for ``pid``, or ``None`` when it does not exist.
+
+    Field 22 -- stable for the life of a process, which is exactly what makes it an identity
+    rather than a number.
+    """
+    fields = _stat_fields(pid)
     # After the comm, ``state`` is field 3, so ``starttime`` (field 22) is index 19.
     return fields[19] if len(fields) >= 20 else None
+
+
+def _parent_pid(pid: int) -> str:
+    """The parent of ``pid``, or ``""`` when it is gone or unreadable."""
+    fields = _stat_fields(pid)
+    # After the comm, ``state`` is field 3, so ``ppid`` (field 4) is index 1.
+    return fields[1] if len(fields) >= 2 else ""
+
+
+def _is_our_child(pid: str) -> bool:
+    """Whether ``pid`` is this process or one of its descendants, right now.
+
+    The engine never creates a container itself: ``run_isolated`` runs inside the exec server child
+    (``tools/mcp_exec_server.py``), so every container the engine is responsible for carries *that*
+    child's pid. A shutdown sweep scoped to ``os.getpid()`` alone would therefore remove nothing,
+    and one scoped to the label alone is what murders a neighbour. Walking the parent chain is what
+    tells the two apart.
+
+    Bounded and fails safe: the walk stops at pid 1 or on a cycle, and a pid that is gone -- or a
+    ``/proc`` that cannot be read -- answers ``False``. A container whose owner is gone is
+    deliberately left alone here; the boot sweep is the one that can tell, and it is the only one
+    that should.
+    """
+    if os.name != "posix":
+        return False
+    mine = os.getpid()
+    current = str(pid)
+    seen = set()
+    while current.isdigit() and current not in seen:
+        if int(current) == mine:
+            return True
+        seen.add(current)
+        current = _parent_pid(int(current))
+    return False
 
 
 def _owner_is_gone(owner_pid: str, owner_start: str = "") -> bool:
@@ -746,27 +789,30 @@ def sweep_orphaned_containers(stage: str) -> int:
 
 
 def purge_managed_containers() -> List[str]:
-    """Force-remove every container this app made, whoever owns it. Returns what it removed.
+    """Force-remove every container **this process is responsible for**. Returns what it removed.
 
-    The **engine's** shutdown sweep, and deliberately not the boot sweep.
-    :func:`purge_orphaned_containers` spares a container whose owner is still alive -- right at
-    boot, useless here: at shutdown the owner *is* this process, and it is about to stop being
-    alive. Nothing this app started may outlive it.
+    Responsible for, not merely labelled: a host can run several engines at once -- a CI matrix, a
+    background processor, two projects on one box -- and a sweep that matched the ``aleth.managed``
+    label alone would murder a neighbour's in-flight containers the moment this one exited. So each
+    candidate's owner is checked against **this process and its descendants**
+    (:func:`_is_our_child`), which is what "the engine cleans its own garbage" actually means.
 
-    It asks the daemon instead of trusting this process's bookkeeping, because the bookkeeping may
-    be exactly what is broken; the ``aleth.managed`` label the perimeter stamps on every container
-    is what it matches on. That is also why it does not rely on process-group scoping: a container
-    is a child of *dockerd*, not of this process, so killing our own group never reached it.
+    Descendants, not ``os.getpid()`` alone, and the distinction is not a nicety: the engine never
+    creates a container itself. ``run_isolated`` runs inside the exec server child
+    (``tools/mcp_exec_server.py``), so the containers this engine is responsible for carry that
+    child's pid. A sweep that only matched its own pid would remove nothing at all.
 
-    The label is global rather than per project, so this removes containers belonging to **any**
-    aleth engine on the host. That is the intent -- one engine per machine, and it must leave no
-    garbage -- but it is the reason this is the shutdown path and not something run casually: a
-    second concurrent engine on the same host would lose its in-flight containers.
+    It asks the daemon rather than trusting this process's bookkeeping, because the bookkeeping may
+    be exactly what is broken -- and because a container is a child of *dockerd*, not of this
+    process, so process-group scoping never reached it.
 
-    Never raises: a machine with no client, or a daemon that will not answer, has nothing to clean.
+    A container whose owner is already gone is left alone: this engine cannot prove it made it, and
+    the boot sweep (:func:`purge_orphaned_containers`) is the one that can tell.
     """
     removed: List[str] = []
     for container in managed_containers():
+        if not _is_our_child(container.owner_pid):
+            continue
         # Detached, like the exec server's signal path: this process may be killed a moment later,
         # and a removal the kill can interrupt is a removal that did not happen.
         if remove_container(container.id, detached=True):
