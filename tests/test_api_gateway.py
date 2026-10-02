@@ -277,6 +277,62 @@ class OperationTableTests(unittest.TestCase):
                 )
 
 
+class WorkspaceBoundaryTests(GatewayTestCase):
+    """The merge boundary's HTTP contract: the intent id is required, and a held lock is a 409."""
+
+    class _Service:
+        """Records what reached it, so the test proves the call and not just the status."""
+
+        def __init__(self, *, locked=False):
+            self.locked = locked
+            self.calls = []
+
+        def workspace_diff(self, intent_id=None):
+            self.calls.append(("diff", intent_id))
+            return {"success": True, "staged": False,
+                    "counts": {"added": 0, "modified": 0, "deleted": 0}}
+
+        def workspace_merge(self, intent_id=None, approve=True):
+            from tools.staging import StagingLocked
+
+            self.calls.append(("merge", intent_id, approve))
+            if self.locked:
+                raise StagingLocked("held by another merge")
+            return {"success": True, "applied": {"added": 0, "modified": 0, "deleted": 0}}
+
+    def _gateway(self, **kwargs):
+        return Gateway(service=self._Service(**kwargs))
+
+    def test_a_diff_without_an_intent_id_is_a_400(self):
+        response = self._gateway().dispatch(Request(method="GET", path="/api/workspace/diff"))
+        self.assertEqual(response.status, 400)
+
+    def test_a_merge_without_an_intent_id_is_a_400(self):
+        response = self._gateway().dispatch(
+            Request(method="POST", path="/api/workspace/merge", body=b"{}")
+        )
+        self.assertEqual(response.status, 400)
+
+    def test_a_merge_under_a_held_lock_is_a_409(self):
+        service = self._Service(locked=True)
+        response = Gateway(service=service).dispatch(
+            Request(method="POST", path="/api/workspace/merge",
+                    body=b'{"intent_id": "i-1", "approve": true}')
+        )
+        # A conflict has its own status: a 500 would report a bug that is not there.
+        self.assertEqual(response.status, 409)
+        self.assertIn("locked", response.body.decode("utf-8"))
+
+    def test_a_merge_with_an_intent_id_reaches_the_service(self):
+        service = self._Service()
+        response = Gateway(service=service).dispatch(
+            Request(method="POST", path="/api/workspace/merge",
+                    body=b'{"intent_id": "i-2", "approve": false}')
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(service.calls, [("merge", "i-2", False)])
+
+
 class IntentQueueTests(unittest.TestCase):
     def test_an_accepted_intent_is_drained_in_order(self):
         queue = IntentQueue(capacity=4)

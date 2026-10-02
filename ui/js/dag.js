@@ -453,7 +453,9 @@ async function approveArtifact(taskId, button) {
     button.textContent = "Approving\u2026";
   }
   try {
-    const res = await api.approve_artifact(taskId, planId);
+    // The run's id travels with the approval, so the released execution writes into the shadow
+    // of the run that proposed the artifact rather than a fresh one nobody can review (Phase 21).
+    const res = await api.approve_artifact(taskId, planId, state.activeIntentId);
     showToast("Artifact approved; execution released.", "success");
     // Approval dispatches the execution pass, so the UI re-arms the same run lock a
     // normal launch arms.

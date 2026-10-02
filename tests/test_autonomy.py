@@ -328,7 +328,7 @@ class TestServiceRouting:
             raise AssertionError("a one-pass intent must not enter the autonomous loop")
 
         service._drive_plan = refuse
-        service._run_blocking = lambda message, action_type, params: {
+        service._run_blocking = lambda message, action_type, params, intent_id="": {
             "status": "finished", "message": "",
         }
         service._run_intent(self._intent("next_step"))

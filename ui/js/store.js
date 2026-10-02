@@ -35,6 +35,10 @@ export const state = {
   selectedAction: null,
   targetTaskId: null,
   targetTaskTitle: null,
+  // The execution id the engine accepted the current run under. The shadow that run writes into
+  // is keyed to it (Phase 21), so the UI must hold it to name the run again -- an artifact
+  // approval, or the merge review. Written only by `actions.js` when a launch is confirmed.
+  activeIntentId: null,
   // Whether the open action drawer is asking for the plan-wide run (Phase 18) rather than one
   // node. Set by `openActionDrawer` and read by the confirm handler.
   runWholePlan: false,

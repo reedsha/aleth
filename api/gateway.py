@@ -28,6 +28,10 @@ from api.schemas import (
     OperationEnvelope,
     ServiceRefusal,
 )
+# The one service exception the boundary translates itself: a merge that finds the project's
+# write lock held is a *conflict*, and the client's retry story keys on the 409 it becomes.
+# Imported by name so the gateway stays a plain router rather than a `tools` consumer.
+from tools.staging import StagingLocked
 
 SERVICE_NAME = "aleth-api"
 SERVICE_VERSION = "1.0"
@@ -206,6 +210,11 @@ class Gateway:
             return _error(400, "invalid request", str(error))
         try:
             payload = operation.call(self.service, parsed)
+        except StagingLocked as error:
+            # A conflict, not a fault: another merge holds the resource this one needs. 409 is
+            # the status the client's retry story understands; a 500 would report a bug that is
+            # not there.
+            return _error(409, "the workspace is locked by another merge", str(error))
         except Exception as error:  # a service fault is the operation's answer, not a crash
             return _error(500, "the operation failed", f"{type(error).__name__}: {error}")
         fault = _contract_fault(operation.name, payload)

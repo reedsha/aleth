@@ -407,7 +407,11 @@ async function executeConfirmedTask(promptText, actionType = "custom", actionPar
   DOM.systemStatusLabel.textContent = "Multi-Agent Active";
 
   try {
-    await api.start_execution(text, actionType, actionParams);
+    const res = await api.start_execution(text, actionType, actionParams);
+    // The engine answers with the execution id it accepted the run under. The shadow the run
+    // writes into is keyed to it (Phase 21), so the UI keeps it to name that run again -- an
+    // approval, or the merge review. A staged change with no id is a change no one can act on.
+    state.activeIntentId = (res && res.intent_id) || null;
   } catch (err) {
     console.error("[Execution] Start failed:", err);
     // A launch that rejected never produced a terminal event, so the lock has to be undone

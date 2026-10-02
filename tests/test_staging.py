@@ -10,12 +10,13 @@ review read, and the gate that refuses to merge a plan that is not finished.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from tools import staging, workspace
+from tools import env_sanitizer, staging, workspace
 
 FAKE_DOCKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_docker.py")
 
@@ -126,15 +127,18 @@ class StagingModuleTests(unittest.TestCase):
         # Idempotent: a second purge reports that there was nothing to remove.
         self.assertFalse(staging.purge_staging(shadow.staging_id))
 
-    def test_find_staging_resolves_by_intent_and_by_plan(self):
+    def test_find_staging_resolves_by_intent_and_by_id_never_by_plan(self):
         self._host_with_files()
         shadow = staging.create_staging(self.host, intent_id="i-find", plan_id="PLAN-X")
         self.assertEqual(staging.find_staging(intent_id="i-find").staging_id, shadow.staging_id)
-        self.assertEqual(staging.find_staging(plan_id="PLAN-X").staging_id, shadow.staging_id)
         self.assertEqual(
             staging.find_staging(staging_id=shadow.staging_id).staging_id, shadow.staging_id
         )
+        # The plan is metadata, never a key (Phase 21): a query that only matches this shadow's
+        # *plan* resolves to nothing, and a blank query resolves to nothing either.
         self.assertIsNone(staging.find_staging(intent_id="never-created"))
+        self.assertIsNone(staging.find_staging(intent_id="PLAN-X"))
+        self.assertIsNone(staging.find_staging(intent_id=""))
 
     def test_load_staging_round_trips_the_manifest(self):
         self._host_with_files()
@@ -148,6 +152,65 @@ class StagingModuleTests(unittest.TestCase):
         self._host_with_files()
         shadow = staging.create_staging(self.host, intent_id="i-manifest-clean")
         self.assertEqual(staging.compute_diff(shadow)["added"], [])
+
+
+def _git_init(root: str) -> None:
+    """A real repository, initialised the way a person would, with the sanitized child env."""
+    subprocess.run(
+        ["git", "init", "-q"], cwd=root, check=True, capture_output=True,
+        env=env_sanitizer.sanitized_environment(),
+    )
+
+
+class GitFilteredStagingTests(unittest.TestCase):
+    """Phase 21: the shadow copy is the project git would keep, and nothing else.
+
+    The ignore rules are not re-derived in Python -- they are whatever ``git ls-files`` answers,
+    which is the only implementation that agrees with the user's own tooling.
+    """
+
+    def setUp(self):
+        self.host = tempfile.mkdtemp(prefix="aleth_git_host_")
+        self.addCleanup(shutil.rmtree, self.host, ignore_errors=True)
+        shutil.rmtree(staging.staging_base(), ignore_errors=True)
+        self.addCleanup(shutil.rmtree, staging.staging_base(), ignore_errors=True)
+
+    def _repo(self):
+        _git_init(self.host)
+        _write(self.host, ".gitignore", "node_modules/\ndist/\n*.log\n")
+        _write(self.host, "pkg/mod.py", "value = 1\n")
+        _write(self.host, "build_artifact.log", "noise\n")
+        _write(self.host, "node_modules/dep/index.js", "module.exports = 1\n")
+        _write(self.host, "dist/bundle.js", "console.log(1)\n")
+        _write(self.host, "untracked.py", "fresh = True\n")
+
+    def test_the_copy_is_the_project_git_would_keep(self):
+        self._repo()
+        shadow = staging.create_staging(self.host, intent_id="i-git")
+        self.assertTrue(os.path.exists(os.path.join(shadow.path, "pkg", "mod.py")))
+        # Untracked but not ignored: still part of the project, so it is copied.
+        self.assertTrue(os.path.exists(os.path.join(shadow.path, "untracked.py")))
+        self.assertTrue(os.path.exists(os.path.join(shadow.path, ".gitignore")))
+        # Ignored: the dead weight a naive copytree would have dragged in.
+        self.assertFalse(os.path.exists(os.path.join(shadow.path, "node_modules")))
+        self.assertFalse(os.path.exists(os.path.join(shadow.path, "dist")))
+        self.assertFalse(os.path.exists(os.path.join(shadow.path, "build_artifact.log")))
+
+    def test_an_ignored_host_file_is_not_reported_as_deleted(self):
+        self._repo()
+        shadow = staging.create_staging(self.host, intent_id="i-git-diff")
+        delta = staging.compute_diff(shadow)
+        # The shadow has no ``dist`` and no ``*.log``; the host does. Neither is a deletion,
+        # because git already says they are not part of the project.
+        self.assertEqual(delta["deleted"], [])
+        self.assertTrue(delta["clean"], delta)
+
+    def test_a_non_repository_workspace_still_stages(self):
+        _write(self.host, "pkg/mod.py", "value = 1\n")
+        _write(self.host, "node_modules/dep/index.js", "module.exports = 1\n")
+        shadow = staging.create_staging(self.host, intent_id="i-nogit")
+        self.assertTrue(os.path.exists(os.path.join(shadow.path, "pkg", "mod.py")))
+        self.assertFalse(os.path.exists(os.path.join(shadow.path, "node_modules")))
 
 
 class ExecutionRootTests(unittest.TestCase):
@@ -266,6 +329,51 @@ class ShadowRunTests(unittest.TestCase):
         result = self.service.workspace_merge(intent_id="never-staged")
         self.assertFalse(result["success"])
         self.assertTrue(result["error"])
+
+    def test_a_diff_without_an_intent_id_is_refused(self):
+        for missing in (None, "", "   "):
+            result = self.service.workspace_diff(intent_id=missing)
+            self.assertFalse(result["success"], missing)
+            self.assertIn("intent id", result["error"])
+
+    def test_a_merge_without_an_intent_id_is_refused(self):
+        for missing in (None, "", "   "):
+            result = self.service.workspace_merge(intent_id=missing)
+            self.assertFalse(result["success"], missing)
+            self.assertIn("intent id", result["error"])
+
+    def test_a_merge_under_a_held_lock_is_a_conflict(self):
+        with self.service._staged_execution("intent-locked") as shadow:
+            _write(shadow.path, "pkg/mod.py", "value = 9\n")
+
+        with staging.merge_lock():
+            with self.assertRaises(staging.StagingLocked):
+                self.service.workspace_merge(intent_id="intent-locked")
+
+        # The conflict refused the merge: the host and the shadow are both untouched.
+        self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
+        self.assertTrue(os.path.exists(shadow.path))
+
+    def test_two_intents_do_not_share_a_shadow(self):
+        with self.service._staged_execution("intent-a") as first:
+            _write(first.path, "pkg/only-a.py", "a = 1\n")
+        with self.service._staged_execution("intent-b") as second:
+            self.assertNotEqual(first.path, second.path)
+            self.assertFalse(os.path.exists(os.path.join(second.path, "pkg", "only-a.py")))
+        # The second run's delta is its own: the first run's work is not in it.
+        self.assertEqual(self.service.workspace_diff(intent_id="intent-b")["added"], [])
+
+    def test_staging_the_same_intent_twice_reuses_its_shadow(self):
+        with self.service._staged_execution("intent-reuse") as first:
+            _write(first.path, "pkg/mod.py", "value = 11\n")
+        with self.service._staged_execution("intent-reuse") as again:
+            # The same execution keeps one shadow: a second pass joins the same delta rather than
+            # replacing it (an approval releasing the artifact the first pass proposed).
+            self.assertEqual(again.path, first.path)
+            self.assertEqual(_read(again.path, "pkg/mod.py"), "value = 11\n")
+        delta = self.service.workspace_diff(intent_id="intent-reuse")
+        self.assertEqual(delta["modified"], ["pkg/mod.py"])
+        self.assertFalse(delta["clean"])
 
     def test_the_container_would_mount_the_shadow_not_the_host(self):
         """The bind mount is the shadow: the one path the container can write is a copy."""

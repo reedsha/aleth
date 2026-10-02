@@ -241,6 +241,47 @@ test("the Approve control calls approve_artifact and reports the result", async 
   await expect(page.locator("#toastContainer")).toContainText("Artifact approved");
 });
 
+test("an approval names the run it releases with the tracked intent id", async ({ page }) => {
+  await openApp(page, {
+    api: {
+      start_execution: { success: true, intent_id: "intent-run-7", status: "queued", position: 0 },
+      approve_artifact: { success: true, dispatched: true, plan_id: "PLAN", task_id: "task-2" },
+    },
+  });
+
+  // A real launch, so the engine answers with the execution id the UI must remember. A run
+  // replaces the plan workbench (which holds the DAG rail) with the execution stage, so the rail
+  // only returns once the run is over and its cards are closed -- the same path a real session
+  // takes before a person acts on the halt.
+  await page.keyboard.press("Control+k");
+  await page.fill("#commandPaletteInput", "next");
+  await page.keyboard.press("Enter");
+  await page.locator("#btnConfirmActionParam").click();
+  await expect.poll(() =>
+    page.evaluate(() => (window.__alethFetchBodies || []).some((body) => body && body.action_type))
+  ).toBe(true);
+
+  await dispatchAgentEvent(page, { type: "architect_spawn", agent: "software-architect", name: "Lead" });
+  await dispatchAgentEvent(page, { type: "workflow_complete", status: "stopped" });
+  await page.locator("#btnCloseArchitect").click();
+  await expect(page.locator("#emptyStateContainer")).toBeVisible();
+
+  // The halt, and its Approve control.
+  await dispatchAgentEvent(page, { type: "artifact_planned", artifact: ARTIFACT });
+  await expect(page.locator("#dagPanel")).toBeVisible();
+  await page.locator("#inspectorActions").getByRole("button", { name: "Approve" }).click();
+
+  // The approval must name the run it is releasing: its write lands in that run's shadow (Phase
+  // 21), and a shadow with no id is a change no one can merge.
+  await expect.poll(() =>
+    page.evaluate(() =>
+      (window.__alethFetchBodies || []).some(
+        (body) => body && body.task_id && body.intent_id === "intent-run-7"
+      )
+    )
+  ).toBe(true);
+});
+
 test("a planned target's proposed content is editable before approval", async ({ page }) => {
   await openApp(page, {
     api: {

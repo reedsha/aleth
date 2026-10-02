@@ -1,4 +1,4 @@
-"""Phase 20: the shadow workspace, the delta, and the merge boundary.
+"""Phases 20-21: the shadow workspace, the delta, and the merge boundary.
 
 An agent that is allowed to write into the user's live working tree is an agent that can delete
 it. Twenty phases of containment -- no network, a bounded container, a read-only install -- say
@@ -9,12 +9,15 @@ The model is deliberately small and path-shaped:
 
 * :func:`create_staging` copies the host workspace into a *shadow* directory under the state
   root, keyed by the intent that is about to run. The copy is what the container mounts and what
-  every execution write targets (``tools.workspace.get_execution_dir``).
+  every execution write targets (``tools.workspace.get_execution_dir``). Phase 21 stops it
+  copying dead weight: the file set is what *git* says belongs to the project, so a virtualenv, a
+  ``node_modules`` tree and a build output never enter the shadow.
 * :func:`compute_diff` is the delta between the shadow and the host: added, modified and deleted
   files, plus a capped unified patch. It is content-addressed, not git-based, so it works in a
   workspace that is not a repository.
 * :func:`merge_staging` applies that delta to the host, once, and only when the caller has
-  verified the plan is finished. :func:`purge_staging` throws the shadow away instead.
+  verified the plan is finished. :func:`purge_staging` throws the shadow away instead. The apply
+  happens under :func:`merge_lock`, a per-project write lock, so two merges cannot interleave.
 
 Everything is a pure function over paths. There is no global here, no process and no daemon: the
 module is a filesystem transaction, and the run lifecycle (``app.py``) is what decides when to
@@ -23,16 +26,19 @@ begin and end one.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import difflib
 import hashlib
 import json
 import os
 import shutil
+import subprocess
 import uuid
-from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
 
 from tools.workspace import (
+    GIT_TIMEOUT_SECONDS,
     IDENTITY_FILE,
     IGNORE_DIRS,
     get_active_plan_filename,
@@ -43,6 +49,10 @@ from tools.workspace import (
 # Where the shadows live, under the per-project state directory. Segregated from the user's tree
 # by the same rule as every other piece of machine state (Phase 11): the engine never litters.
 STAGING_SUBDIR = "staging"
+
+# The per-project merge lock, beside the shadows it protects. A file, not a global: it is held
+# across processes, so a second engine instance cannot merge the same tree concurrently.
+MERGE_LOCK_FILE = "merge.lock"
 
 # The manifest at the root of a shadow, so a restart can resolve a staging id -- or find the one
 # belonging to an intent -- without an in-memory registry. Excluded from the copy and the delta.
@@ -62,6 +72,14 @@ _CHUNK = 1024 * 1024
 
 class StagingError(RuntimeError):
     """A staging operation could not be carried out (a missing shadow, an unwritable host)."""
+
+
+class StagingLocked(StagingError):
+    """Another merge holds this project's write lock.
+
+    A *conflict*, not a fault: the operation is well-formed and the answer is "no, not while
+    another merge is applying its delta". ``api.gateway`` maps it to a 409.
+    """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -111,8 +129,78 @@ def _engine_managed_files(host_root: str) -> FrozenSet[str]:
     return frozenset(names)
 
 
-def _copy_ignore(host_root: str):
+def _posix_relative(path: str, root: str) -> str:
+    """``path`` relative to ``root``, with forward slashes whatever the platform separator is."""
+    return os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def _git(host_root: str, *args: str) -> Optional[bytes]:
+    """One read-only git query in ``host_root``; ``None`` when git could not answer.
+
+    Run with the sanitized child environment (``tools.env_sanitizer``): git is a child process and
+    needs none of the host's credentials to say which files belong to the project. A list argv,
+    never a shell.
+    """
+    from tools import env_sanitizer
+
+    try:
+        completed = subprocess.run(
+            ["git", *args], cwd=host_root, capture_output=True,
+            timeout=GIT_TIMEOUT_SECONDS, env=env_sanitizer.sanitized_environment(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout if completed.returncode == 0 else None
+
+
+def _git_workspace_files(host_root: str) -> Optional[FrozenSet[str]]:
+    """The paths git considers part of the project, or ``None`` when it is not a repository.
+
+    The ignore rules are **not** re-implemented here. A hand-rolled matcher would have to
+    reproduce negation, ``**``, nested ``.gitignore`` files, ``.git/info/exclude`` and the global
+    excludes file -- a whole grammar, re-derived incorrectly -- and an ``rsync`` subprocess would
+    have to be handed those same rules anyway. Git already knows them, and git is already a
+    runtime dependency (``tools.workspace.project_id`` hashes a remote through it). So the filter
+    is pushed down to ``git ls-files``: tracked files plus untracked files that are not ignored,
+    which is exactly the project minus its dead weight.
+
+    ``None`` means "not a git work tree, or git could not answer", and the caller falls back to a
+    plain walk pruned by :data:`~tools.workspace.IGNORE_DIRS`.
+    """
+    inside = _git(host_root, "rev-parse", "--is-inside-work-tree")
+    if inside is None or inside.strip() != b"true":
+        return None
+    listing = _git(host_root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+    if listing is None:
+        return None
+    included: Set[str] = set()
+    for chunk in listing.split(b"\0"):
+        if not chunk:
+            continue
+        relative = os.fsdecode(chunk).replace("\\", "/").strip("/")
+        if relative and not relative.startswith("../"):
+            included.add(relative)
+    return frozenset(included)
+
+
+def _included_directories(files: FrozenSet[str]) -> FrozenSet[str]:
+    """Every ancestor directory of an included file, so a walk can prune a whole foreign subtree."""
+    directories: Set[str] = set()
+    for relative in files:
+        directory = os.path.dirname(relative)
+        while directory:
+            directories.add(directory)
+            parent = os.path.dirname(directory)
+            if parent == directory:
+                break
+            directory = parent
+    return frozenset(directories)
+
+
+def _copy_ignore(host_root: str, included: Optional[FrozenSet[str]]):
+    """The ``shutil.copytree`` filter: prune the ignored, the engine's own, and the non-project."""
     managed = _engine_managed_files(host_root)
+    keep_dirs = _included_directories(included) if included is not None else None
 
     def ignore(directory: str, names: List[str]) -> List[str]:
         at_top = os.path.abspath(directory) == os.path.abspath(host_root)
@@ -120,31 +208,61 @@ def _copy_ignore(host_root: str):
         for name in names:
             if name in IGNORE_DIRS or name.startswith(".tmp") or name.startswith(".drive"):
                 dropped.append(name)
-            elif at_top and name in managed:
+                continue
+            if at_top and name in managed:
+                dropped.append(name)
+                continue
+            allowed, kept = included, keep_dirs
+            if allowed is None or kept is None:
+                continue
+            absolute = os.path.join(directory, name)
+            relative = _posix_relative(absolute, host_root)
+            # A symlink to a directory is listed by git as a file, so it is judged as one.
+            if os.path.islink(absolute) or not os.path.isdir(absolute):
+                if relative not in allowed:
+                    dropped.append(name)
+            elif relative not in kept:
                 dropped.append(name)
         return dropped
 
     return ignore
 
 
-def _iter_files(root: str, host_root: str) -> Iterator[Tuple[str, str]]:
-    """Yield ``(relative_path, absolute_path)`` for every file in ``root`` worth diffing."""
+def _iter_files(
+    root: str, host_root: str, *, included: Optional[FrozenSet[str]] = None
+) -> Iterator[Tuple[str, str]]:
+    """Yield ``(posix relative path, absolute path)`` for every project file under ``root``.
+
+    ``included`` restricts the yield to the paths git considers part of the project. It is passed
+    for the *host* side of a diff, so a gitignored file -- a build artefact, a virtualenv, the
+    state database -- is never mistaken for something the agent deleted. The shadow is walked in
+    full: it holds only the copied project plus whatever the agent added, and hiding an addition
+    the agent made is the one thing a review surface must not do.
+    """
     managed = _engine_managed_files(host_root)
+    keep_dirs = _included_directories(included) if included is not None else None
     for current, dirs, files in os.walk(root):
-        dirs[:] = [
-            name for name in dirs
-            if name not in IGNORE_DIRS and not name.startswith(".tmp") and not name.startswith(".drive")
-        ]
         at_top = os.path.abspath(current) == os.path.abspath(root)
-        for name in files:
+        kept = []
+        for name in dirs:
+            if name in IGNORE_DIRS or name.startswith(".tmp") or name.startswith(".drive"):
+                continue
             if at_top and name in managed:
                 continue
-            if name == STAGING_MANIFEST:
+            if keep_dirs is not None and _posix_relative(os.path.join(current, name), root) not in keep_dirs:
+                continue
+            kept.append(name)
+        dirs[:] = kept
+        for name in files:
+            if name == STAGING_MANIFEST or (at_top and name in managed):
                 continue
             absolute = os.path.join(current, name)
             if os.path.islink(absolute):
                 continue
-            yield os.path.relpath(absolute, root), absolute
+            relative = _posix_relative(absolute, root)
+            if included is not None and relative not in included:
+                continue
+            yield relative, absolute
 
 
 def _digest(path: str) -> str:
@@ -155,12 +273,12 @@ def _digest(path: str) -> str:
     return hasher.hexdigest()
 
 
-def _snapshot(root: str, host_root: str) -> Dict[str, str]:
-    """Every file under ``root`` as ``relative path -> sha256``."""
+def _snapshot(root: str, host_root: str, *, included: Optional[FrozenSet[str]] = None) -> Dict[str, str]:
+    """Every project file under ``root`` as ``relative path -> sha256``."""
     snapshot: Dict[str, str] = {}
-    for relative, absolute in _iter_files(root, host_root):
+    for relative, absolute in _iter_files(root, host_root, included=included):
         try:
-            snapshot[relative.replace(os.sep, "/")] = _digest(absolute)
+            snapshot[relative] = _digest(absolute)
         except OSError:
             continue
     return snapshot
@@ -225,6 +343,11 @@ def create_staging(
     ``staging_id`` is generated when it is not supplied. An existing directory at that id is
     replaced: a shadow is a scratch copy of the present, and a second copy of the same run is a
     bug, not a merge candidate.
+
+    The copy is the project as git sees it (``_git_workspace_files``), so the shadow carries the
+    source and not a virtualenv, a dependency tree or a build output -- the dead weight that made
+    a naive ``copytree`` an I/O bomb. Where the host is not a repository the walk falls back to
+    :data:`~tools.workspace.IGNORE_DIRS`.
     """
     host = os.path.abspath(host_root)
     if not os.path.isdir(host):
@@ -234,7 +357,7 @@ def create_staging(
     if os.path.exists(path):
         shutil.rmtree(path, ignore_errors=True)
     try:
-        shutil.copytree(host, path, ignore=_copy_ignore(host), symlinks=True)
+        shutil.copytree(host, path, ignore=_copy_ignore(host, _git_workspace_files(host)), symlinks=True)
     except OSError as error:
         raise StagingError(f"could not stage {host!r}: {error}") from error
 
@@ -275,9 +398,8 @@ def list_stagings() -> List[StagingWorkspace]:
         entries = os.listdir(base)
     except OSError:
         return found
-    # Ordered by creation time, so ``find_staging``'s "the last one" really is the newest: a plan
-    # can carry more than one shadow (a manual approval, then an ``execute_plan``), and the review
-    # view wants the latest, not an arbitrary directory name.
+    # Ordered by creation time, so a scan resolves to the newest match: a run can leave more than
+    # one shadow behind, and the review view wants the latest, not an arbitrary directory name.
     def _created(name: str) -> float:
         try:
             return os.path.getmtime(os.path.join(base, name))
@@ -295,32 +417,27 @@ def find_staging(
     *,
     intent_id: Optional[str] = None,
     staging_id: Optional[str] = None,
-    plan_id: Optional[str] = None,
 ) -> Optional[StagingWorkspace]:
-    """Resolve a shadow by its own id, by the intent that created it, or by its plan.
+    """Resolve a shadow by its own id, or by the intent that created it. Never by plan.
 
-    The intent and plan lookups are scans because the sets are tiny and it keeps the on-disk
-    manifest the single source of truth rather than a second index that can disagree with it.
-    The plan fallback is what lets the review view ask "is anything staged for the plan I am
-    looking at?" without knowing the run's id.
+    The intent is the execution identity (Phase 21), and it is the *only* key that maps one to
+    one onto a shadow. A plan is a blueprint that can be executed more than once, so a shadow
+    keyed to a plan would let one run read -- and merge -- another run's changes. A shadow whose
+    intent is not the one being asked about is, deliberately, not found: an orphaned shadow is
+    dead, and the review surface must not guess which run a person meant.
     """
     if staging_id:
         return load_staging(staging_id)
-    candidates = list_stagings()
-    if intent_id:
-        matches = [item for item in candidates if item.intent_id == str(intent_id)]
-        if matches:
-            return matches[-1]
-    if plan_id:
-        matches = [item for item in candidates if item.plan_id == str(plan_id)]
-        if matches:
-            return matches[-1]
-    return None
+    if not intent_id:
+        return None
+    matches = [item for item in list_stagings() if item.intent_id == str(intent_id)]
+    return matches[-1] if matches else None
 
 
 def compute_diff(workspace: StagingWorkspace) -> Dict[str, Any]:
     """The delta between the shadow and the host: added, modified, deleted, and a patch."""
-    host = _snapshot(workspace.host_root, workspace.host_root)
+    included = _git_workspace_files(workspace.host_root)
+    host = _snapshot(workspace.host_root, workspace.host_root, included=included)
     staged = _snapshot(workspace.path, workspace.host_root)
     added = sorted(set(staged) - set(host))
     deleted = sorted(set(host) - set(staged))
@@ -369,7 +486,11 @@ def _prune_empty(directory: str, *, stop: str) -> None:
 
 
 def merge_staging(workspace: StagingWorkspace) -> Dict[str, Any]:
-    """Apply the shadow's delta to the host, once. Returns the counts that landed."""
+    """Apply the shadow's delta to the host, once. Returns the counts that landed.
+
+    Call under :func:`merge_lock`: this reads the host, computes the delta and writes it back, and
+    that sequence is only atomic against another merge if the lock is held around it.
+    """
     delta = compute_diff(workspace)
     applied = {"added": 0, "modified": 0, "deleted": 0}
     for name in delta["added"]:
@@ -390,6 +511,30 @@ def merge_staging(workspace: StagingWorkspace) -> Dict[str, Any]:
     }
 
 
+@contextlib.contextmanager
+def merge_lock():
+    """Hold this project's merge lock: the write lock on the host working tree.
+
+    A merge is a read-modify-write of the user's files, so two merges interleaved would each apply
+    a delta computed against a tree the other has already changed. The lock is a file under the
+    project's state directory, so it is per project and it outlives the process that took it. It
+    is acquired **non-blocking**: a merge that finds it held is a conflict to report (a 409), not
+    a request to queue behind an operation the user never asked to wait for. Raises
+    :class:`StagingLocked`.
+    """
+    from filelock import FileLock, Timeout
+
+    lock = FileLock(os.path.join(state_dir(), MERGE_LOCK_FILE))
+    try:
+        lock.acquire(timeout=0)
+    except Timeout as error:
+        raise StagingLocked("another merge holds the write lock on this project") from error
+    try:
+        yield lock
+    finally:
+        lock.release()
+
+
 def purge_staging(staging_id: str) -> bool:
     """Delete a shadow. ``True`` when one was removed, ``False`` when there was nothing to remove."""
     path = os.path.join(staging_base(), str(staging_id))
@@ -401,15 +546,18 @@ def purge_staging(staging_id: str) -> bool:
 
 __all__ = [
     "MAX_DIFF_CHARS",
+    "MERGE_LOCK_FILE",
     "STAGING_MANIFEST",
     "STAGING_SUBDIR",
     "StagingError",
+    "StagingLocked",
     "StagingWorkspace",
     "compute_diff",
     "create_staging",
     "find_staging",
     "list_stagings",
     "load_staging",
+    "merge_lock",
     "merge_staging",
     "purge_staging",
     "staging_base",

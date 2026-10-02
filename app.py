@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import traceback
+import uuid
 import webview
 
 from env_boot import load_environment
@@ -457,20 +458,24 @@ class EngineService:
     # -------------------------------------------------------------
     # Execution Lifecycle & Card Orchestration
     # -------------------------------------------------------------
-    def _launch_run(self, user_message: str, action_type: str, action_params: dict) -> None:
+    def _launch_run(self, user_message: str, action_type: str, action_params: dict, intent_id: str = "") -> None:
         """Start a workflow run on a daemon thread. The caller owns the run lock.
 
         Factored out of ``start_execution`` because approval launches a run too: an
         approved artifact is applied by re-issuing the request that proposed it, and that
         must obey the same lock and the same threading discipline as a user launch.
+
+        ``intent_id`` is the execution identity the run's shadow is keyed to (Phase 21). A
+        queued run passes its own; an approval passes the id of the run whose artifact it is
+        releasing, so its writes land in that run's shadow rather than a new one.
         """
         def target_runner():
             # Every run executes against a shadow of the workspace (Phase 20). A run launched
             # inside the autonomous loop finds the loop's shadow already active and reuses it; a
-            # run launched on its own -- a manual approval -- gets one of its own. The `finally`
-            # tick runs while that shadow is still the execution root, so a dispatch it triggers
-            # also lands in the shadow.
-            with self._staged_execution(""):
+            # run launched on its own -- a manual approval -- reuses the shadow of the intent it
+            # names, or gets one of its own. The `finally` tick runs while that shadow is still
+            # the execution root, so a dispatch it triggers also lands in the shadow.
+            with self._staged_execution(intent_id):
                 try:
                     registry.run_agent_workflow(
                         (user_message or "").strip(),
@@ -487,7 +492,8 @@ class EngineService:
         self._execution_thread = threading.Thread(target=target_runner, daemon=True)
         self._execution_thread.start()
 
-    def start_execution(self, user_message: str, action_type: str = "custom", action_params: dict = None):
+    def start_execution(self, user_message: str, action_type: str = "custom", action_params: dict = None,
+                        intent_id: str = ""):
         """
         Starts the multi-agent task execution in an asynchronous background thread.
         Supports intent-driven Gatekeeper actions and administrative bypass.
@@ -502,7 +508,7 @@ class EngineService:
             # to stop and joined for one second -- best-effort, and a second thread ran anyway.
             return {"success": False, "error": "A run is already in progress."}
 
-        self._launch_run(user_message, action_type, action_params or {})
+        self._launch_run(user_message, action_type, action_params or {}, intent_id)
 
         return {"success": True, "status": "started", "message": user_message, "action_type": action_type}
 
@@ -549,7 +555,8 @@ class EngineService:
         return _submit(self._intent_queue, action_type=action_type, message=message,
                        action_params=action_params)
 
-    def _run_blocking(self, user_message: str, action_type: str, action_params: dict) -> dict:
+    def _run_blocking(self, user_message: str, action_type: str, action_params: dict,
+                      intent_id: str = "") -> dict:
         """Run one workflow pass on this thread and return the run's own terminal event.
 
         The outcome is read from the run's terminal ``workflow_complete`` -- a thread that merely
@@ -570,7 +577,8 @@ class EngineService:
 
         self.emit_event = capture
         try:
-            result = self.start_execution(user_message, action_type, dict(action_params or {}))
+            result = self.start_execution(user_message, action_type, dict(action_params or {}),
+                                          intent_id=intent_id)
             if not result.get("success"):
                 raise RuntimeError(str(result.get("error") or "the run was refused"))
             thread = self._execution_thread
@@ -612,7 +620,7 @@ class EngineService:
             if str(intent.action_type) == "execute_plan":
                 return self._drive_plan(intent)
             outcome = self._run_blocking(
-                intent.message, intent.action_type, dict(intent.action_params)
+                intent.message, intent.action_type, dict(intent.action_params), str(intent.id)
             )
             self._settle_from_outcome(intent, outcome)
 
@@ -919,7 +927,7 @@ class EngineService:
     # -------------------------------------------------------------
     # Artifact Gate: approval is the only way past a PLANNED task
     # -------------------------------------------------------------
-    def approve_artifact(self, task_id: str, plan_id: str = None):
+    def approve_artifact(self, task_id: str, plan_id: str = None, intent_id: str = None):
         """Approves a planned artifact: PLANNED -> IN_PROGRESS, and releases execution.
 
         The state transition is validated against the store first, so an approval for a
@@ -935,6 +943,10 @@ class EngineService:
         The task is IN_PROGRESS and the artifact is locked, so the pass needs only the task
         and its plan. The returned ``dispatched`` flag states whether it started; the UI must
         not assume the artifact landed.
+
+        ``intent_id`` is the run whose artifact is being released, supplied by the UI that
+        tracked it. The dispatch joins *that* run's shadow (Phase 21), so the applied artifact
+        is part of the same reviewable delta rather than a shadow nobody can reach.
         """
         from tools.execution_gate import approve_artifact as approve
         from tools.workspace import get_active_plan_filename
@@ -954,6 +966,7 @@ class EngineService:
             "",
             "execute_artifact",
             {"taskId": str(task_id), "planId": resolved_plan},
+            intent_id=str(intent_id or ""),
         )
         result["dispatched"] = True
         return result
@@ -978,10 +991,14 @@ class EngineService:
 
         A nested call reuses the active shadow rather than staging again. The autonomous loop
         drives several workflow passes under one ``execute_plan`` intent, and each pass has to see
-        what the previous one wrote -- a second copy would silently discard it.
+        what the previous one wrote -- a second copy would silently discard it. A *sequential*
+        call for the same intent (an approval releasing a run's artifact) finds that run's shadow
+        on disk and reuses it too, so its writes join the same delta rather than replacing it.
 
         Staging is a hard requirement, not a best effort: if the shadow cannot be made, the run
-        is refused rather than allowed to fall back onto the user's files.
+        is refused rather than allowed to fall back onto the user's files. A blank id is not a
+        shadow nobody can reach -- it is minted, so every shadow maps to an execution id (Phase
+        21: staging is keyed 1:1 to an intent, never to a plan).
         """
         from tools import staging
         from tools.workspace import get_execution_dir, get_project_dir, set_execution_dir
@@ -990,10 +1007,13 @@ class EngineService:
             # An outer run already staged this workspace; every pass lands in its shadow.
             yield None
             return
+        resolved = str(intent_id or "").strip() or uuid.uuid4().hex
         try:
-            shadow = staging.create_staging(
-                get_project_dir(), intent_id=str(intent_id or ""), plan_id=self._active_plan_id()
-            )
+            shadow = staging.find_staging(intent_id=resolved)
+            if shadow is None:
+                shadow = staging.create_staging(
+                    get_project_dir(), intent_id=resolved, plan_id=self._active_plan_id()
+                )
         except staging.StagingError as error:
             # Announced so the UI settles instead of hanging on a run that never started.
             self.emit_event({
@@ -1010,14 +1030,20 @@ class EngineService:
     def workspace_diff(self, intent_id=None):
         """The staged delta for review: what a merge would change on the host, and nothing else.
 
-        With no id the most recently staged shadow for the active plan answers, so the review
-        view can ask the question without knowing the run's identifier.
+        ``intent_id`` is required and is the *only* key. A shadow belongs to one execution; a
+        request without the run's id has no shadow to describe, so it is refused rather than
+        answered with whichever delta happens to be newest -- guessing is how the wrong changes
+        reach the user's tree.
         """
         from tools import staging
 
-        shadow = staging.find_staging(
-            intent_id=intent_id or None, plan_id=self._active_plan_id()
-        )
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return {
+                "success": False,
+                "error": "A workspace diff needs the intent id that produced the staged changes.",
+            }
+        shadow = staging.find_staging(intent_id=resolved)
         if shadow is None:
             return {
                 "success": True, "staged": False, "clean": True,
@@ -1032,48 +1058,58 @@ class EngineService:
         An approve is refused unless the plan is finished -- every task completed. A plan that is
         still awaiting an approval, or still running, is not a plan whose work is ready to touch
         the user's tree. A rejection discards the shadow and leaves the host untouched.
+
+        ``intent_id`` is required, for the same reason the diff requires it. The whole operation
+        runs under :func:`tools.staging.merge_lock`, so a merge that overlaps another is refused
+        with a conflict (``StagingLocked``, which the gateway maps to a 409) instead of racing it.
         """
         from orchestration import autonomy
         from storage.db import get_store
         from tools import staging
 
-        shadow = staging.find_staging(
-            intent_id=intent_id or None, plan_id=self._active_plan_id()
-        )
-        if shadow is None:
-            return {"success": False, "error": "There are no staged changes to merge."}
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return {
+                "success": False,
+                "error": "A merge needs the intent id that produced the staged changes.",
+            }
 
-        if not approve:
-            purged = staging.purge_staging(shadow.staging_id)
+        with staging.merge_lock():
+            shadow = staging.find_staging(intent_id=resolved)
+            if shadow is None:
+                return {"success": False, "error": "There are no staged changes to merge."}
+
+            if not approve:
+                purged = staging.purge_staging(shadow.staging_id)
+                self.emit_event({
+                    "type": "log", "agent": "software-architect", "log_type": "decision",
+                    "text": f"[STAGING] rejected and purged {shadow.staging_id}",
+                })
+                return {
+                    "success": True, "rejected": True, "purged": purged,
+                    "staging_id": shadow.staging_id, "intent_id": shadow.intent_id,
+                }
+
+            plan_id = shadow.plan_id or self._active_plan_id()
+            progress = autonomy.plan_progress(get_store().path, plan_id)
+            if not progress.finished:
+                return {
+                    "success": False, "staging_id": shadow.staging_id,
+                    "error": "The plan is not complete; refusing to merge staged changes.",
+                    "progress": {
+                        "total": progress.total, "completed": progress.completed,
+                        "failed": progress.failed, "planned": progress.planned,
+                        "in_progress": progress.in_progress, "pending": progress.pending,
+                    },
+                }
+
+            result = staging.merge_staging(shadow)
+            staging.purge_staging(shadow.staging_id)
             self.emit_event({
                 "type": "log", "agent": "software-architect", "log_type": "decision",
-                "text": f"[STAGING] rejected and purged {shadow.staging_id}",
+                "text": f"[STAGING] merged {shadow.staging_id} into {shadow.host_root}",
             })
-            return {
-                "success": True, "rejected": True, "purged": purged,
-                "staging_id": shadow.staging_id, "intent_id": shadow.intent_id,
-            }
-
-        plan_id = shadow.plan_id or self._active_plan_id()
-        progress = autonomy.plan_progress(get_store().path, plan_id)
-        if not progress.finished:
-            return {
-                "success": False, "staging_id": shadow.staging_id,
-                "error": "The plan is not complete; refusing to merge staged changes.",
-                "progress": {
-                    "total": progress.total, "completed": progress.completed,
-                    "failed": progress.failed, "planned": progress.planned,
-                    "in_progress": progress.in_progress, "pending": progress.pending,
-                },
-            }
-
-        result = staging.merge_staging(shadow)
-        staging.purge_staging(shadow.staging_id)
-        self.emit_event({
-            "type": "log", "agent": "software-architect", "log_type": "decision",
-            "text": f"[STAGING] merged {shadow.staging_id} into {shadow.host_root}",
-        })
-        return {"success": True, **result}
+            return {"success": True, **result}
 
     # -------------------------------------------------------------
     # The swarm: reactive dispatch, driven by events

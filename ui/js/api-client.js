@@ -52,7 +52,7 @@ export const OPERATIONS = {
   rollback_task: { verb: "POST", path: "/api/task/rollback", args: ["task_id"] },
   run_task_tests: { verb: "POST", path: "/api/task/tests", args: ["task_id"] },
   save_settings: { verb: "POST", path: "/api/settings", args: ["values"] },
-  approve_artifact: { verb: "POST", path: "/api/artifact/approve", args: ["task_id", "plan_id"] },
+  approve_artifact: { verb: "POST", path: "/api/artifact/approve", args: ["task_id", "plan_id", "intent_id"] },
   // The merge boundary's write side: apply the staged delta (approve=true) or discard it.
   workspace_merge: { verb: "POST", path: "/api/workspace/merge", args: ["intent_id", "approve"] },
   reject_artifact: { verb: "POST", path: "/api/artifact/reject", args: ["task_id", "feedback", "plan_id"] },

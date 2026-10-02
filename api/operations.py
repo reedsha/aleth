@@ -70,6 +70,9 @@ class ArtifactApproveRequest(BaseModel):
     model_config = _STRICT
     task_id: str
     plan_id: Optional[str] = None
+    # The run whose artifact this releases. The UI tracks the intent id it was given when it
+    # submitted the run, so the approved write joins that run's shadow (Phase 21).
+    intent_id: Optional[str] = None
 
 
 class ArtifactRejectRequest(BaseModel):
@@ -145,17 +148,22 @@ class ConsoleLineRequest(BaseModel):
 
 
 class WorkspaceStagingRequest(BaseModel):
-    """Which shadow to read the delta of. Empty resolves the active plan's most recent one."""
+    """Which shadow to read the delta of. The intent id is required: a shadow maps 1:1 to an
+    execution, so a request that cannot name one is a request the engine must refuse."""
 
     model_config = _STRICT
-    intent_id: Optional[str] = None
+    intent_id: str
 
 
 class WorkspaceMergeRequest(BaseModel):
-    """Apply the shadow, or (``approve=False``) discard it and leave the host untouched."""
+    """Apply the shadow, or (``approve=False``) discard it and leave the host untouched.
+
+    ``intent_id`` is required for the same reason as the diff: a merge that cannot name the run
+    that produced the changes would have to guess, and guessing is how the wrong changes land.
+    """
 
     model_config = _STRICT
-    intent_id: Optional[str] = None
+    intent_id: str
     approve: bool = True
 
 
