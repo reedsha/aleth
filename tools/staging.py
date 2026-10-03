@@ -37,6 +37,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import uuid
 from typing import Any, Dict, FrozenSet, Iterable, Iterator, List, Optional, Set, Tuple
 
@@ -63,6 +64,12 @@ MERGE_LOCK_FILE = "merge.lock"
 # belonging to an intent -- without an in-memory registry. Excluded from the copy and the delta.
 STAGING_MANIFEST = ".aleth_staging.json"
 
+# The host as the run found it: ``{relative path: sha256}``, written at staging time (Phase 38).
+# Both sides of an egress are compared against it, which is what makes "did a person edit this
+# while the agent worked?" answerable at all. Excluded from the copy and the delta, like the
+# manifest, and committed into the shadow's step 0 so a rewind restores it too.
+BASELINE_FILE = ".aleth_baseline.json"
+
 STAGING_ID_LENGTH = 12
 
 # The largest patch the diff will assemble, so a review view can never be handed a multi-megabyte
@@ -84,6 +91,14 @@ class StagingLocked(StagingError):
 
     A *conflict*, not a fault: the operation is well-formed and the answer is "no, not while
     another merge is applying its delta". ``api.gateway`` maps it to a 409.
+    """
+
+
+class EgressConflict(StagingError):
+    """A person edited the host while the agent was working, on a path the agent also changed.
+
+    A refusal, not a fault: the engine applies the agent's work and never overwrites a human's.
+    The caller reports the paths and lets the person decide.
     """
 
 
@@ -171,7 +186,7 @@ def _engine_managed_files(host_root: str) -> FrozenSet[str]:
     the fresh one. ``.aleth_id`` is the project's own identity manifest, and the staging manifest
     is our own bookkeeping.
     """
-    names = {STAGING_MANIFEST, IDENTITY_FILE}
+    names = {STAGING_MANIFEST, BASELINE_FILE, IDENTITY_FILE}
     if os.path.abspath(host_root) == os.path.abspath(get_plan_dir()):
         names.add("plan.json")
         names.add(get_active_plan_filename())
@@ -405,8 +420,9 @@ def create_staging(
     path = os.path.join(staging_base(), resolved_id)
     if os.path.exists(path):
         remove_tree(path)
+    included = _git_workspace_files(host)
     try:
-        shutil.copytree(host, path, ignore=_copy_ignore(host, _git_workspace_files(host)), symlinks=True)
+        shutil.copytree(host, path, ignore=_copy_ignore(host, included), symlinks=True)
     except OSError as error:
         raise StagingError(f"could not stage {host!r}: {error}") from error
 
@@ -416,6 +432,13 @@ def create_staging(
         plan_id=str(plan_id or ""),
         host_root=host,
         path=path,
+    )
+    # Phase 38: the host as the run found it, recorded before anything can change either side. It
+    # is the third party both halves of an egress are compared against -- the agent's delta and the
+    # human's -- so it has to be a *point in time*, not a live reading.
+    atomic_io.write_text_atomic(
+        os.path.join(path, BASELINE_FILE),
+        json.dumps(_snapshot(host, host, included=included), separators=(",", ":")),
     )
     atomic_io.write_text_atomic(
         os.path.join(path, STAGING_MANIFEST), json.dumps(workspace.to_manifest(), indent=2)
@@ -580,6 +603,144 @@ def merge_staging(workspace: StagingWorkspace) -> Dict[str, Any]:
         "host_root": workspace.host_root,
         "applied": applied,
     }
+
+
+def host_baseline(workspace: StagingWorkspace) -> Dict[str, str]:
+    """The host as the run found it: ``{relative path: sha256}``. ``{}`` when not recorded."""
+    try:
+        with open(os.path.join(workspace.path, BASELINE_FILE), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(name): str(digest) for name, digest in data.items()}
+
+
+def _delta(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, List[str]]:
+    """The paths that differ between two snapshots, by kind."""
+    return {
+        "added": sorted(set(after) - set(before)),
+        "deleted": sorted(set(before) - set(after)),
+        "modified": sorted(name for name in (set(after) & set(before)) if after[name] != before[name]),
+    }
+
+
+def egress_plan(workspace: StagingWorkspace) -> Dict[str, Any]:
+    """What an egress would change, and where a person got there first (Phase 38).
+
+    The baseline is the host as the run found it, so **both sides are compared against the same
+    point in time**: the agent's delta is ``shadow vs baseline``, and a *collision* is a path in
+    that delta the host has also moved off the baseline. Those are exactly the paths an egress must
+    refuse to write -- the engine applies the agent's work and never overwrites a person's.
+
+    A shadow with no baseline on record (one created before this phase) falls back to the live host
+    as the comparison point, which is the Phase 20 semantics, and says so: the collision check
+    cannot be made without a baseline, and pretending otherwise would be worse than reporting it.
+    """
+    baseline = host_baseline(workspace)
+    recorded = bool(baseline)
+    included = _git_workspace_files(workspace.host_root)
+    host = _snapshot(workspace.host_root, workspace.host_root, included=included)
+    staged = _snapshot(workspace.path, workspace.host_root)
+    if not recorded:
+        baseline = host
+    agent = _delta(baseline, staged)
+    human = _delta(baseline, host) if recorded else {"added": [], "modified": [], "deleted": []}
+    # A collision is a path *both* sides moved off the baseline. The agent's side is every path it
+    # will touch -- write or delete -- and the human's is every path they moved, by any of the three
+    # kinds: a person *deleting* a file the agent rewrote is as much a collision as editing it.
+    agent_touches = set(agent["added"]) | set(agent["modified"]) | set(agent["deleted"])
+    human_moved = set(human["added"]) | set(human["modified"]) | set(human["deleted"])
+    collisions = sorted(agent_touches & human_moved)
+    return {
+        "staging_id": workspace.staging_id,
+        "intent_id": workspace.intent_id,
+        "plan_id": workspace.plan_id,
+        "host_root": workspace.host_root,
+        "baseline_recorded": recorded,
+        "added": agent["added"],
+        "modified": agent["modified"],
+        "deleted": agent["deleted"],
+        "counts": {kind: len(agent[kind]) for kind in ("added", "modified", "deleted")},
+        "clean": not (agent["added"] or agent["modified"] or agent["deleted"]),
+        "collisions": collisions,
+        "conflict": bool(collisions),
+        "patch": _unified_patch(
+            workspace.host_root, workspace.path, agent["added"], agent["modified"], agent["deleted"]
+        ),
+    }
+
+
+def apply_egress(workspace: StagingWorkspace) -> Dict[str, Any]:
+    """Apply the shadow's delta to the host, all or nothing, refusing a collision (Phase 38).
+
+    Call under :func:`merge_lock`. The collision check is re-run **inside** the lock, because
+    between the plan a reviewer read and this call a person may have saved a file -- and the whole
+    point of the gate is that the engine never overwrites human work.
+
+    Atomic in the sense that matters: the host files this will touch are copied aside first, so a
+    failure half-way is rolled back rather than leaving a half-applied tree. That is the strongest
+    guarantee a filesystem without transactions offers, and it is why the copies exist.
+    """
+    plan = egress_plan(workspace)
+    if plan["conflict"]:
+        raise EgressConflict(
+            "the host changed while the agent worked: " + ", ".join(plan["collisions"][:8])
+        )
+    touched = [*plan["added"], *plan["modified"], *plan["deleted"]]
+    backup = tempfile.mkdtemp(prefix="aleth_egress_")
+    try:
+        for name in touched:
+            target = os.path.join(workspace.host_root, name)
+            if not os.path.isfile(target):
+                continue
+            keep = os.path.join(backup, name)
+            os.makedirs(os.path.dirname(keep) or backup, exist_ok=True)
+            try:
+                shutil.copy2(target, keep)
+            except OSError as error:
+                raise StagingError(f"could not back up {name!r} before the egress: {error}") from error
+        applied = {"added": 0, "modified": 0, "deleted": 0}
+        try:
+            for kind in ("added", "modified"):
+                for name in plan[kind]:
+                    _apply_one(workspace.host_root, workspace.path, name, copy=True)
+                    applied[kind] += 1
+            for name in plan["deleted"]:
+                _apply_one(workspace.host_root, workspace.path, name, copy=False)
+                applied["deleted"] += 1
+        except OSError as error:
+            _roll_back_egress(backup, touched, workspace.host_root)
+            raise StagingError(
+                f"the egress failed and the host was rolled back: {error}"
+            ) from error
+        return {
+            "success": True,
+            "staging_id": workspace.staging_id,
+            "intent_id": workspace.intent_id,
+            "host_root": workspace.host_root,
+            "applied": applied,
+            "counts": plan["counts"],
+        }
+    finally:
+        remove_tree(backup)
+
+
+def _roll_back_egress(backup: str, touched: List[str], host_root: str) -> None:
+    """Put the host back the way it was. Best effort: a rollback that fails is still reported."""
+    for name in touched:
+        keep = os.path.join(backup, name)
+        target = os.path.join(host_root, name)
+        try:
+            if os.path.isfile(keep):
+                os.makedirs(os.path.dirname(target) or host_root, exist_ok=True)
+                shutil.copy2(keep, target)
+            elif os.path.exists(target):
+                # It did not exist before the egress, so it was added by the apply that failed.
+                os.remove(target)
+        except OSError:
+            pass
 
 
 @contextlib.contextmanager

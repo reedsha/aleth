@@ -44,6 +44,8 @@ const TRIGGER_IDS = [
   "btnSteerSubmit",
   "btnSteerCancel",
   "btnSteerRollback",
+  // The extraction gate (Phase 38): applying staged work is a request to the engine too.
+  "btnApplyToProject",
 ];
 
 let current = CONNECTING;

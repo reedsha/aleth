@@ -48,6 +48,63 @@ export function leaveRun() {
   setPausedBadge(false);
   clearTokenBurn();
   followFirehose();
+  // The run is over, so whether its staged work may be applied is now a question worth asking
+  // (Phase 38). Fire-and-forget: a read that fails simply leaves the control hidden.
+  refreshEgress();
+}
+
+// -- the extraction gate (Phase 38) --------------------------------------------------
+
+/**
+ * Shows the "Apply to Project" control when the run's staged work passed the project's own check.
+ *
+ * The verdict comes from the engine's diff read rather than from anything the UI tracks, because
+ * the gate is the engine's and a UI that guessed it would offer an action the backend refuses.
+ * Never raises: an unreadable diff hides the control, which is the safe direction.
+ */
+export async function refreshEgress() {
+  const button = DOM.btnApplyToProject;
+  if (!button) return;
+  const intentId = state.activeIntentId;
+  if (!intentId) {
+    button.style.display = "none";
+    return;
+  }
+  let payload = null;
+  try {
+    payload = await api.workspace_diff(intentId);
+  } catch (_err) {
+    // A refused or unreachable read hides the control; the user can reopen the run.
+  }
+  button.style.display = (payload && payload.staged && payload.mergeable)
+    ? "inline-flex"
+    : "none";
+}
+
+/**
+ * Applies the verified staged work to the user's tree, through the collision gate.
+ *
+ * A conflict is not an error to swallow: the engine refused because a person edited a file the
+ * agent also changed, and the only useful thing to do is say which paths and let them reconcile.
+ */
+export async function applyToProject() {
+  const intentId = state.activeIntentId;
+  const button = DOM.btnApplyToProject;
+  if (!intentId) {
+    showToast("There is no staged run to apply.", "info");
+    return;
+  }
+  if (button) button.disabled = true;
+  try {
+    await api.egress_intent(intentId);
+  } catch (err) {
+    showToast(`Could not apply the changes: ${(err && err.message) || err}`, "error");
+    return;
+  } finally {
+    if (button) button.disabled = false;
+  }
+  if (button) button.style.display = "none";
+  showToast("Applied to your project.", "success");
 }
 
 // -- the steering wheel --------------------------------------------------------------

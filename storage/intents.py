@@ -68,11 +68,15 @@ INTENT_DDL = """
                 -- Phase 35: what each *step* cost, so a rollback can truncate the bill as well as
                 -- the files. The cumulative columns above are the breaker's fast read; this is the
                 -- ledger behind them, and it is what makes "forget steps 13-15" expressible.
+                -- Phase 37: ``context_blob`` is the loop's *memory* at that step -- the durable
+                -- half of a rewind, so a rollback is exact even when the step belonged to an
+                -- earlier loop invocation. The ephemeral array is a cache; this is the record.
                 CREATE TABLE IF NOT EXISTS intent_step_spend (
                     intent_id         TEXT NOT NULL,
                     step              INTEGER NOT NULL,
                     prompt_tokens     INTEGER NOT NULL DEFAULT 0,
                     completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    context_blob      TEXT NOT NULL DEFAULT '',
                     recorded_at       REAL NOT NULL,
                     PRIMARY KEY (intent_id, step)
                 );
@@ -92,6 +96,13 @@ INTENT_MIGRATIONS = (
     ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ("pending_input", "TEXT NOT NULL DEFAULT '[]'"),
     ("rollback_step", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+# The per-step table migrates the same way, and for the same reason: ``CREATE TABLE IF NOT EXISTS``
+# never adds a column to a table that already exists, so Phase 35's table would silently lack the
+# memory column on any database created before Phase 37.
+STEP_MIGRATIONS = (
+    ("context_blob", "TEXT NOT NULL DEFAULT ''"),
 )
 
 # The status a run takes when the user interrupts it (Phase 33). Not terminal: the run is *held*, and
@@ -132,10 +143,14 @@ def apply_intent_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(INTENT_DDL)
     # ``PRAGMA table_info`` is read positionally on purpose: this is called with a bare connection
     # (no ``row_factory``), and the column name is index 1.
-    present = {row[1] for row in connection.execute("PRAGMA table_info(intent_ledger)")}
-    for name, ddl in INTENT_MIGRATIONS:
-        if name not in present:
-            connection.execute(f"ALTER TABLE intent_ledger ADD COLUMN {name} {ddl}")
+    for table, migrations in (
+        ("intent_ledger", INTENT_MIGRATIONS),
+        ("intent_step_spend", STEP_MIGRATIONS),
+    ):
+        present = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in migrations:
+            if name not in present:
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
 # The statuses that *gate* new work until the user acknowledges them. ``failed`` is the agent's
@@ -453,6 +468,44 @@ class IntentLedger:
             connection.close()
         self.add_tokens(resolved, prompt=prompt_tokens, completion=completion_tokens)
 
+    def record_step_context(self, intent_id: str, step: int, blob: str) -> None:
+        """Write the loop's memory at one step (Phase 37). Best effort, and never fatal.
+
+        The row may not exist yet -- a step with no spend -- so this upserts rather than updates,
+        and the conflict branch touches only the memory column: the spend already recorded for the
+        step is not the thing being written here.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved or not str(blob or ""):
+            return
+        connection = _connect(self.path)
+        try:
+            with connection:
+                connection.execute(
+                    "INSERT INTO intent_step_spend"
+                    " (intent_id, step, prompt_tokens, completion_tokens, context_blob, recorded_at)"
+                    " VALUES (?, ?, 0, 0, ?, ?)"
+                    " ON CONFLICT(intent_id, step) DO UPDATE SET context_blob = excluded.context_blob",
+                    (resolved, int(step), str(blob), time.time()),
+                )
+        finally:
+            connection.close()
+
+    def step_context(self, intent_id: str, step: int) -> str:
+        """The loop's memory recorded for one step, or ``""``. One indexed read."""
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return ""
+        connection = _connect(self.path)
+        try:
+            row = connection.execute(
+                "SELECT context_blob FROM intent_step_spend WHERE intent_id = ? AND step = ?",
+                (resolved, int(step)),
+            ).fetchone()
+            return str(row[0] or "") if row is not None else ""
+        finally:
+            connection.close()
+
     def truncate_to_step(self, intent_id: str, step: int) -> Tuple[int, int]:
         """Forget every step's spend after ``step`` and recompute the cumulative total.
 
@@ -479,8 +532,12 @@ class IntentLedger:
                         (resolved,),
                     ).fetchone()
                     return (int(row[0] or 0), int(row[1] or 0)) if row is not None else (0, 0)
+                # Zeroed, not deleted: the *bill* is what a rewind forgives, while each step's
+                # memory stays on its row. Deleting the rows would make a second rewind -- to a step
+                # *after* this one -- restore the files with no context to go with them.
                 connection.execute(
-                    "DELETE FROM intent_step_spend WHERE intent_id = ? AND step > ?",
+                    "UPDATE intent_step_spend SET prompt_tokens = 0, completion_tokens = 0"
+                    " WHERE intent_id = ? AND step > ?",
                     (resolved, int(step)),
                 )
                 row = connection.execute(

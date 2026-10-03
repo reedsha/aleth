@@ -1320,21 +1320,29 @@ class EngineService:
                 "added": [], "modified": [], "deleted": [],
                 "counts": {"added": 0, "modified": 0, "deleted": 0}, "patch": "",
             }
-        return {"success": True, "staged": True, **staging.compute_diff(shadow)}
+        return {
+            "success": True,
+            "staged": True,
+            # The gate's verdict travels with the delta (Phase 38): the UI must not offer an "Apply to
+            # Project" action for work the project's own check did not pass, and it must not have to
+            # guess the verdict from a second call.
+            "verified": shadow.verified,
+            "mergeable": shadow.verified is True,
+            **staging.compute_diff(shadow),
+        }
 
     def workspace_merge(self, intent_id=None, approve=True):
-        """Apply the staged delta to the host, or purge it. The merge gate.
+        """Discard the staged delta, or apply it. The merge gate.
 
-        An approve is refused unless the plan is finished -- every task completed. A plan that is
-        still awaiting an approval, or still running, is not a plan whose work is ready to touch
-        the user's tree. A rejection discards the shadow and leaves the host untouched.
+        A rejection discards the shadow and leaves the host untouched, under the project's write
+        lock so a rejection cannot interleave with an apply.
 
-        ``intent_id`` is required, for the same reason the diff requires it. The whole operation
-        runs under :func:`tools.staging.merge_lock`, so a merge that overlaps another is refused
-        with a conflict (``StagingLocked``, which the gateway maps to a 409) instead of racing it.
+        An **approve is the egress** (Phase 38): it delegates to :meth:`egress_intent`, so the older
+        name is not a second, ungated way onto the user's tree. There is one apply path, and it is
+        collision-gated.
+
+        ``intent_id`` is required, for the same reason the diff requires it.
         """
-        from orchestration import autonomy
-        from storage.db import get_store
         from tools import staging
 
         resolved = str(intent_id or "").strip()
@@ -1343,62 +1351,118 @@ class EngineService:
                 "success": False,
                 "error": "A merge needs the intent id that produced the staged changes.",
             }
+        if approve:
+            return self.egress_intent(resolved)
 
         with staging.merge_lock():
             shadow = staging.find_staging(intent_id=resolved)
             if shadow is None:
                 return {"success": False, "error": "There are no staged changes to merge."}
 
-            if not approve:
-                purged = staging.purge_staging(shadow.staging_id)
-                self.emit_event({
-                    "type": "log", "agent": "software-architect", "log_type": "decision",
-                    "text": f"[STAGING] rejected and purged {shadow.staging_id}",
-                })
-                return {
-                    "success": True, "rejected": True, "purged": purged,
-                    "staging_id": shadow.staging_id, "intent_id": shadow.intent_id,
-                }
-
-            # The automated merge gate (Phase 29), **sealed** in Phase 30: only a shadow the
-            # project's own suite (or its syntax check) actually *passed* may merge. ``None`` means
-            # the gate could not run, which is not a pass -- an unchecked diff is exactly what this
-            # gate exists to keep off the user's tree. A rejection above is unaffected: discarding
-            # work is always allowed.
-            if shadow.verified is not True:
-                reason = shadow.verify_error or (
-                    "the verification gate did not run for this shadow"
-                    if shadow.verified is None
-                    else "the gate reported a failure"
-                )
-                return {
-                    "success": False,
-                    "staging_id": shadow.staging_id,
-                    "intent_id": shadow.intent_id,
-                    "verified": shadow.verified,
-                    "error": f"the staged changes are not verified; refusing to merge: {reason}",
-                }
-
-            plan_id = shadow.plan_id or self._active_plan_id()
-            progress = autonomy.plan_progress(get_store().path, plan_id)
-            if not progress.finished:
-                return {
-                    "success": False, "staging_id": shadow.staging_id,
-                    "error": "The plan is not complete; refusing to merge staged changes.",
-                    "progress": {
-                        "total": progress.total, "completed": progress.completed,
-                        "failed": progress.failed, "planned": progress.planned,
-                        "in_progress": progress.in_progress, "pending": progress.pending,
-                    },
-                }
-
-            result = staging.merge_staging(shadow)
-            staging.purge_staging(shadow.staging_id)
+            purged = staging.purge_staging(shadow.staging_id)
             self.emit_event({
                 "type": "log", "agent": "software-architect", "log_type": "decision",
-                "text": f"[STAGING] merged {shadow.staging_id} into {shadow.host_root}",
+                "text": f"[STAGING] rejected and purged {shadow.staging_id}",
             })
-            return {"success": True, **result}
+            return {
+                "success": True, "rejected": True, "purged": purged,
+                "staging_id": shadow.staging_id, "intent_id": shadow.intent_id,
+            }
+
+    def egress_intent(self, intent_id=None):
+        """Apply a verified run's staged work to the user's host tree (Phase 38).
+
+        The extraction gate, and the only way staged work reaches the host. It refuses unless the
+        shadow is **verified** -- the project's own suite, or its syntax check, actually passed over
+        it -- because applying unchecked work to a person's tree is the one thing the staging
+        boundary exists to prevent.
+
+        The apply is **collision-gated**: the host is compared against the baseline recorded when
+        the run started, and a path the *agent* changed that the *human* also changed refuses the
+        whole egress rather than overwriting their work. It runs under the project's write lock, and
+        the collision check is re-run inside it -- between the review a person read and this call, a
+        file may have been saved.
+        """
+        from orchestration import autonomy
+        from storage.db import get_store
+        from tools import staging
+
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return {"success": False, "error": "An egress needs the intent id that produced the work."}
+        try:
+            with staging.merge_lock():
+                shadow = staging.find_staging(intent_id=resolved)
+                if shadow is None:
+                    return {"success": False, "error": "There are no staged changes to apply."}
+
+                # The automated gate (Phase 29), sealed in Phase 30: only a shadow the project's own
+                # suite (or its syntax check) actually *passed* may reach the host. ``None`` means
+                # the gate could not run, which is not a pass.
+                if shadow.verified is not True:
+                    reason = shadow.verify_error or (
+                        "the verification gate did not run for this shadow"
+                        if shadow.verified is None
+                        else "the gate reported a failure"
+                    )
+                    return {
+                        "success": False,
+                        "staging_id": shadow.staging_id,
+                        "intent_id": shadow.intent_id,
+                        "verified": shadow.verified,
+                        "error": f"the staged changes are not verified; refusing to apply: {reason}",
+                    }
+
+                plan_id = shadow.plan_id or self._active_plan_id()
+                progress = autonomy.plan_progress(get_store().path, plan_id)
+                if not progress.finished:
+                    return {
+                        "success": False, "staging_id": shadow.staging_id,
+                        "error": "The plan is not complete; refusing to apply staged changes.",
+                        "progress": {
+                            "total": progress.total, "completed": progress.completed,
+                            "failed": progress.failed, "planned": progress.planned,
+                            "in_progress": progress.in_progress, "pending": progress.pending,
+                        },
+                    }
+
+                plan = staging.egress_plan(shadow)
+                if plan["conflict"]:
+                    # Refused before anything is copied: the engine never writes over a person's
+                    # work, and the shadow is kept so the agent's work is not lost -- it needs
+                    # reconciling, which is a person's decision.
+                    return {
+                        "success": False,
+                        "conflict": True,
+                        "staging_id": shadow.staging_id,
+                        "intent_id": shadow.intent_id,
+                        "collisions": plan["collisions"],
+                        "error": (
+                            "the host changed while the agent worked; nothing was applied: "
+                            + ", ".join(plan["collisions"][:8])
+                        ),
+                    }
+
+                result = staging.apply_egress(shadow)
+                staging.purge_staging(shadow.staging_id)
+                self.emit_event({
+                    "type": "log", "agent": "software-architect", "log_type": "decision",
+                    "text": (
+                        f"[EGRESS] applied {result['applied']['modified']} change(s) and "
+                        f"{result['applied']['added']} addition(s) to {shadow.host_root}"
+                    ),
+                })
+                return {"success": True, **result}
+        except staging.EgressConflict as error:
+            # The re-check inside the lock found a collision the pre-check did not (a save landed
+            # between the two). Same refusal shape, so the caller reads one kind of answer.
+            return {"success": False, "conflict": True, "error": str(error)}
+        except staging.StagingLocked:
+            # A conflict, not a fault: the gateway maps it to a 409 and the client's retry story
+            # understands it. Re-raised rather than reported as a refusal.
+            raise
+        except staging.StagingError as error:
+            return {"success": False, "error": str(error)}
 
     # -------------------------------------------------------------
     # The swarm: reactive dispatch, driven by events

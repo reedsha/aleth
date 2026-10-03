@@ -234,6 +234,8 @@ export function initDOMElements() {
   DOM.btnSteerCancel = document.getElementById("btnSteerCancel");
   DOM.steerStepSelect = document.getElementById("steerStepSelect");
   DOM.btnSteerRollback = document.getElementById("btnSteerRollback");
+  // The extraction gate (Phase 38): the Apply control in the console bar.
+  DOM.btnApplyToProject = document.getElementById("btnApplyToProject");
 
   // Live preview (the workspace's generated interface, rendered in place)
   DOM.btnTogglePreview = document.getElementById("btnTogglePreview");

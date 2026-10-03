@@ -361,3 +361,18 @@
   color: #1a1c23;
   box-shadow: 0 0 14px rgba(245, 158, 11, 0.45);
 }
+
+/* Apply to Project (Phase 38): the extraction gate. Green because it is the one control that
+   *finishes* the work -- and because the red of Stop and the amber of Interrupt already mean
+   something else. */
+.btn-apply-run {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.45);
+  color: #6ee7b7;
+}
+
+.btn-apply-run:hover {
+  background: #10b981;
+  color: #0b1220;
+  box-shadow: 0 0 14px rgba(16, 185, 129, 0.45);
+}

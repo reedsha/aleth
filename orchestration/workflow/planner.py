@@ -293,6 +293,7 @@ def _from_llm(
     capabilities: Optional[Sequence[str]] = None,
     intent_id: str = "",
     emit: Any = None,
+    resume_context: str = "",
 ) -> Optional[ImplementationPlanArtifact]:
     """Ask System 2 for the artifact, or ``None`` when it cannot be produced.
 
@@ -373,6 +374,9 @@ def _from_llm(
                 # The shadow this pass writes into (Phase 35). Its snapshot repository is what lets
                 # the operator rewind a step; empty (a swarm child) simply means no rewind here.
                 workspace_root=workspace_dir,
+                # A memory blob to boot from (Phase 37). Empty means "hydrate from a rewind the
+                # ledger still has queued", which is the pass-boundary case.
+                resume_context=resume_context,
             )
         except AgentStepLimitExceeded:
             # A model that ran away is a fault, not a planner that returned nothing. Letting it fall
@@ -456,6 +460,7 @@ def plan_task(
     capabilities: Optional[Sequence[str]] = None,
     intent_id: str = "",
     emit: Any = None,
+    resume_context: str = "",
 ) -> ImplementationPlanArtifact:
     """The artifact for a task, produced by System 2. Raises when it cannot be planned.
 
@@ -485,6 +490,7 @@ def plan_task(
         model=resolved_model, base_url=base_url, api_key=api_key,
         completer=completer, session=session, role=str(role or DEFAULT_PLANNER_ROLE),
         capabilities=capabilities, intent_id=str(intent_id or ""), emit=emit,
+        resume_context=resume_context,
     )
     if planned is None:
         raise PlanningUnavailable(

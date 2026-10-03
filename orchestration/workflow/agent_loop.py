@@ -28,6 +28,7 @@ that total before every call and every tool execution.
 
 from __future__ import annotations
 
+import json
 import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -358,32 +359,119 @@ def _drain_rollback(ledger: Any, intent_id: str) -> int:
         return 0
 
 
+def _memory_blob(
+    *,
+    system_prompt: str,
+    user_message: str,
+    summary: str,
+    dropped: bool,
+    turns: List[List[Dict[str, Any]]],
+    steering: List[Dict[str, Any]],
+) -> str:
+    """The loop's memory at one step, as JSON (Phase 37).
+
+    Structured rather than a flattened message array, and that is the stronger form: ``_payload``
+    reproduces the exact array from these six fields, so this *is* the message array -- while
+    staying readable, diffable, and reconstructible if the payload's shape ever changes.
+    """
+    return json.dumps(
+        {
+            "system": str(system_prompt or ""),
+            "user_message": str(user_message or ""),
+            "summary": str(summary or ""),
+            "dropped": bool(dropped),
+            "turns": turns,
+            "steering": steering,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def _load_memory(raw: Any) -> Optional[Dict[str, Any]]:
+    """Parse a memory blob, or ``None`` when it is absent, malformed or the wrong shape."""
+    try:
+        data = json.loads(str(raw or ""))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("turns"), list):
+        return None
+    return data
+
+
+def _install_memory(
+    memory: Dict[str, Any],
+    turns: List[List[Dict[str, Any]]],
+    steering: List[Dict[str, Any]],
+) -> Tuple[str, bool, str]:
+    """Install a hydrated memory into the loop's live containers.
+
+    Returns ``(summary, dropped, user_message)`` for the caller to reassign -- the three scalars
+    have no mutable container to be written through.
+    """
+    turns[:] = [list(turn) for turn in (memory.get("turns") or [])]
+    steering[:] = [dict(entry) for entry in (memory.get("steering") or [])]
+    return (
+        str(memory.get("summary") or ""),
+        bool(memory.get("dropped")),
+        str(memory.get("user_message") or ""),
+    )
+
+
+def _read_memory(ledger: Any, intent_id: str, step: int) -> str:
+    """The durable memory recorded for one step, or ``""``. Never raises."""
+    if ledger is None or not str(intent_id or "").strip():
+        return ""
+    try:
+        return str(ledger.step_context(intent_id, int(step)) or "")
+    except Exception as error:
+        print(
+            f"[agent-loop] the step memory could not be read: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return ""
+
+
+def _record_memory(ledger: Any, intent_id: str, step: int, blob: str) -> None:
+    """Write the loop's memory for one step. Best effort, never fatal."""
+    if ledger is None or not str(intent_id or "").strip():
+        return
+    try:
+        ledger.record_step_context(intent_id, int(step), blob)
+    except Exception as error:
+        print(
+            f"[agent-loop] the step memory could not be recorded: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+
+
 def _rewind(
     ledger: Any,
     intent_id: str,
     target: int,
-    step_snapshots: Dict[int, Tuple[List[List[Dict[str, Any]]], str, List[Dict[str, Any]]]],
     turns: List[List[Dict[str, Any]]],
     steering: List[Dict[str, Any]],
-) -> Optional[str]:
-    """Restore the loop's context to ``target`` and truncate the bill. Returns the summary, or None.
+) -> Optional[Tuple[str, bool, str]]:
+    """Restore the loop's memory to ``target`` and truncate the bill.
 
-    The files are already back -- the rollback API restored the shadow before it wrote the target
-    into the ledger -- so this is the other half of the same rewind. The context window and the
-    token ledger must match the tree, or the model is handed history for files that no longer
-    exist and the breaker counts a bill the run no longer owes.
+    **Durable first** (Phase 37): every step's memory lives in the ledger, so a rewind is exact
+    even when the step belonged to an earlier loop invocation. That is the whole point -- the
+    in-memory array does not survive a pass boundary, and a rewind that restored the files and the
+    bill but not the memory would hand the model a history that does not match its workspace.
 
-    A step with no context snapshot (it never ran, or it belongs to an earlier pass) still has its
-    bill truncated; the window is left as it is rather than emptied, because an emptied window
-    would make the model re-derive work the operator did not ask it to redo.
+    The files are already back: the rollback API restored the shadow before it wrote the target
+    into the ledger. This is the other half of the same rewind.
+
+    Returns ``(summary, dropped, user_message)`` for the caller to reassign, or ``None`` when the
+    step's memory is not on record (it never ran, or it predates this feature) -- in which case the
+    bill is still truncated, and the window is left as it is rather than emptied, because an emptied
+    window would make the model re-derive work the operator did not ask it to redo.
     """
     _truncate_bill(ledger, intent_id, target)
-    snapshot = step_snapshots.get(int(target))
-    if snapshot is None:
+    memory = _load_memory(_read_memory(ledger, intent_id, target))
+    if memory is None:
         return None
-    turns[:] = snapshot[0]
-    steering[:] = snapshot[2]
-    return snapshot[1]
+    return _install_memory(memory, turns, steering)
 
 
 def _truncate_bill(ledger: Any, intent_id: str, step: int) -> None:
@@ -457,6 +545,7 @@ def run_tool_loop(
     emit: Optional[Callable[[Dict[str, Any]], None]] = None,
     pause_timeout: float = PAUSE_TIMEOUT_SECONDS,
     workspace_root: str = "",
+    resume_context: str = "",
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Drive ``completer`` through the tools bound for ``role``.
 
@@ -481,9 +570,17 @@ def run_tool_loop(
 
     ``workspace_root`` is the shadow the tools write into. When it carries a snapshot repository
     (Phase 35), every step that changes a file is committed and tagged, so the operator can rewind
-    the run -- and the loop keeps one context snapshot per step, so the window and the bill rewind
-    with the files. Empty means "no rewind for this loop", which is what a swarm child and a bare
-    unit test get.
+    the run. Empty means "no rewind for this loop", which is what a swarm child and a bare unit test
+    get.
+
+    **The memory is durable too (Phase 37).** Every step's context -- the system prompt, the pinned
+    task, the rolling summary and the verbatim window -- is written to the ledger, and a rewind
+    hydrates from there. The in-memory array is a cache; the ledger is the record, which is what
+    makes a rewind exact even when the step belonged to an earlier loop invocation.
+
+    ``resume_context`` is the injection point for a caller that already holds a memory blob (a run
+    re-launched after a rewind). When it is empty the loop hydrates on its own from a rewind the
+    ledger still has queued, so a pass boundary is covered without a caller having to know.
     """
     tools = session.get_bound_tools(role) if session is not None else []
     by_name = {tool.name: tool for tool in tools}
@@ -494,9 +591,8 @@ def run_tool_loop(
     summary = ""
     dropped = False
     transcript: List[Dict[str, Any]] = []
-    # Phase 35. The rewind needs three things to line up: the files (the snapshot repository), the
-    # context window (one snapshot per step), and the bill (the per-step rows in the ledger).
-    step_snapshots: Dict[int, Tuple[List[List[Dict[str, Any]]], str, List[Dict[str, Any]]]] = {}
+    # Phase 35/37. A rewind needs three things to line up: the files (the snapshot repository), the
+    # memory (the per-step blobs in the ledger), and the bill (the per-step rows).
     pending_rollback: List[int] = []
     snapshots_on = bool(workspace_root) and snapshots.is_repository(workspace_root)
     # Numbered for the life of the *shadow*, not the pass: the autonomous loop drives several
@@ -504,29 +600,41 @@ def run_tool_loop(
     # pass two's step 1 overwrite pass one's snapshot.
     run_step = snapshots.next_step(workspace_root) if snapshots_on else 1
 
+    # Boot: a rewind queued before this loop started. That is the pass-boundary case -- the
+    # operator rewound a step that belonged to an earlier invocation -- and it is why the memory is
+    # durable rather than an array this loop was born without.
+    boot_memory = _load_memory(resume_context) if resume_context else None
+    if boot_memory is None:
+        boot_target = _drain_rollback(ledger, intent_id)
+        if boot_target:
+            boot_memory = _load_memory(_read_memory(ledger, intent_id, boot_target))
+            _truncate_bill(ledger, intent_id, boot_target)
+    if boot_memory is not None:
+        summary, dropped, user_message = _install_memory(boot_memory, turns, steering)
+
     def sync_after_gate() -> bool:
-        """Run the gate, then apply any rewind the gate woke from. Reassigns ``summary``.
+        """Run the gate, then apply any rewind the gate woke from.
 
         A rewind is applied *here* rather than only at the top of a step because the hold can be
         observed from the per-call gate too -- and a payload built after it must already reflect
-        the restored window.
+        the restored memory.
 
-        Returns ``True`` when the context was rewound. The caller then **drops the step it was in
+        Returns ``True`` when the memory was rewound. The caller then **drops the step it was in
         the middle of**: those tool calls were decided against a context the operator has just
         discarded, and executing them would write files from the history that was undone.
         """
-        nonlocal summary
+        nonlocal summary, dropped, user_message
         _gate(ledger, intent_id, emit=emit, pause_timeout=pause_timeout,
               steering=steering, rollback=pending_rollback)
         if not pending_rollback:
             return False
         target = pending_rollback.pop(0)
-        restored = _rewind(ledger, intent_id, target, step_snapshots, turns, steering)
+        restored = _rewind(ledger, intent_id, target, turns, steering)
         if restored is not None:
-            summary = restored
+            summary, dropped, user_message = restored
         _emit(emit, {
             "type": "log", "agent": "software-architect", "log_type": "decision",
-            "text": f"[ROLLBACK] rewound the workspace and the context to step {target}",
+            "text": f"[ROLLBACK] rewound the workspace, the memory and the bill to step {target}",
         })
         return True
 
@@ -607,9 +715,14 @@ def run_tool_loop(
             continue
         turns.append(turn)
         summary, dropped = _compact(turns, summary, summarizer, dropped)
-        # The window and the summary as they stood when this step ended: exactly what the next step
-        # will be handed, and therefore exactly what a rewind to this step must restore.
-        step_snapshots[step] = (list(turns), summary, list(steering))
+        # The memory of this step, written *before* the next one is built: exactly what the next
+        # payload would be assembled from, so a rewind to this step restores the same messages the
+        # model was about to be handed (Phase 37). Best effort -- a ledger that cannot be written
+        # must not stop the run producing the work.
+        _record_memory(ledger, intent_id, step, _memory_blob(
+            system_prompt=system_prompt, user_message=user_message, summary=summary,
+            dropped=dropped, turns=turns, steering=steering,
+        ))
         run_step += 1
 
     _record_step_limit(ledger, intent_id, role, max_steps)

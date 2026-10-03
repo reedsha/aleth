@@ -335,6 +335,9 @@ export function beginRunUi() {
   // be halted but not steered is half a control (Phase 34).
   if (DOM.btnStopRun) DOM.btnStopRun.style.display = "inline-flex";
   if (DOM.btnInterruptRun) DOM.btnInterruptRun.style.display = "inline-flex";
+  // A new run's work is not verified yet, so the extraction control goes with the last run's
+  // verdict (Phase 38).
+  if (DOM.btnApplyToProject) DOM.btnApplyToProject.style.display = "none";
   // A new run starts a new bill, so the previous run's burn counter goes with it.
   clearTokenBurn();
   // The bento header's live tile reports the run state, so it moves with it.

@@ -233,6 +233,68 @@ test("a run with no snapshots offers no rewind rather than a dead control", asyn
   await expect(page.locator("#btnSteerRollback")).toBeDisabled();
 });
 
+test("a verified run offers Apply to Project and the egress reaches the engine", async ({ page }) => {
+  await openApp(page, {
+    api: {
+      start_execution: { success: true, intent_id: INTENT_ID },
+      workspace_diff: {
+        success: true, staged: true, verified: true, mergeable: true,
+        counts: { added: 1, modified: 0, deleted: 0 },
+      },
+      egress_intent: { success: true, applied: { added: 1, modified: 0, deleted: 0 } },
+    },
+  });
+  await startRun(page);
+
+  // Before the run ends the control is not offered; the terminal event is what makes it a question.
+  await expect(page.locator("#btnApplyToProject")).toBeHidden();
+  await dispatchAgentEvent(page, { type: "workflow_complete", status: "finished", message: "done" });
+
+  const apply = page.locator("#btnApplyToProject");
+  await expect(apply).toBeVisible();
+  await apply.click();
+
+  await expect.poll(() => fetchBodies(page)).toContainEqual({ intent_id: INTENT_ID });
+  expect(await page.evaluate(() => window.__alethFetchLog)).toContain("/api/intent/egress");
+  await expect(page.locator("#toastContainer")).toContainText("Applied to your project");
+  await expect(apply).toBeHidden();
+});
+
+test("unverified work is not offered for extraction", async ({ page }) => {
+  await openApp(page, {
+    api: {
+      start_execution: { success: true, intent_id: INTENT_ID },
+      workspace_diff: { success: true, staged: true, verified: false, mergeable: false },
+    },
+  });
+  await startRun(page);
+  await dispatchAgentEvent(page, { type: "workflow_complete", status: "finished", message: "done" });
+
+  await expect(page.locator("#btnApplyToProject")).toBeHidden();
+});
+
+test("a collision surfaces as a refusal rather than a silent overwrite", async ({ page }) => {
+  await openApp(page, {
+    api: {
+      start_execution: { success: true, intent_id: INTENT_ID },
+      workspace_diff: {
+        success: true, staged: true, verified: true, mergeable: true,
+        counts: { added: 0, modified: 1, deleted: 0 },
+      },
+      egress_intent: {
+        success: false, conflict: true, collisions: ["pkg/mod.py"],
+        error: "the host changed while the agent worked",
+      },
+    },
+  });
+  await startRun(page);
+  await dispatchAgentEvent(page, { type: "workflow_complete", status: "finished", message: "done" });
+
+  await page.locator("#btnApplyToProject").click();
+
+  await expect(page.locator("#toastContainer")).toContainText("Could not apply the changes");
+});
+
 // ---------------------------------------------------------------------------
 // 3. Stream resiliency: follow the run, return on the terminal event, hydrate on reconnect
 // ---------------------------------------------------------------------------

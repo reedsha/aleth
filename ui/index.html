@@ -220,6 +220,16 @@
             </svg>
             <span>Interrupt</span>
           </button>
+          <!-- The extraction gate (Phase 38): apply a verified run's staged work to the host. It
+               lives in the top bar rather than the console because the console folds away when a
+               run finishes cleanly -- which is exactly when this becomes actionable. -->
+          <button class="btn-stop-run btn-apply-run" id="btnApplyToProject" type="button" style="display: none;" title="Apply this run's verified changes to your project">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 19V5"/>
+              <polyline points="5 12 12 5 19 12"/>
+            </svg>
+            <span>Apply to Project</span>
+          </button>
         </div>
 
         <div class="top-status-right">

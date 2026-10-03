@@ -13,11 +13,21 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 36)
+## ⚡ 0. Current State at This Handoff (Phase 38)
 
-- **Phases 5 → 36 are complete and CI-green.** Phases 35-36 (temporal workspace snapshots, zombie
-  eradication) are the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
-  what changed most recently.
+- **Phases 5 → 38 are complete and CI-green.** Phases 37-38 (global context serialization, egress)
+  are the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
+  most recently.
+- **The memory is durable (Phase 37).** `intent_step_spend.context_blob` carries the loop's exact
+  memory at every step, and a rewind hydrates from it -- so a rewind is exact across a pass
+  boundary, and `State(t) = Files(t) + Memory(t)` holds. `run_tool_loop(resume_context=…)` is the
+  injection seam; the boot drain is the automatic path. Truncating the bill now *zeroes* the later
+  steps' spend rather than deleting their rows, so a second rewind still finds their memory.
+- **The work can leave the sandbox (Phase 38).** `create_staging` records the host baseline;
+  `POST /api/intent/egress` applies a verified shadow to the host atomically and refuses on a
+  collision with a human edit. `workspace_merge(approve=True)` delegates to it, so there is one
+  apply path. The UI's **Apply to Project** appears in the top bar when the engine reports
+  `mergeable`.
 - **A run can be rewound (Phase 35).** Every shadow carries its own git repository
   (`tools/snapshots.py`); `create_staging` commits the workspace as `step 0`, and each
   file-changing tool call is committed and tagged. `POST /api/intent/rollback` restores the tree
@@ -1562,12 +1572,15 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `9e632d6` (Phase 34) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `68405a8` (Phase 36) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
 | Build | `npm run build` | 59 modules |
-| UI tests | `npx playwright test` | **75 passed** in 21.7 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1302 passed, 23 skipped, 243 subtests** in 92.51 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1320 passed, 5 skipped**, and **0 containers left behind** |
+| UI tests | `npx playwright test` | **78 passed** in 20.2 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1323 passed, 23 skipped, 243 subtests** in 98.16 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1341 passed, 5 skipped**, and **0 containers left behind** |
+| Durable memory | `tests/test_snapshots.py::DurableMemoryTests` + `tests/test_mcp.py::SnapshotStepTests` | **passed** — a blob round-trips, a no-spend step still records its memory, truncation zeroes the spend but keeps the memory, a pre-Phase-37 table is migrated, and a fresh loop boots holding an earlier pass's step-1 memory |
+| Egress | `tests/test_egress.py` | **14 passed** — the baseline is a point in time; the delta is measured against it; a human edit (or deletion) of a path the agent touched is a collision; an unrelated edit is not; the apply lands add/modify/delete, refuses on a collision, and rolls back on a mid-apply failure; the service refuses unverified work, applies verified work, reports a conflict, and `workspace_merge(approve=True)` is the same gate |
+| Extraction UI | `tests/ui/live-run.spec.mjs` | **14 passed** — Apply to Project appears only for verified work, posts the egress, hides after applying, and surfaces a collision as a refusal |
 | Snapshots | `tests/test_snapshots.py` | **19 passed** — init at step 0 and idempotent; a no-change step is not committed; monotonic step numbering; a revert restores modified/added/deleted files and cleans uncommitted ones; a step with no snapshot resolves to the state as of it; per-step spend accumulates and truncates; the rollback target is paused-only and drains once; `abort_running` marks running intents and leaves settled and paused ones alone |
 | Loop rewind | `tests/test_mcp.py::SnapshotStepTests` | **2 passed** — a mutating tool call is committed and tagged, and a rewind queued while the run was held restores the *context window* (step 2's turn is gone from the payload) |
 | Rewind UI | `tests/ui/live-run.spec.mjs` | **11 passed** — the picker lists the snapshots newest-first and Revert posts the step; a run with no snapshots disables the control |

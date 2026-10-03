@@ -2041,5 +2041,87 @@ class SnapshotStepTests(MCPServerTestCase):
         self.assertNotIn("b.py", rendered, "the rewound turn is still in the context window")
 
 
+    def test_a_rewind_hydrates_memory_from_an_earlier_pass(self):
+        """Phase 37: the memory is durable, so a rewind is exact across a pass boundary.
+
+        The files and the bill were already durable. This proves the *brain* is too: the second
+        loop is a fresh invocation -- an empty array, a new pass, a different ``run_step`` -- and it
+        must boot holding the first loop's step-1 memory rather than a blank window. Without it the
+        agent's memory and its filesystem disagree, which is the one invariant it cannot break.
+        """
+        import json as _json
+
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import run_tool_loop
+        from tools import snapshots
+
+        snapshots.init_snapshots(self.tmp)
+        ledger = self._ledger_with_running("i-passes")
+        first = self._scripted(
+            self._Completion(tool_calls=[{
+                "name": "create_file", "arguments": {"path": "a.py", "content": "a = 1\n"},
+            }]),
+            self._Completion(tool_calls=[{
+                "name": "create_file", "arguments": {"path": "b.py", "content": "b = 1\n"},
+            }]),
+            self._Completion(text="done"),
+        )
+        with MCPSessionContext(self.tmp) as session:
+            run_tool_loop(
+                session=session, role="coder", system_prompt="sys", user_message="go",
+                completer=first, intent_id="i-passes", ledger=ledger, workspace_root=self.tmp,
+            )
+        self.assertEqual([entry["step"] for entry in snapshots.steps(self.tmp)], [0, 1, 2])
+
+        # The operator rewinds to step 1, and the run continues in a *new* pass.
+        ledger.interrupt("i-passes", "hold")
+        self.assertTrue(ledger.request_rollback("i-passes", 1))
+        self.assertTrue(ledger.resume("i-passes", ""))
+
+        second = self._scripted(self._Completion(text="continued"))
+        with MCPSessionContext(self.tmp) as session:
+            run_tool_loop(
+                session=session, role="coder", system_prompt="sys", user_message="go",
+                completer=second, intent_id="i-passes", ledger=ledger, workspace_root=self.tmp,
+            )
+
+        rendered = _json.dumps(second.seen[0]["messages"])
+        self.assertIn("a.py", rendered, "the fresh pass did not hydrate the rewound memory")
+        self.assertNotIn("b.py", rendered, "the rewound step is still in the hydrated window")
+
+    def test_an_injected_resume_context_is_honoured_on_boot(self):
+        """The explicit half of the same seam: a caller that already holds a blob hands it over."""
+        import json as _json
+
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import run_tool_loop
+
+        blob = _json.dumps({
+            "system": "sys", "user_message": "go", "summary": "earlier work",
+            "dropped": False,
+            "turns": [
+                [
+                    {
+                        "role": "assistant", "content": "",
+                        "tool_calls": [
+                            {"name": "read_file", "arguments": {"path": "remembered.py"}},
+                        ],
+                    },
+                ],
+            ],
+            "steering": [],
+        })
+        completer = self._scripted(self._Completion(text="done"))
+        with MCPSessionContext(self.tmp) as session:
+            run_tool_loop(
+                session=session, role="coder", system_prompt="sys", user_message="go",
+                completer=completer, resume_context=blob,
+            )
+
+        rendered = _json.dumps(completer.seen[0]["messages"])
+        self.assertIn("remembered.py", rendered)
+        self.assertIn("earlier work", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()

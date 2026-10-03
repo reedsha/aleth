@@ -8,6 +8,7 @@ exist.
 
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 
@@ -179,6 +180,83 @@ class StepSpendTests(unittest.TestCase):
         self.ledger.add_tokens("i1", prompt=7, completion=3)
 
         self.assertEqual(self.ledger.truncate_to_step("i1", 0), (7, 3))
+
+
+class DurableMemoryTests(unittest.TestCase):
+    """Phase 37: the loop's memory lives in the ledger, so a rewind is exact across a pass.
+
+    The in-memory array is a cache; the record is the database. That is the whole reason a rewind
+    can restore a step that belonged to an *earlier* loop invocation -- and without it the agent's
+    memory and its filesystem disagree, which is the one invariant an agent cannot break.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aleth_memory_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.db_path = os.path.join(self.tmp, "state.db")
+        self.ledger = IntentLedger(self.db_path)
+        from api.intents import Intent
+
+        intent = Intent(id="i1", action_type="custom", message="go",
+                        action_params={}, enqueued_at=0.0)
+        self.ledger.record(intent)
+
+    def test_a_memory_blob_round_trips(self):
+        self.ledger.record_step_context("i1", 3, '{"summary":"so far"}')
+
+        self.assertEqual(self.ledger.step_context("i1", 3), '{"summary":"so far"}')
+        self.assertEqual(self.ledger.step_context("i1", 4), "")
+
+    def test_a_step_with_no_spend_still_records_its_memory(self):
+        """The memory is written on its own row, not as a side effect of the spend."""
+        self.ledger.record_step_context("i1", 1, "blob")
+
+        self.assertEqual(self.ledger.step_context("i1", 1), "blob")
+        self.assertEqual(self.ledger.token_totals("i1"), (0, 0))
+
+    def test_recording_memory_does_not_disturb_the_spend_already_recorded(self):
+        self.ledger.record_step_spend("i1", 1, prompt=100, completion=10)
+
+        self.ledger.record_step_context("i1", 1, "blob")
+
+        self.assertEqual(self.ledger.token_totals("i1"), (100, 10))
+        self.assertEqual(self.ledger.step_context("i1", 1), "blob")
+
+    def test_truncating_the_bill_keeps_the_later_steps_memory(self):
+        """The *bill* is what a rewind forgives. Deleting the rows would make a second rewind -- to
+        a step after the first -- restore the files with no memory to go with them."""
+        self.ledger.record_step_spend("i1", 1, prompt=100, completion=10)
+        self.ledger.record_step_spend("i1", 2, prompt=200, completion=20)
+        self.ledger.record_step_context("i1", 2, "step two memory")
+
+        self.assertEqual(self.ledger.truncate_to_step("i1", 1), (100, 10))
+        self.assertEqual(self.ledger.step_context("i1", 2), "step two memory")
+
+    def test_a_step_table_from_before_the_memory_column_is_upgraded(self):
+        legacy = os.path.join(self.tmp, "legacy.db")
+        connection = sqlite3.connect(legacy)
+        try:
+            connection.execute(
+                "CREATE TABLE intent_step_spend ("
+                " intent_id TEXT NOT NULL, step INTEGER NOT NULL,"
+                " prompt_tokens INTEGER NOT NULL DEFAULT 0,"
+                " completion_tokens INTEGER NOT NULL DEFAULT 0,"
+                " recorded_at REAL NOT NULL, PRIMARY KEY (intent_id, step))"
+            )
+            connection.execute(
+                "INSERT INTO intent_step_spend (intent_id, step, prompt_tokens, recorded_at)"
+                " VALUES ('old', 1, 50, 1.0)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        upgraded = IntentLedger(legacy)
+
+        # The column was added and the old row survived it.
+        upgraded.record_step_context("old", 1, "memory")
+        self.assertEqual(upgraded.step_context("old", 1), "memory")
+        self.assertEqual(upgraded.truncate_to_step("old", 1), (50, 0))
 
 
 class RollbackLedgerTests(unittest.TestCase):

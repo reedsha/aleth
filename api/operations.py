@@ -293,6 +293,10 @@ OPERATIONS: tuple = (
     # table -- including the one the directive names with the id in the path.
     Operation("get_intent_steps", "GET", "/api/intent/steps", IntentIdRequest, _invoke("get_intent_steps")),
     Operation("rollback_intent", "POST", "/api/intent/rollback", RollbackRequest, _invoke("rollback_intent")),
+    # The extraction gate (Phase 38). The only way staged work reaches the host tree, and the only
+    # apply path there is: it is collision-gated and atomic, so ``workspace_merge``'s approve
+    # branch delegates here rather than being a second way in.
+    Operation("egress_intent", "POST", "/api/intent/egress", WorkspaceStagingRequest, _invoke("egress_intent")),
 )
 
 
