@@ -68,6 +68,27 @@ class StoreTests(unittest.TestCase):
         connection.close()
         self.assertEqual(str(mode).lower(), "wal")
 
+    def test_the_connection_factory_sets_wal_normal_and_a_bounded_wait(self):
+        """Phase 42: all three settings, on the one connection every writer shares.
+
+        WAL alone is not the contract: ``synchronous=NORMAL`` is the durability WAL wants, and the
+        busy timeout turns a concurrent write from ``database is locked`` into a short pause.
+        """
+        from storage.connection import BUSY_TIMEOUT_MS, connect
+
+        connection = connect(self.store.path)
+        try:
+            self.assertEqual(
+                str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower(), "wal"
+            )
+            # NORMAL is 1 in SQLite's pragma vocabulary.
+            self.assertEqual(int(connection.execute("PRAGMA synchronous").fetchone()[0]), 1)
+            self.assertEqual(
+                int(connection.execute("PRAGMA busy_timeout").fetchone()[0]), BUSY_TIMEOUT_MS
+            )
+        finally:
+            connection.close()
+
     def test_a_saved_dag_round_trips(self):
         self._create()
         dag = self.store.get_dag("PLAN")

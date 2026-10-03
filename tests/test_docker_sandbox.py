@@ -645,6 +645,34 @@ class ShutdownSweepTests(unittest.TestCase):
         with mock.patch.object(docker_sandbox, "managed_containers", return_value=[]):
             self.assertEqual(docker_sandbox.purge_managed_containers(), [])
 
+    def test_the_signal_handler_drains_before_it_sweeps(self):
+        """Phase 42: a signal is a cooperative request, not a kill.
+
+        The handler flips the shutdown flag, drains what is running, then sweeps and exits 0 -- so a
+        loop gets to stop at its own boundary and the containers are still collected on the way out.
+        """
+        from tools import lifecycle
+
+        lifecycle.reset()
+        self.addCleanup(lifecycle.reset)
+        order = []
+
+        with mock.patch.object(docker_sandbox.atexit, "register"), \
+                mock.patch.object(docker_sandbox.signal, "signal") as install, \
+                mock.patch.object(docker_sandbox, "build_shutdown_sweep") as build, \
+                mock.patch.object(
+                    lifecycle, "drain", side_effect=lambda: order.append("drain")
+                ):
+            build.return_value = mock.Mock(side_effect=lambda: order.append("sweep"))
+            docker_sandbox.install_shutdown_sweep("shutdown")
+            handler = install.call_args_list[0].args[1]
+            with self.assertRaises(SystemExit) as caught:
+                handler(signal.SIGTERM, None)
+
+        self.assertEqual(caught.exception.code, 0)
+        self.assertTrue(lifecycle.is_shutting_down())
+        self.assertEqual(order, ["drain", "sweep"])
+
 
 if __name__ == "__main__":
     unittest.main()

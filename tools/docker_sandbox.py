@@ -972,23 +972,28 @@ def install_shutdown_sweep(stage: str = "shutdown", extra: Optional[Callable[[],
 
     Registered on all three exits on purpose. ``atexit`` covers a normal return and a ``sys.exit``
     -- including the bootloader's. SIGINT and SIGTERM cover a kill from a terminal, a supervisor or
-    a service manager. The handler sweeps, restores the default disposition and re-delivers the
-    signal, so the process still dies with the status the sender expects rather than lingering as
-    a Python process that swallowed a terminate.
+    a service manager.
 
-    A SIGKILL is precisely the case the *boot* sweep exists for: nothing can run, so the next boot
-    is the only thing that will ever collect that container.
+    **A signal is a request, not a kill (Phase 42).** The handler flips the process-wide shutdown
+    flag (``tools.lifecycle``), so every loop -- the HTTP server, the intent worker, the agent's step
+    loop -- stops at its own safe boundary instead of having its state yanked out from under it. It
+    then drains what the running components registered (bounded), sweeps the containers, and exits
+    ``0``. A second signal during the drain is idempotent, and a SIGKILL is precisely the case the
+    *boot* sweep exists for: nothing can run to collect it, so the next boot is the only collector.
     """
     _sweep = build_shutdown_sweep(stage, extra)
     atexit.register(_sweep)
 
-    def _handler(signum, _frame):
+    def _handler(_signum, _frame):
+        # Phase 42: cooperative, not a kill. Flip the flag so every loop stops at its own boundary,
+        # drain what is running, then sweep and leave with a clean status. Imported here so this
+        # module -- the container perimeter -- does not depend on the lifecycle layer at import time.
+        from tools import lifecycle
+
+        lifecycle.begin_shutdown()
+        lifecycle.drain()
         _sweep()
-        try:
-            signal.signal(signum, signal.SIG_DFL)
-            os.kill(os.getpid(), signum)
-        except Exception:  # a platform that cannot re-deliver still has to leave
-            raise SystemExit(128 + signum)
+        raise SystemExit(0)
 
     for name in ("SIGINT", "SIGTERM"):
         number = getattr(signal, name, None)

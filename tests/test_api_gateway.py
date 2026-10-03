@@ -776,5 +776,54 @@ class SocketTeardownTests(unittest.TestCase):
         server.stop()  # must not raise
 
 
+class ShutdownRefusalTests(unittest.TestCase):
+    """Phase 42: a draining engine refuses new work with 503, not a dropped connection.
+
+    The distinction matters: a client that sees a connection reset cannot tell a shutdown from a
+    crash, and a client that sees 503 knows the engine is going away on purpose and can stop
+    stacking intents into a queue nothing will drain.
+    """
+
+    def setUp(self):
+        from tools import lifecycle
+
+        lifecycle.reset()
+        self.addCleanup(lifecycle.reset)
+
+    def _request(self, port, path):
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            return response.status, response.read().decode("utf-8")
+        finally:
+            connection.close()
+
+    def test_a_request_during_shutdown_is_a_503(self):
+        from tools import lifecycle
+
+        server = start_gateway(port=0)
+        self.addCleanup(server.stop)
+
+        status, _ = self._request(server.bound_port, "/api/health")
+        self.assertEqual(status, 200)
+
+        lifecycle.begin_shutdown()
+
+        status, body = self._request(server.bound_port, "/api/health")
+        self.assertEqual(status, 503)
+        self.assertIn("shutting down", body)
+
+    def test_the_server_registers_and_forgets_its_drain(self):
+        from tools import lifecycle
+
+        server = start_gateway(port=0)
+        self.assertIn(server.stop, lifecycle._drains)
+
+        server.stop()
+
+        self.assertNotIn(server.stop, lifecycle._drains)
+
+
 if __name__ == "__main__":
     unittest.main()

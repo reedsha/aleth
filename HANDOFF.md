@@ -13,11 +13,23 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 41)
+## ⚡ 0. Current State at This Handoff (Phase 42)
 
-- **Phases 5 → 41 are complete and CI-green.** Phase 41 (process integrity and dependency
-  injection) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
+- **Phases 5 → 42 are complete and CI-green.** Phase 42 (daemon lifecycle and concurrency
+  hardening) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
   what changed most recently.
+- **A signal is a request, not a kill (Phase 42).** `tools/lifecycle.py` holds one process-wide
+  `threading.Event`. `install_shutdown_sweep`'s handler flips it, **drains** the components that
+  registered their own stop (`ApiServer.stop`), sweeps the containers, and exits `0` -- so the
+  process lock deletes `aleth.pid` on the way out rather than leaving it for the next boot to reap.
+  The HTTP `_guard` answers **503** to new requests (after the loopback gate), and the agent loop
+  stops at the top of its next step and commits its memory blob before raising. `cli._boot`
+  (`aleth boot`) now arms the same teardown, which it previously never did -- only `main.py`
+  installed it, and `aleth boot` reaches `app` directly.
+- **The database half is the one connection factory (Phase 28, re-asserted Phase 42).**
+  `storage/connection.py` sets `journal_mode=WAL`, `synchronous=NORMAL` and `busy_timeout=5000` on
+  every connection, so a status poll cannot collide with a task write; `tests/test_state_store.py`
+  now asserts all three rather than WAL alone.
 - **Secrets are resolved, not exported (Phase 41).** `tools/secrets.py` has a `SecretStore` bound to
   a `contextvars.ContextVar`; `credential(env_name)` is the single read path and the client factories
   (`core/config.py`, `orchestration/system2.py`, `tools/system2_cost.py`) call it. There is **no**
@@ -1595,16 +1607,24 @@ Throughput is single-user (one workflow at a time); event rate is throttled to ~
 unbounded growth vector is `.aleth_backups/**`. No p95/p99 instrumentation exists in
 the product code; the figures above are from harness benchmarks, not runtime telemetry.
 
-### 11.6 Verification — measured this pass
+### 11.6 Verification — measured evidence
+
+Each row is a measurement taken when its phase was verified; the aggregate rows at the top are this
+pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `49195f4` (Phase 39) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `7590138` (Phase 41.5) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
 | Build | `npm run build` | 59 modules |
 | UI tests | `npx playwright test` | **78 passed** in 27.9 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1354 passed, 23 skipped, 243 subtests** in 110.47 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1372 passed, 5 skipped**, and **0 containers left behind** |
+| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1379 passed, 24 skipped, 243 subtests** in 95.25 s (`-n auto`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1372 passed, 5 skipped** on the Phase 39 tree, 0 containers left behind. The WSL venv predates the Phase 41 hard `keyring` import and cannot install it offline, so it is no longer the local authority -- CI is. |
+| Shutdown flag & drain | `tests/test_lifecycle.py` (new) | **9 passed** — the flag flips once, the event every loop reads is the same object, drains run newest-first, a failing drain does not stop the others, a drain can unregister itself mid-drain, and `reset` clears flag and registry |
+| HTTP 503 | `tests/test_api_gateway.py::ShutdownRefusalTests` | **2 passed** — a request during a shutdown is a 503 naming the reason, and the server registers then forgets its drain |
+| Loop boundary | `tests/test_mcp.py::RunLivenessGateTests::test_a_shutdown_stops_the_loop_before_the_next_step` | **passed** — the model is never called after the engine asks the loop to stop; `RunAborted` names the shutdown |
+| Signal handler | `tests/test_docker_sandbox.py::ShutdownSweepTests::test_the_signal_handler_drains_before_it_sweeps` | **passed** — the handler flips the flag, drains, then sweeps, and exits 0 |
+| WAL contract | `tests/test_state_store.py::StoreTests::test_the_connection_factory_sets_wal_normal_and_a_bounded_wait` | **passed** — `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` on the one connection factory |
 | Secrets | `tests/test_harness.py::SecretsTests` + `ZeroTrustAuditTests` | **passed** — a credential round-trips through the keyring, `list` reports names only, an empty value and an unknown provider are refused, no backend is a *reported* failure, the environment is loaded from the store, an exported name wins, and a loaded credential leaves no bytes in the state directory |
 | Logging | `tests/test_harness.py::EngineLogTests` | **passed** — one JSON object with timestamp/level/message, the run's correlation id attached, `maxBytes`/`backupCount` at 50 MB × 3, and a second `configure` does not double the lines |
 | Pre-flight | `tests/test_harness.py::PreflightTests` + `CliTests` | **passed** — each check answers, each failure carries its fix, a held port names the command to find the holder, `enforce` refuses and says nothing started, and `aleth boot` aborts before reaching the daemon |

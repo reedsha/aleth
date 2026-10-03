@@ -39,6 +39,7 @@ from api.events import FRAME_PREFIX, FRAME_SUFFIX, HEARTBEAT_FRAME, EventHub
 from api.gateway import Gateway, Request, Response, StreamResponse
 from api.intents import IntentQueue, run_worker
 from api.schemas import ErrorResponse
+from tools import lifecycle
 
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -259,6 +260,14 @@ class _Handler(BaseHTTPRequestHandler):
         peer = self.client_address[0] if self.client_address else ""
         if not is_loopback_address(peer):
             self._denied(403, "not loopback", str(peer))
+            return False
+        if lifecycle.is_shutting_down():
+            # Phase 42: a draining engine accepts no new work. Answered rather than dropped, so a
+            # client learns the engine is going away instead of seeing a bare connection error --
+            # and so a request that arrives mid-drain cannot start a run the engine will not finish.
+            # Checked *after* the loopback gate: a foreign peer is still refused as a stranger, not
+            # told the engine happens to be stopping.
+            self._denied(503, "the engine is shutting down")
             return False
         if not host_allowed(self.headers.get("Host", "")):
             self._denied(403, "unrecognised host", str(self.headers.get("Host", "")))
@@ -494,6 +503,9 @@ class ApiServer:
             target=self._httpd.serve_forever, name="aleth-api", daemon=True
         )
         self._thread.start()
+        # Phase 42: the engine's drain stops this server. Registered rather than reached into, so
+        # the signal handler stays in the container perimeter and knows nothing about the API.
+        lifecycle.register_drain(self.stop)
         return self.base_url
 
     def stop(self) -> None:
@@ -504,6 +516,7 @@ class ApiServer:
         is a caller whose next test can meet the previous one's server. That is how a security
         assertion ends up answered by a socket it did not start.
         """
+        lifecycle.unregister_drain(self.stop)
         self.stop_event.set()
         if self._worker_stop is not None:
             self._worker_stop.set()

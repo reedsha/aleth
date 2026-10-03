@@ -34,6 +34,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from tools import snapshots
 from tools import token_budget
+from tools import lifecycle
 
 # The paused status is the ledger's vocabulary, not this module's: one spelling, defined where the
 # state is written.
@@ -92,6 +93,10 @@ class RunAborted(RuntimeError):
 
 
 ABORTED_MESSAGE = "the intent was aborted before this pass finished"
+
+# Why a graceful shutdown stops the loop (Phase 42). Distinct from an abort because the cause is
+# the *engine*, not the intent: the run did nothing wrong, the daemon is going away.
+SHUTDOWN_MESSAGE = "the engine is shutting down before this pass finished"
 
 
 def _tool_schemas(tools: List[Any]) -> List[Dict[str, Any]]:
@@ -644,6 +649,15 @@ def run_tool_loop(
 
     for _step in range(max_steps):
         step = run_step if snapshots_on else _step + 1
+        if lifecycle.is_shutting_down():
+            # Phase 42: the engine is draining, so no new step starts. The memory of the last
+            # completed step is already durable; commit the current window too, so the run's
+            # context is on record exactly where it stopped rather than one step behind.
+            _record_memory(ledger, intent_id, step, _memory_blob(
+                system_prompt=system_prompt, user_message=user_message, summary=summary,
+                dropped=dropped, turns=turns, steering=steering,
+            ))
+            raise RunAborted(SHUTDOWN_MESSAGE)
         sync_after_gate()
         _check_budget(ledger, intent_id, max_tokens)
 

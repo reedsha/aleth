@@ -1061,6 +1061,35 @@ class RunLivenessGateTests(MCPServerTestCase):
                     user_message="loop", completer=completer, max_steps=2,
                 )
 
+    def test_a_shutdown_stops_the_loop_before_the_next_step(self):
+        """Phase 42: the engine draining stops the loop at its boundary, not mid-write.
+
+        The model is never called again: a step that has not started cannot be interrupted in the
+        middle of one, which is the whole reason the check is here and not at the tool call.
+        """
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import RunAborted, run_tool_loop
+        from tools import lifecycle
+
+        lifecycle.reset()
+        self.addCleanup(lifecycle.reset)
+        calls = {"n": 0}
+
+        def completer(**kwargs):
+            calls["n"] += 1
+            return self._Completion(text="unused")
+
+        lifecycle.begin_shutdown()
+        with MCPSessionContext(self.tmp) as session:
+            with self.assertRaises(RunAborted) as caught:
+                run_tool_loop(
+                    session=session, role="coder", system_prompt="sys", user_message="go",
+                    completer=completer,
+                )
+
+        self.assertEqual(calls["n"], 0, "the loop called the model after the engine asked it to stop")
+        self.assertIn("shutting down", str(caught.exception))
+
 
 class ContextWindowTests(MCPServerTestCase):
     """Phase 31: the payload is bounded, and the model is told what it lost.

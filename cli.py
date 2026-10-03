@@ -109,6 +109,18 @@ def _boot(args: argparse.Namespace) -> int:
         resolved = secrets.active().providers()
         if resolved:
             print(f"credentials available: {', '.join(resolved)}")
+        # Phase 42: the production entry point arms its own teardown. ``main.py`` installs this too,
+        # but ``aleth boot`` reaches ``app`` directly -- without it the daemon would have no
+        # SIGINT/SIGTERM handler and no container sweep on the way out.
+        from storage.intents import abort_running_intents
+        from tools.docker_sandbox import install_shutdown_sweep
+
+        install_shutdown_sweep(
+            "shutdown",
+            extra=lambda: abort_running_intents(
+                "the engine was shut down before this run finished"
+            ),
+        )
         import app
 
         app.main()
