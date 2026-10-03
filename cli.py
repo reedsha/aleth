@@ -121,6 +121,14 @@ def _boot(args: argparse.Namespace) -> int:
                 "the engine was shut down before this run finished"
             ),
         )
+        # Phase 45: migrate before ``app`` is imported -- ``app`` opens the store on import, and the
+        # schema has to be the one it was written against. A failure refuses the boot.
+        from storage.migrations import MigrationError, migrate_on_boot
+
+        try:
+            migrate_on_boot()
+        except MigrationError:
+            return 1
         import app
 
         app.main()

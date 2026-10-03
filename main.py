@@ -41,6 +41,18 @@ _resolved = secrets.active().providers()
 if _resolved:
     print(f"[Config] credentials available: {', '.join(_resolved)}")
 
+# Phase 45: the schema migration runs **first**, before anything reads or writes the store. The
+# bootloader, the API server and the first agent loop all assume the schema they were written
+# against, so a database that predates a column is upgraded here or the engine does not start. A
+# failure rolls back (the runner applies each patch in one transaction) and this exits non-zero:
+# serving a database whose shape no module knows is worse than not serving at all.
+from storage.migrations import MigrationError, migrate_on_boot
+
+try:
+    migrate_on_boot()
+except MigrationError:
+    raise SystemExit(1)
+
 from tools.docker_sandbox import (
     install_shutdown_sweep,
     sweep_orphaned_containers,

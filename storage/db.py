@@ -38,7 +38,6 @@ from pydantic import BaseModel, ConfigDict
 _STRICT = ConfigDict(extra="forbid", strict=False)
 
 from storage.connection import connect as _sqlite_connect
-from storage.telemetry import apply_telemetry_schema
 
 # The database file name. It lives in the project's *state* directory, not beside the plan:
 # see ``tools.workspace.state_dir`` for why the two are separated.
@@ -358,61 +357,29 @@ def _loads_summary(text: Optional[str]) -> Optional[StateSummary]:
         return None
 
 
-# The knowledge-graph half of the schema, as one string so it has exactly one definition.
-# ``PlanStore`` appends it to the base script, and ``apply_knowledge_graph_schema`` runs it
-# alone on a caller's connection -- which is what lets a test build an in-memory database from
-# the real DDL instead of a copy that silently drifts from it.
-KNOWLEDGE_GRAPH_DDL = """
-                CREATE TABLE IF NOT EXISTS knowledge_entities (
-                    id            TEXT PRIMARY KEY,
-                    name          TEXT NOT NULL,
-                    type          TEXT NOT NULL
-                                  CHECK (type IN ('symbol','rule','task','file')),
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS knowledge_synapses (
-                    source_id     TEXT NOT NULL,
-                    target_id     TEXT NOT NULL,
-                    relation_type TEXT NOT NULL
-                                  CHECK (relation_type IN ('calls','modifies','enforces','invalidates')),
-                    weight        REAL NOT NULL DEFAULT 1.0,
-                    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (source_id, target_id, relation_type),
-                    FOREIGN KEY (source_id) REFERENCES knowledge_entities(id) ON DELETE CASCADE,
-                    FOREIGN KEY (target_id) REFERENCES knowledge_entities(id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_synapses_source ON knowledge_synapses(source_id);
-                CREATE INDEX IF NOT EXISTS idx_synapses_target ON knowledge_synapses(target_id);
-"""
+# The knowledge graph and the skill registry are part of the one state schema, which lives in
+# ``storage/migrations/`` (Phase 45). They used to be DDL strings here; the versioned runner now
+# owns creation and evolution, so a test and the daemon cannot disagree about the shape.
 
 
 def apply_knowledge_graph_schema(connection: sqlite3.Connection) -> None:
-    """Create the knowledge-graph tables on a caller's connection.
+    """Bring a caller's connection up to the current schema (Phase 45).
 
-    The same DDL ``PlanStore`` applies, so a test can build an in-memory database with the
-    real schema. The caller owns the connection and its pragmas -- ``PRAGMA foreign_keys=ON``
-    in particular, without which the cascading deletes the graph relies on never fire.
+    A test that builds an in-memory database and the daemon that boots now go through the same
+    versioned path, so the graph tables cannot drift from the ones production uses. The caller still
+    owns the connection and its pragmas -- ``PRAGMA foreign_keys=ON`` in particular, without which
+    the cascading deletes the graph relies on never fire.
     """
-    connection.executescript(KNOWLEDGE_GRAPH_DDL)
+    from storage import migrations
+
+    migrations.migrate(connection)
 
 
-# The skill registry (Phase 7.5): procedural playbooks injected into a node's system prompt.
+# The skill registry (Phase 7.5): procedural playbooks injected into a node's system prompt. Its
+# table is part of the one state schema (``storage/migrations/``, Phase 45);
 # ``target_capabilities`` is a JSON array matched against a node's declaration by a JSON1 set
 # intersection (``orchestration.retriever.skills_for_capabilities``) -- one query, and SQLite
 # makes the match rather than Python reading the whole table.
-SKILLS_DDL = """
-                CREATE TABLE IF NOT EXISTS skills (
-                    id                  TEXT PRIMARY KEY,
-                    name                TEXT NOT NULL,
-                    target_capabilities TEXT NOT NULL DEFAULT '[]',
-                    markdown_content    TEXT NOT NULL DEFAULT ''
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_skills_capabilities ON skills(id);
-"""
 
 # The built-ins a fresh database starts with. A skill is *data*: the registry is a table, so a
 # playbook can be added or edited without touching Python -- which is the point of the phase.
@@ -439,12 +406,14 @@ DEFAULT_SKILLS = (
 
 
 def apply_skills_schema(connection: sqlite3.Connection, *, seed: bool = True) -> None:
-    """Create the skill registry on a caller's connection, optionally seeding the built-ins.
+    """Bring a caller's connection up to the current schema, optionally seeding the built-ins.
 
-    Mirrors :func:`apply_knowledge_graph_schema`: a test can build the real schema on an
-    in-memory database instead of a copy that drifts from it.
+    Mirrors :func:`apply_knowledge_graph_schema`: one versioned path, so a test cannot build a
+    registry that drifts from the one production uses.
     """
-    connection.executescript(SKILLS_DDL)
+    from storage import migrations
+
+    migrations.migrate(connection)
     if not seed:
         return
     for skill_id, name, capabilities, content in DEFAULT_SKILLS:
@@ -495,113 +464,18 @@ class PlanStore:
             connection.close()
 
     def _ensure_schema(self) -> None:
-        with self._lock, self._connection() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute("PRAGMA synchronous=NORMAL")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS plans (
-                    plan_id       TEXT PRIMARY KEY,
-                    plan_file     TEXT NOT NULL DEFAULT 'PLAN.md',
-                    title         TEXT NOT NULL DEFAULT '',
-                    goal          TEXT NOT NULL DEFAULT '',
-                    version       TEXT NOT NULL DEFAULT '1.0',
-                    state_summary TEXT,
-                    created_at    REAL NOT NULL,
-                    updated_at    REAL NOT NULL
-                );
+        """Create and evolve the schema through the migration runner (Phase 45).
 
-                CREATE TABLE IF NOT EXISTS tasks (
-                    plan_id        TEXT NOT NULL,
-                    id             TEXT NOT NULL,
-                    title          TEXT NOT NULL DEFAULT '',
-                    description    TEXT NOT NULL DEFAULT '',
-                    status         TEXT NOT NULL DEFAULT 'pending'
-                                   CHECK (status IN ('pending','planned','in_progress','completed','failed')),
-                    section        TEXT NOT NULL DEFAULT '',
-                    section_id     TEXT NOT NULL DEFAULT '',
-                    tag            TEXT,
-                    assigned_agent TEXT,
-                    ast_targets    TEXT NOT NULL DEFAULT '[]',
-                    -- Declared by the Architect at creation (Phase 7.4). Present in the CREATE
-                    -- text for a fresh database; ``_MIGRATIONS`` adds it to an older one.
-                    required_capabilities TEXT NOT NULL DEFAULT '[]',
-                    -- Phase 7.5: the engine's verification receipt. 1 only when the task ran
-                    -- commands and produced a test receipt that exited 0.
-                    verified       INTEGER NOT NULL DEFAULT 0,
-                    details        TEXT NOT NULL DEFAULT '[]',
-                    files          TEXT NOT NULL DEFAULT '[]',
-                    behavioral_log TEXT NOT NULL DEFAULT '[]',
-                    sub_steps      TEXT NOT NULL DEFAULT '[]',
-                    order_index    INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (plan_id, id),
-                    FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_tasks_order ON tasks(plan_id, order_index);
-
-                CREATE TABLE IF NOT EXISTS task_dependencies (
-                    plan_id    TEXT NOT NULL,
-                    task_id    TEXT NOT NULL,
-                    depends_on TEXT NOT NULL,
-                    PRIMARY KEY (plan_id, task_id, depends_on),
-                    FOREIGN KEY (plan_id, task_id) REFERENCES tasks(plan_id, id) ON DELETE CASCADE,
-                    FOREIGN KEY (plan_id, depends_on) REFERENCES tasks(plan_id, id) ON DELETE CASCADE
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_deps_task ON task_dependencies(plan_id, task_id);
-
-                CREATE TABLE IF NOT EXISTS artifacts (
-                    plan_id    TEXT NOT NULL,
-                    task_id    TEXT NOT NULL,
-                    payload    TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    PRIMARY KEY (plan_id, task_id),
-                    FOREIGN KEY (plan_id) REFERENCES plans(plan_id) ON DELETE CASCADE
-                );
-
-                """
-                + KNOWLEDGE_GRAPH_DDL
-                + SKILLS_DDL
-            )
-            self._migrate(connection)
-            # The ledger's own DDL *and* its guarded column migrations, on this connection: the
-            # receipt writer (``storage.telemetry``) runs in a child process and must find the
-            # table already shaped the way it writes it.
-            apply_telemetry_schema(connection)
-            self._seed_skills(connection)
-
-    # -- migrations ---------------------------------------------------------------
-    # ``CREATE TABLE IF NOT EXISTS`` does nothing to a table that already exists, so a column
-    # added to the CREATE text never reaches a database created before it. A guarded ``ALTER``
-    # is the whole mechanism: two columns do not warrant a migration framework, and this is the
-    # first one the project has needed.
-    _MIGRATIONS = (
-        ("rejection_attempts", "INTEGER NOT NULL DEFAULT 0"),
-        ("rejection_feedback", "TEXT NOT NULL DEFAULT '[]'"),
-        # Phase 7: what the Architect says the work costs, and what it needs to do it.
-        ("complexity_score", "INTEGER NOT NULL DEFAULT 1"),
-        ("required_capabilities", "TEXT NOT NULL DEFAULT '[]'"),
-        # Phase 9: how many times the *machine* failed on this node. Kept apart from
-        # ``rejection_attempts`` on purpose -- a human's critique and an OOM are different events
-        # with different budgets, and conflating them bricks a branch for a transient fault.
-        ("system_failures", "INTEGER NOT NULL DEFAULT 0"),
-        # Phase 7.5: the engine's verification receipt for this node.
-        ("verified", "INTEGER NOT NULL DEFAULT 0"),
-    )
-
-    def _migrate(self, connection: sqlite3.Connection) -> None:
-        """Add any missing column, once. Idempotent: the guard is ``PRAGMA table_info``.
-
-        Without the guard the second startup raises ``duplicate column name``, and this runs on
-        every store construction -- so the check is not a nicety, it is what makes the migration
-        safe to re-run.
+        The DDL no longer lives here: a store construction and a daemon boot go through the same
+        versioned path (``storage.migrations``), so a database created before a column existed is
+        upgraded rather than crashing on it. The connection already carries the engine's pragmas
+        (WAL, ``synchronous=NORMAL``, a bounded wait, foreign keys) -- ``storage.connection``.
         """
-        present = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()}
-        for column, declaration in self._MIGRATIONS:
-            if column in present:
-                continue
-            connection.execute(f"ALTER TABLE tasks ADD COLUMN {column} {declaration}")
+        with self._lock, self._connection() as connection:
+            from storage import migrations
+
+            migrations.migrate(connection)
+            self._seed_skills(connection)
 
     def _seed_skills(self, connection: sqlite3.Connection) -> None:
         """Insert the built-in skills, once. Idempotent: ``INSERT OR IGNORE`` on the primary key.

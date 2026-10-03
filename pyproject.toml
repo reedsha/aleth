@@ -81,6 +81,11 @@ test = [
 packages = ["agents", "api", "core", "orchestration", "storage", "tools"]
 py-modules = ["app", "bridge_bus", "cli", "env_boot", "main", "registry"]
 
+# The schema patches (Phase 45). They are data, not modules, and the migration runner reads them
+# from ``storage/migrations/`` -- so a wheel that did not ship them would fail to boot.
+[tool.setuptools.package-data]
+storage = ["migrations/*.sql"]
+
 [project.scripts]
 # The supported entry point (Phase 40): ``aleth keys ...`` and ``aleth boot``. The pre-flight lives
 # here rather than in ``main.py`` so that a developer importing the engine is not killed by a

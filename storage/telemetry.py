@@ -29,104 +29,9 @@ from storage.connection import connect as _sqlite_connect
 # file. WAL plus a bounded wait is what keeps a short append from failing under that contention.
 # (Both now live in ``storage.connection``, applied to every connection in the engine.)
 
-TELEMETRY_DDL = """
-                CREATE TABLE IF NOT EXISTS execution_telemetry (
-                    execution_id TEXT PRIMARY KEY,
-                    session_id   TEXT NOT NULL DEFAULT '',
-                    target_tool  TEXT NOT NULL DEFAULT '',
-                    exit_code    INTEGER NOT NULL DEFAULT 0,
-                    duration_ms  INTEGER NOT NULL DEFAULT 0,
-                    stdout_hash  TEXT NOT NULL DEFAULT '',
-                    stderr_hash  TEXT NOT NULL DEFAULT '',
-                    outcome      TEXT NOT NULL DEFAULT '',
-                    recorded_at  REAL NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_telemetry_session
-                    ON execution_telemetry(session_id);
-                CREATE INDEX IF NOT EXISTS idx_telemetry_tool
-                    ON execution_telemetry(target_tool);
-                CREATE INDEX IF NOT EXISTS idx_telemetry_recorded
-                    ON execution_telemetry(recorded_at);
-"""
-
-# The routing ledger (Phase 19): one append-only row per *agent* decision. Deliberately its own
-# table rather than a row in ``execution_telemetry``: a routing decision is not a container
-# execution, and overloading that table's ``execution_id``/``exit_code`` contract with decisions
-# that have neither would make every query on it wrong. Same file, same append-only discipline.
-ROUTING_DDL = """
-                CREATE TABLE IF NOT EXISTS routing_decisions (
-                    decision_id  TEXT PRIMARY KEY,
-                    session_id   TEXT NOT NULL DEFAULT '',
-                    plan_id      TEXT NOT NULL DEFAULT '',
-                    task_id      TEXT NOT NULL DEFAULT '',
-                    intent       TEXT NOT NULL DEFAULT '',
-                    domain       TEXT NOT NULL DEFAULT '',
-                    complexity   TEXT NOT NULL DEFAULT '',
-                    route        TEXT NOT NULL DEFAULT '',
-                    confidence   REAL NOT NULL DEFAULT 0.0,
-                    fault        TEXT NOT NULL DEFAULT '',
-                    engine       TEXT NOT NULL DEFAULT '',
-                    evidence     TEXT NOT NULL DEFAULT '[]',
-                    decided_at   REAL NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_routing_session
-                    ON routing_decisions(session_id);
-                CREATE INDEX IF NOT EXISTS idx_routing_task
-                    ON routing_decisions(plan_id, task_id);
-                CREATE INDEX IF NOT EXISTS idx_routing_recorded
-                    ON routing_decisions(decided_at);
-"""
-
-# The agent-fault ledger (Phase 26/27): one append-only row per *loop* fault -- the model that kept
-# calling tools past its ceiling, rather than a container that misbehaved or a route that was
-# chosen. Its own table for the same reason as ``routing_decisions``: the fault has no container,
-# no exit code and no route, so a row in either of the other two would make their queries wrong.
-AGENT_FAULT_DDL = """
-                CREATE TABLE IF NOT EXISTS agent_faults (
-                    fault_id    TEXT PRIMARY KEY,
-                    -- Required, and never blank: a fault that cannot be joined to the intent that
-                    -- caused it is observability theater, and in a concurrent engine a detached row
-                    -- reads as noise rather than evidence. ``record_agent_fault`` refuses a blank
-                    -- one, which is what makes the constraint real -- SQLite cannot add a NOT NULL
-                    -- column without a default, so the column carries one and the boundary enforces
-                    -- it.
-                    intent_id   TEXT NOT NULL DEFAULT '',
-                    kind        TEXT NOT NULL DEFAULT '',
-                    role        TEXT NOT NULL DEFAULT '',
-                    detail      TEXT NOT NULL DEFAULT '',
-                    steps       INTEGER NOT NULL DEFAULT 0,
-                    recorded_at REAL NOT NULL
-                );
-"""
-
-# Created *after* the migrations below, and that ordering is load-bearing: this index names
-# ``intent_id``, which a table written by an earlier build does not have yet.
-AGENT_FAULT_INDEXES = """
-                CREATE INDEX IF NOT EXISTS idx_agent_faults_intent
-                    ON agent_faults(intent_id);
-                CREATE INDEX IF NOT EXISTS idx_agent_faults_recorded
-                    ON agent_faults(recorded_at);
-"""
-
-# New columns go here *and* in the DDL above -- ``CREATE TABLE IF NOT EXISTS`` never adds a column
-# to a table that already exists.
-AGENT_FAULT_MIGRATIONS = (
-    # Phase 27: the correlation id. The table shipped without one for exactly one phase, and a
-    # fault recorded then could not be joined to the run that caused it.
-    ("intent_id", "TEXT NOT NULL DEFAULT ''"),
-)
-
-# New columns go here *and* in the DDL above. ``CREATE TABLE IF NOT EXISTS`` never adds a column to
-# a table that already exists, so a ledger written by an earlier build is upgraded by the guarded
-# ``ALTER`` below rather than silently missing the field.
-TELEMETRY_MIGRATIONS = (
-    # Phase 13: why an execution ended, when it did not end on its own terms -- ``OOM_KILLED`` when
-    # the kernel's OOM killer took the container, ``TIMEOUT`` when the perimeter did. The engine
-    # reads it so a memory-leaking command is not mistaken for a transient fault and retried.
-    ("outcome", "TEXT NOT NULL DEFAULT ''"),
-)
+# The three telemetry ledgers' schema lives in ``storage/migrations/`` (Phase 45). It used to be
+# three DDL strings plus guarded ``ALTER``s in this module; the versioned runner now owns creation
+# and evolution, so a column added here reaches every database that predates it.
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -137,32 +42,14 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def apply_telemetry_schema(connection: sqlite3.Connection) -> None:
-    """Create all three ledgers on a caller's connection, so a test can build the real tables."""
-    connection.executescript(TELEMETRY_DDL)
-    connection.executescript(ROUTING_DDL)
-    connection.executescript(AGENT_FAULT_DDL)
-    # ``PRAGMA table_info`` is read positionally on purpose: this is called with a bare connection
-    # (no ``row_factory``), and the column name is index 1.
-    existing = {row[1] for row in connection.execute("PRAGMA table_info(execution_telemetry)")}
-    for name, ddl in TELEMETRY_MIGRATIONS:
-        if name not in existing:
-            connection.execute(f"ALTER TABLE execution_telemetry ADD COLUMN {name} {ddl}")
-    faults = {row[1] for row in connection.execute("PRAGMA table_info(agent_faults)")}
-    for name, ddl in AGENT_FAULT_MIGRATIONS:
-        if name not in faults:
-            connection.execute(f"ALTER TABLE agent_faults ADD COLUMN {name} {ddl}")
-    # The phase this ledger shipped in keyed a fault on a "session", which nothing ever filled and
-    # which ``intent_id`` replaces. The index goes first -- SQLite refuses to drop a column an index
-    # still names -- and both steps are tolerated where the engine cannot do them (a pre-3.35
-    # SQLite): a column nothing reads is better than rebuilding a ledger that may hold evidence.
-    if "session_id" in faults:
-        try:
-            connection.execute("DROP INDEX IF EXISTS idx_agent_faults_session")
-            connection.execute("ALTER TABLE agent_faults DROP COLUMN session_id")
-        except sqlite3.OperationalError:  # pragma: no cover - a pre-3.35 SQLite
-            pass
-    # Last, so the index can name a column the migrations above may have just added.
-    connection.executescript(AGENT_FAULT_INDEXES)
+    """Bring a caller's connection up to the current schema (Phase 45).
+
+    Delegates to the migration runner: the telemetry ledgers are part of the one state database,
+    and the runner is now the only thing that creates or evolves it.
+    """
+    from storage import migrations
+
+    migrations.migrate(connection)
 
 
 def record(

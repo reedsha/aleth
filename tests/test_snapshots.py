@@ -333,6 +333,27 @@ class CircuitBreakerLedgerTests(unittest.TestCase):
             self.ledger.cost_cents("i1"), token_budget.cost_cents(2000, 0), places=6
         )
 
+    def test_the_cost_is_frozen_at_write_time_and_not_repriced(self):
+        """Phase 45: the ledger records what a step cost, not what it would cost today.
+
+        A rate that moves -- an API price change, or an operator overriding the environment mid-run
+        -- must not retroactively rewrite the bill of work already done.
+        """
+        from tools import token_budget
+
+        self.ledger.record_step_spend("i1", 1, prompt=1000, completion=1000)
+        recorded = self.ledger.cost_cents("i1")
+        self.assertGreater(recorded, 0.0)
+
+        original = token_budget.CENTS_PER_1K_PROMPT_TOKENS
+        try:
+            token_budget.CENTS_PER_1K_PROMPT_TOKENS = original * 100
+            token_budget.CENTS_PER_1K_COMPLETION_TOKENS = original * 100
+            self.assertAlmostEqual(self.ledger.cost_cents("i1"), recorded, places=6)
+        finally:
+            token_budget.CENTS_PER_1K_PROMPT_TOKENS = original
+            token_budget.CENTS_PER_1K_COMPLETION_TOKENS = 1.0
+
     def test_an_unknown_intent_has_taken_no_steps_and_cost_nothing(self):
         self.assertEqual(self.ledger.step_high_water("nope"), 0)
         self.assertEqual(self.ledger.cost_cents("nope"), 0.0)

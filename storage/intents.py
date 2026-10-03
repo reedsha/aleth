@@ -40,70 +40,9 @@ from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 # configured centrally (``storage.connection``: WAL, ``synchronous=NORMAL``, a bounded wait).
 from storage.connection import connect as _sqlite_connect
 
-INTENT_DDL = """
-                CREATE TABLE IF NOT EXISTS intent_ledger (
-                    intent_id       TEXT PRIMARY KEY,
-                    action_type     TEXT NOT NULL DEFAULT '',
-                    message         TEXT NOT NULL DEFAULT '',
-                    status          TEXT NOT NULL DEFAULT 'queued',
-                    error           TEXT NOT NULL DEFAULT '',
-                    created_at      REAL NOT NULL,
-                    updated_at      REAL NOT NULL,
-                    acknowledged_at REAL NOT NULL DEFAULT 0,
-                    -- Phase 32: what the run has *spent*, cumulative. Here rather than in the loop's
-                    -- memory because the loop is one process of several -- a swarm child spends
-                    -- tokens too -- and a budget that only one of them can see is not a budget.
-                    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
-                    completion_tokens INTEGER NOT NULL DEFAULT 0,
-                    -- Phase 33: the user's steering payload, as a JSON array of corrections. Written
-                    -- by the interrupt API while the run is paused, drained by the loop when it
-                    -- resumes -- so a correction cannot be lost between the two.
-                    pending_input     TEXT NOT NULL DEFAULT '[]',
-                    -- Phase 35: the step a paused run should be rewound to when it resumes. Written
-                    -- by the rollback API (which also restores the shadow), drained by the loop
-                    -- exactly once. 0 means "no rollback queued".
-                    rollback_step     INTEGER NOT NULL DEFAULT 0
-                );
-
-                -- Phase 35: what each *step* cost, so a rollback can truncate the bill as well as
-                -- the files. The cumulative columns above are the breaker's fast read; this is the
-                -- ledger behind them, and it is what makes "forget steps 13-15" expressible.
-                -- Phase 37: ``context_blob`` is the loop's *memory* at that step -- the durable
-                -- half of a rewind, so a rollback is exact even when the step belonged to an
-                -- earlier loop invocation. The ephemeral array is a cache; this is the record.
-                CREATE TABLE IF NOT EXISTS intent_step_spend (
-                    intent_id         TEXT NOT NULL,
-                    step              INTEGER NOT NULL,
-                    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
-                    completion_tokens INTEGER NOT NULL DEFAULT 0,
-                    context_blob      TEXT NOT NULL DEFAULT '',
-                    recorded_at       REAL NOT NULL,
-                    PRIMARY KEY (intent_id, step)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_intent_status
-                    ON intent_ledger(status);
-                CREATE INDEX IF NOT EXISTS idx_intent_created
-                    ON intent_ledger(created_at);
-                CREATE INDEX IF NOT EXISTS idx_intent_step
-                    ON intent_step_spend(intent_id, step);
-"""
-
-# New columns go here *and* in the DDL above -- ``CREATE TABLE IF NOT EXISTS`` never adds a column
-# to a table that already exists.
-INTENT_MIGRATIONS = (
-    ("prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
-    ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
-    ("pending_input", "TEXT NOT NULL DEFAULT '[]'"),
-    ("rollback_step", "INTEGER NOT NULL DEFAULT 0"),
-)
-
-# The per-step table migrates the same way, and for the same reason: ``CREATE TABLE IF NOT EXISTS``
-# never adds a column to a table that already exists, so Phase 35's table would silently lack the
-# memory column on any database created before Phase 37.
-STEP_MIGRATIONS = (
-    ("context_blob", "TEXT NOT NULL DEFAULT ''"),
-)
+# The ledger's schema lives in ``storage/migrations/`` (Phase 45), not here. It used to be a DDL
+# string plus a tuple of guarded ``ALTER``s in this module; the versioned runner now owns creation
+# and evolution, so a column added to one table reaches every database that predates it.
 
 # The status a run takes when the user interrupts it (Phase 33). Not terminal: the run is *held*, and
 # resumes when the user says what to change. Distinct from ``failed`` on purpose -- nothing went
@@ -139,18 +78,15 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def apply_intent_schema(connection: sqlite3.Connection) -> None:
-    """Create the ledger on a caller's connection, so a test can build the real table."""
-    connection.executescript(INTENT_DDL)
-    # ``PRAGMA table_info`` is read positionally on purpose: this is called with a bare connection
-    # (no ``row_factory``), and the column name is index 1.
-    for table, migrations in (
-        ("intent_ledger", INTENT_MIGRATIONS),
-        ("intent_step_spend", STEP_MIGRATIONS),
-    ):
-        present = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-        for name, ddl in migrations:
-            if name not in present:
-                connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    """Bring a caller's connection up to the current schema (Phase 45).
+
+    Delegates to the migration runner rather than carrying its own DDL: a test that builds the real
+    tables and the daemon that boots both go through the same versioned path, so they cannot
+    disagree about the schema -- which is exactly what the old per-module DDL could do.
+    """
+    from storage import migrations
+
+    migrations.migrate(connection)
 
 
 # The statuses that *gate* new work until the user acknowledges them. ``failed`` is the agent's
@@ -375,25 +311,20 @@ class IntentLedger:
             connection.close()
 
     def cost_cents(self, intent_id: str) -> float:
-        """What this intent has cost so far, in cents, summed in SQL over its per-step rows.
+        """What this intent has cost so far, in cents: the **sum of the frozen per-step prices**.
 
-        The tokens are the model-dependent part and the ledger already stores them exactly, so the
-        price is applied here rather than in a column: one indexed aggregate, and no second copy of
-        the number to drift out of sync with the tokens it is derived from (Phase 44).
+        No pricing happens here. Each step's cost was written when it ran
+        (:meth:`record_step_spend`), so this is a ledger read -- the bill does not move when a rate
+        in the environment does (Phase 45).
         """
         resolved = str(intent_id or "").strip()
         if not resolved:
             return 0.0
-        from tools import token_budget
-
-        prompt_rate = token_budget.CENTS_PER_1K_PROMPT_TOKENS / 1000.0
-        completion_rate = token_budget.CENTS_PER_1K_COMPLETION_TOKENS / 1000.0
         connection = _connect(self.path)
         try:
             row = connection.execute(
-                "SELECT COALESCE(SUM(prompt_tokens * ? + completion_tokens * ?), 0)"
-                " FROM intent_step_spend WHERE intent_id = ?",
-                (prompt_rate, completion_rate, resolved),
+                "SELECT COALESCE(SUM(cost_cents), 0) FROM intent_step_spend WHERE intent_id = ?",
+                (resolved,),
             ).fetchone()
             return float(row[0] or 0.0) if row is not None else 0.0
         finally:
@@ -486,10 +417,12 @@ class IntentLedger:
     def record_step_spend(self, intent_id: str, step: int, *, prompt: int = 0, completion: int = 0) -> None:
         """Record what one *step* cost, and add it to the intent's cumulative total.
 
-        Two writes, on purpose. The cumulative columns are what the breaker reads before every
-        call -- one indexed read, no aggregation -- while the per-step rows are the ledger that
-        makes a rollback's truncation expressible (Phase 35). Both are upserts, so a retried step
-        adds to its own row rather than replacing it.
+        Three writes, on purpose. The cumulative token columns are what the token breaker reads
+        before every call -- one indexed read, no aggregation -- the per-step rows are the ledger
+        that makes a rollback's truncation expressible (Phase 35), and ``cost_cents`` is the step's
+        price **frozen at the moment it was incurred** (Phase 45). Pricing is never derived again:
+        API rates change, and a rate read at query time would retroactively re-price work that was
+        already done. All three are upserts, so a retried step adds to its own row.
         """
         resolved = str(intent_id or "").strip()
         if not resolved:
@@ -498,18 +431,22 @@ class IntentLedger:
         completion_tokens = max(0, int(completion))
         if prompt_tokens == 0 and completion_tokens == 0:
             return
+        from tools import token_budget
+
+        cost = token_budget.cost_cents(prompt_tokens, completion_tokens)
         connection = _connect(self.path)
         try:
             with connection:
                 connection.execute(
                     "INSERT INTO intent_step_spend"
-                    " (intent_id, step, prompt_tokens, completion_tokens, recorded_at)"
-                    " VALUES (?, ?, ?, ?, ?)"
+                    " (intent_id, step, prompt_tokens, completion_tokens, cost_cents, recorded_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)"
                     " ON CONFLICT(intent_id, step) DO UPDATE SET"
                     " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
                     " completion_tokens = completion_tokens + excluded.completion_tokens,"
+                    " cost_cents = cost_cents + excluded.cost_cents,"
                     " recorded_at = excluded.recorded_at",
-                    (resolved, int(step), prompt_tokens, completion_tokens, time.time()),
+                    (resolved, int(step), prompt_tokens, completion_tokens, cost, time.time()),
                 )
         finally:
             connection.close()

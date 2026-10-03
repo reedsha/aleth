@@ -13,11 +13,21 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 44)
+## ⚡ 0. Current State at This Handoff (Phase 45)
 
-- **Phases 5 → 44 are complete and CI-green.** Phase 44 (economic and state circuit breakers) is the
-  latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most
-  recently.
+- **Phases 5 → 45 are complete and CI-green.** Phase 45 (schema evolution and the frozen cost ledger)
+  is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
+  most recently.
+- **A step's cost is frozen when it runs (Phase 45).** `intent_step_spend.cost_cents` is written by
+  `record_step_spend` and read back as `SUM(cost_cents)`; nothing re-prices stored tokens at read
+  time, so an API price change or an overridden rate cannot rewrite the bill of work already done.
+  It is `REAL`, not `INTEGER`: integer cents would truncate a sub-cent step to zero.
+- **The schema evolves through a migration engine (Phase 45).** `storage/migrations.py` holds
+  `schema_version` and applies `storage/migrations/NNN_*.sql` in order, each patch in its own
+  `BEGIN EXCLUSIVE` transaction that also bumps the version -- a failed patch rolls back including
+  its number, and boot refuses. `001_initial_schema.sql` is the consolidated baseline (plus a
+  legacy-repair section for a pre-baseline database); `002_add_cost_cents.sql` adds and backfills the
+  column. The four modules' DDL strings are gone; every schema function delegates to the runner.
 - **Three hard stops bound an intent (Phase 44), all of them failing it, none of them a warning.**
   The **step ceiling** (`MAX_STEPS_PER_INTENT = 30`) is `MAX(step)` over `intent_step_spend`, not a
   loop counter -- so a rewind, which deletes the abandoned rows, gives back only the steps it undid.
@@ -1641,7 +1651,7 @@ pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
 | Build | `npm run build` | 59 modules |
 | UI tests | `npx playwright test` | **78 passed** in 27.9 s |
-| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1398 passed, 24 skipped, 243 subtests** in 98.04 s (`-n auto`) |
+| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1410 passed, 24 skipped, 243 subtests** in 109.10 s (`-n auto`) |
 | Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1372 passed, 5 skipped** on the Phase 39 tree, 0 containers left behind. The WSL venv predates the Phase 41 hard `keyring` import and cannot install it offline, so it is no longer the local authority -- CI is. |
 | Shutdown flag & drain | `tests/test_lifecycle.py` (new) | **9 passed** — the flag flips once, the event every loop reads is the same object, drains run newest-first, a failing drain does not stop the others, a drain can unregister itself mid-drain, and `reset` clears flag and registry |
 | HTTP 503 | `tests/test_api_gateway.py::ShutdownRefusalTests` | **2 passed** — a request during a shutdown is a 503 naming the reason, and the server registers then forgets its drain |
@@ -1655,7 +1665,11 @@ pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 | Step ceiling (ledger) | `tests/test_mcp.py::IntentCircuitBreakerTests::test_the_step_ceiling_is_read_from_the_ledger` + `test_a_rewind_gives_back_only_the_steps_it_undid` | **passed** — a spent intent refuses before the model is called, and a rewind frees exactly the undone steps |
 | Money ceiling | `tests/test_mcp.py::IntentCircuitBreakerTests::test_the_money_ceiling_kills_the_run` + `test_a_run_under_the_ceiling_is_not_stopped` | **passed** — the cost is summed over the per-step rows, breaches fail with "Cost ceiling reached", and a cheap run proceeds |
 | Repetition breaker | `tests/test_mcp.py::IntentCircuitBreakerTests::test_the_repetition_breaker_stops_the_apology_loop` + `test_a_successful_call_resets_the_repetition_streak` | **passed** — three identical failing calls raise `AgentStuckInLoopError` and a success resets the streak |
-| Breaker ledger | `tests/test_snapshots.py::CircuitBreakerLedgerTests` | **passed** — `step_high_water` tracks the active timeline and drops with a truncation; `cost_cents` prices the tokens by the configured rate |
+| Breaker ledger | `tests/test_snapshots.py::CircuitBreakerLedgerTests` | **passed** — `step_high_water` tracks the active timeline and drops with a truncation; `cost_cents` reads the frozen per-step prices |
+| Migration sequence | `tests/test_migrations.py::SequenceTests` | **passed** — the real sequence is contiguous from 1, and a gap or a duplicate is refused |
+| Migration runner | `tests/test_migrations.py::RunnerTests` | **passed** — a fresh database reaches the newest version with every table; a v1 database is upgraded to v2 (not recreated); the upgrade backfills pre-column rows; a failing patch rolls back *including* its version; and `migrate_on_boot` refuses |
+| Frozen cost | `tests/test_snapshots.py::CircuitBreakerLedgerTests::test_the_cost_is_frozen_at_write_time_and_not_repriced` | **passed** — changing the rate constants does not change an already-recorded step's cost |
+| Wheel ships the patches | `pip wheel . --no-deps --no-build-isolation` + `unzip -l` | **passed** — `storage/migrations/001_initial_schema.sql` and `002_add_cost_cents.sql` are inside the wheel, so `test-immutable` can boot them |
 | Secrets | `tests/test_harness.py::SecretsTests` + `ZeroTrustAuditTests` | **passed** — a credential round-trips through the keyring, `list` reports names only, an empty value and an unknown provider are refused, no backend is a *reported* failure, the environment is loaded from the store, an exported name wins, and a loaded credential leaves no bytes in the state directory |
 | Logging | `tests/test_harness.py::EngineLogTests` | **passed** — one JSON object with timestamp/level/message, the run's correlation id attached, `maxBytes`/`backupCount` at 50 MB × 3, and a second `configure` does not double the lines |
 | Pre-flight | `tests/test_harness.py::PreflightTests` + `CliTests` | **passed** — each check answers, each failure carries its fix, a held port names the command to find the holder, `enforce` refuses and says nothing started, and `aleth boot` aborts before reaching the daemon |
