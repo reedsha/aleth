@@ -623,7 +623,7 @@ def run_tool_loop(
         the middle of**: those tool calls were decided against a context the operator has just
         discarded, and executing them would write files from the history that was undone.
         """
-        nonlocal summary, dropped, user_message
+        nonlocal summary, dropped, user_message, run_step
         _gate(ledger, intent_id, emit=emit, pause_timeout=pause_timeout,
               steering=steering, rollback=pending_rollback)
         if not pending_rollback:
@@ -632,6 +632,10 @@ def run_tool_loop(
         restored = _rewind(ledger, intent_id, target, turns, steering)
         if restored is not None:
             summary, dropped, user_message = restored
+        # The timeline now ends at ``target``: the abandoned steps were truncated on both sides
+        # (the ledger's rows and the shadow's tags), so the resumed run continues at the next step
+        # *of the active timeline* rather than at the number its abandoned future had reached.
+        run_step = int(target) + 1
         _emit(emit, {
             "type": "log", "agent": "software-architect", "log_type": "decision",
             "text": f"[ROLLBACK] rewound the workspace, the memory and the bill to step {target}",

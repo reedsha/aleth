@@ -70,6 +70,12 @@ STAGING_MANIFEST = ".aleth_staging.json"
 # manifest, and committed into the shadow's step 0 so a rewind restores it too.
 BASELINE_FILE = ".aleth_baseline.json"
 
+# The recovery artifact an egress leaves behind if it cannot finish (Phase 39). Written into the
+# host root *before* the first byte of the host is touched, and removed only once the whole egress
+# has landed -- so a daemon killed mid-apply leaves a `git apply aleth_egress.patch` away from the
+# agent's work rather than a half-written tree with no way back.
+EGRESS_PATCH_NAME = "aleth_egress.patch"
+
 STAGING_ID_LENGTH = 12
 
 # The largest patch the diff will assemble, so a review view can never be handed a multi-megabyte
@@ -359,15 +365,32 @@ def _read_text(path: str) -> Optional[str]:
 
 
 def _unified_patch(host_root: str, staged_root: str, added: List[str],
-                   modified: List[str], deleted: List[str]) -> str:
-    """A capped unified diff of the delta, for the review view. Non-text files are named only."""
+                   modified: List[str], deleted: List[str], *, limit: Optional[int] = None) -> str:
+    """A unified diff of the delta. Non-text files are named only.
+
+    ``limit`` caps the output for the *review* view, so a person is never handed a multi-megabyte
+    blob. The recovery patch (:func:`apply_egress`) passes ``0`` for uncapped: its whole purpose is
+    that nothing is lost, so truncating it would defeat it.
+
+    The framing is ``a/``/``b/`` with ``/dev/null`` for adds and deletes, which is exactly what
+    ``git apply -p1`` and ``patch -p1`` expect -- a recovery artifact nobody can apply is not one.
+    """
     lines: List[str] = []
-    budget = MAX_DIFF_CHARS
+    budget = MAX_DIFF_CHARS if limit is None else int(limit)
+    # ``limit=0`` means *uncapped*, which is what the recovery patch asks for: its whole purpose is
+    # that nothing is lost. Spelled explicitly, because a budget that starts at zero and counts down
+    # is indistinguishable from one that has already run out.
+    uncapped = budget <= 0
 
     def emit(filename: str, before: Optional[str], after: Optional[str]) -> None:
         nonlocal budget
         if before is None and after is None:
-            lines.append(f"# {filename}: binary or oversized; compare by hash\n")
+            # The standard diff marker for a file whose bytes are not text. ``git apply`` skips it
+            # and reports it, which is the honest outcome: a binary change is not representable as
+            # a text hunk. The per-file atomic replace is what covers it.
+            left = f"a/{filename}" if _exists(host_root, filename) else "/dev/null"
+            right = f"b/{filename}" if _exists(staged_root, filename) else "/dev/null"
+            lines.append(f"Binary files {left} and {right} differ\n")
             return
         chunk = list(difflib.unified_diff(
             (before or "").splitlines(),
@@ -377,7 +400,7 @@ def _unified_patch(host_root: str, staged_root: str, added: List[str],
             lineterm="",
         ))
         for line in chunk:
-            if budget <= 0:
+            if not uncapped and budget <= 0:
                 return
             lines.append(line)
             budget -= len(line) + 1
@@ -390,9 +413,17 @@ def _unified_patch(host_root: str, staged_root: str, added: List[str],
     for name in deleted:
         emit(name, _read_text(os.path.join(host_root, name)), None)
 
-    if budget <= 0:
+    if not uncapped and budget <= 0:
         lines.append("... [TRUNCATED BY ALETH ENGINE] ...")
-    return "\n".join(lines)
+    if not lines:
+        return ""
+    # Terminated: a patch whose last line has no newline is a *corrupt* patch to ``git apply``, and
+    # a recovery artifact that cannot be applied is not one.
+    return "\n".join(lines) + "\n"
+
+
+def _exists(root: str, name: str) -> bool:
+    return os.path.isfile(os.path.join(root, name))
 
 
 def create_staging(
@@ -689,6 +720,25 @@ def apply_egress(workspace: StagingWorkspace) -> Dict[str, Any]:
             "the host changed while the agent worked: " + ", ".join(plan["collisions"][:8])
         )
     touched = [*plan["added"], *plan["modified"], *plan["deleted"]]
+    patch_path = os.path.join(workspace.host_root, EGRESS_PATCH_NAME)
+    # Written **first**, uncapped, before any host byte changes. Per-file replacement is already
+    # atomic (a sibling temporary and ``os.replace``, same directory so same filesystem), but a
+    # process killed between two files has no transaction to roll back -- and this is what makes
+    # that recoverable. Removed on success, so a clean egress leaves no litter.
+    try:
+        atomic_io.write_text_atomic(
+            patch_path,
+            _unified_patch(
+                workspace.host_root, workspace.path,
+                plan["added"], plan["modified"], plan["deleted"], limit=0,
+            ),
+        )
+    except OSError as error:
+        # A host that will not take the recovery artifact does not get the egress either: the whole
+        # point of writing it first is that the mutation is never the unrecoverable step.
+        raise StagingError(
+            f"the recovery patch could not be written, so nothing was applied: {error}"
+        ) from error
     backup = tempfile.mkdtemp(prefix="aleth_egress_")
     try:
         for name in touched:
@@ -712,9 +762,16 @@ def apply_egress(workspace: StagingWorkspace) -> Dict[str, Any]:
                 applied["deleted"] += 1
         except OSError as error:
             _roll_back_egress(backup, touched, workspace.host_root)
+            # The patch is deliberately **kept**: the rollback is a best-effort in-process
+            # recovery, and the artifact is the one that survives a crash.
             raise StagingError(
-                f"the egress failed and the host was rolled back: {error}"
+                f"the egress failed and the host was rolled back; a recovery patch is at "
+                f"{patch_path}: {error}"
             ) from error
+        try:
+            os.remove(patch_path)
+        except OSError:
+            pass
         return {
             "success": True,
             "staging_id": workspace.staging_id,

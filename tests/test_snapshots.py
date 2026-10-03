@@ -127,6 +127,25 @@ class SnapshotRepositoryTests(unittest.TestCase):
 
         self.assertFalse(os.path.exists(os.path.join(self.root, "half_written.py")))
 
+    def test_a_revert_drops_the_abandoned_timeline(self):
+        """The files *and* the tags: leaving the tags behind is what would make the resumed run
+        collide with its own abandoned future, because ``next_step`` reads the tags."""
+        snapshots.init_snapshots(self.root)
+        for number in (1, 2, 3):
+            _write(self.root, f"f{number}.py", f"v = {number}\n")
+            snapshots.commit_step(self.root, number, f"step {number}")
+        self.assertEqual([entry["step"] for entry in snapshots.steps(self.root)], [0, 1, 2, 3])
+
+        outcome = snapshots.revert_to_step(self.root, 1)
+
+        self.assertEqual(outcome["abandoned_steps"], [2, 3])
+        self.assertEqual([entry["step"] for entry in snapshots.steps(self.root)], [0, 1])
+        # The timeline ends at 1, so the resumed run continues at 2 -- not at the number its
+        # abandoned future had reached.
+        self.assertEqual(snapshots.next_step(self.root), 2)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "f2.py")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "f3.py")))
+
     def test_a_workspace_without_snapshots_refuses_rather_than_guessing(self):
         with self.assertRaises(snapshots.SnapshotError):
             snapshots.revert_to_step(self.root, 1)
@@ -222,15 +241,22 @@ class DurableMemoryTests(unittest.TestCase):
         self.assertEqual(self.ledger.token_totals("i1"), (100, 10))
         self.assertEqual(self.ledger.step_context("i1", 1), "blob")
 
-    def test_truncating_the_bill_keeps_the_later_steps_memory(self):
-        """The *bill* is what a rewind forgives. Deleting the rows would make a second rewind -- to
-        a step after the first -- restore the files with no memory to go with them."""
+    def test_truncating_deletes_the_abandoned_steps_entirely(self):
+        """Strict truncation: the abandoned timeline's future steps do not exist any more.
+
+        Zeroing them would leave ghost steps -- and the resumed run would collide with them, either
+        on the primary key or by silently overwriting the forward memory. The shadow's tags are
+        truncated in the same breath, so both sides agree on where the timeline ends.
+        """
         self.ledger.record_step_spend("i1", 1, prompt=100, completion=10)
         self.ledger.record_step_spend("i1", 2, prompt=200, completion=20)
         self.ledger.record_step_context("i1", 2, "step two memory")
 
         self.assertEqual(self.ledger.truncate_to_step("i1", 1), (100, 10))
-        self.assertEqual(self.ledger.step_context("i1", 2), "step two memory")
+        self.assertEqual(self.ledger.step_context("i1", 2), "", "the ghost row is gone")
+        # ...and the row is free again, so the resumed timeline can claim step 2 without colliding.
+        self.ledger.record_step_context("i1", 2, "the new step two")
+        self.assertEqual(self.ledger.step_context("i1", 2), "the new step two")
 
     def test_a_step_table_from_before_the_memory_column_is_upgraded(self):
         legacy = os.path.join(self.tmp, "legacy.db")

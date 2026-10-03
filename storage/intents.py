@@ -507,10 +507,17 @@ class IntentLedger:
             connection.close()
 
     def truncate_to_step(self, intent_id: str, step: int) -> Tuple[int, int]:
-        """Forget every step's spend after ``step`` and recompute the cumulative total.
+        """Delete every step after ``step`` and recompute the cumulative total.
 
         The bill follows the files: a run rewound to step 12 must not keep paying for steps 13-15.
         Returns the recomputed ``(prompt_tokens, completion_tokens)``.
+
+        **Strict truncation: the rows are deleted, not zeroed.** A ledger is a log of the *active
+        causal timeline*, and an abandoned timeline's future steps do not exist any more. Zeroing
+        them would leave ghost steps -- and the resumed run would collide with them, either on the
+        primary key or by silently overwriting the "forward" memory. The shadow's snapshot tags are
+        truncated in the same breath (``tools.snapshots.truncate_after``), so both sides of the
+        rewind agree on where the timeline ends.
 
         An intent with no per-step rows at all is left alone rather than zeroed: the rows are the
         authority for the truncation, and inventing a total from an empty ledger would *under*-count
@@ -532,12 +539,8 @@ class IntentLedger:
                         (resolved,),
                     ).fetchone()
                     return (int(row[0] or 0), int(row[1] or 0)) if row is not None else (0, 0)
-                # Zeroed, not deleted: the *bill* is what a rewind forgives, while each step's
-                # memory stays on its row. Deleting the rows would make a second rewind -- to a step
-                # *after* this one -- restore the files with no context to go with them.
                 connection.execute(
-                    "UPDATE intent_step_spend SET prompt_tokens = 0, completion_tokens = 0"
-                    " WHERE intent_id = ? AND step > ?",
+                    "DELETE FROM intent_step_spend WHERE intent_id = ? AND step > ?",
                     (resolved, int(step)),
                 )
                 row = connection.execute(

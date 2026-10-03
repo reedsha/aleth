@@ -180,6 +180,26 @@ def latest_step_at_or_before(root: str, step: int) -> Optional[int]:
     return candidate
 
 
+def truncate_after(root: str, step: int) -> List[int]:
+    """Drop every snapshot *after* ``step``: the abandoned timeline. Returns the steps dropped.
+
+    A ledger is a log of the **active causal timeline**. When a rewind abandons steps 3-5, their
+    future does not exist any more -- and leaving their tags behind is what would make the resumed
+    run collide with its own abandoned future: ``next_step`` reads the tags, so the agent would
+    resume at step 6 while the ledger's rows for 3-5 were gone, and a later rewind to 4 would find a
+    tree with no memory to go with it.
+
+    Dropping the tags makes the commits they pointed at unreachable, so git collects them; the
+    working tree was already restored by :func:`revert_to_step`. Linear history is the contract:
+    if a person wants step 5, they should not rewind to step 2.
+    """
+    target = int(step)
+    abandoned = [entry["step"] for entry in steps(root) if entry["step"] > target]
+    for number in abandoned:
+        _run(root, "tag", "-d", tag_for(number))
+    return abandoned
+
+
 def revert_to_step(root: str, step: int) -> Dict[str, Any]:
     """Restore the shadow to the state as of ``step``. Returns what happened.
 
@@ -202,7 +222,14 @@ def revert_to_step(root: str, step: int) -> Dict[str, Any]:
     # listed, so anything ignored inside it was written by the agent and belongs to the state being
     # undone. ``git clean`` never touches ``.git`` itself.
     _git(root, "clean", "-fdxq")
-    return {"reverted": True, "step": resolved, "requested_step": int(step)}
+    # ...and the abandoned future goes with it. Strict truncation, on both sides of the rewind.
+    abandoned = truncate_after(root, resolved)
+    return {
+        "reverted": True,
+        "step": resolved,
+        "requested_step": int(step),
+        "abandoned_steps": abandoned,
+    }
 
 
 __all__ = [
@@ -218,4 +245,5 @@ __all__ = [
     "revert_to_step",
     "steps",
     "tag_for",
+    "truncate_after",
 ]

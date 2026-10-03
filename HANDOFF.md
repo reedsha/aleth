@@ -13,11 +13,17 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 38)
+## ⚡ 0. Current State at This Handoff (Phase 39)
 
-- **Phases 5 → 38 are complete and CI-green.** Phases 37-38 (global context serialization, egress)
-  are the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
-  most recently.
+- **Phases 5 → 39 are complete and CI-green.** Phase 39 (hardening and the final cut) is the latest.
+  `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most recently.
+- **Truncation is strict (Phase 39).** A rewind deletes the abandoned timeline on **both** sides:
+  `IntentLedger.truncate_to_step` deletes the rows and `snapshots.truncate_after` drops the tags, so
+  the resumed run continues at `target + 1` instead of colliding with its own ghost. Linear history
+  is the contract; if a person wants step 5, they should not rewind to step 2.
+- **The egress is crash-recoverable (Phase 39).** `apply_egress` writes an uncapped,
+  `git apply`-able `aleth_egress.patch` into the host root *before* the first byte changes, and
+  removes it only once the whole egress has landed.
 - **The memory is durable (Phase 37).** `intent_step_spend.context_blob` carries the loop's exact
   memory at every step, and a rewind hydrates from it -- so a rewind is exact across a pass
   boundary, and `State(t) = Files(t) + Memory(t)` holds. `run_tool_loop(resume_context=…)` is the
@@ -1572,12 +1578,15 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `68405a8` (Phase 36) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `0b5f439` (Phase 38) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
 | Build | `npm run build` | 59 modules |
-| UI tests | `npx playwright test` | **78 passed** in 20.2 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1323 passed, 23 skipped, 243 subtests** in 98.16 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1341 passed, 5 skipped**, and **0 containers left behind** |
+| UI tests | `npx playwright test` | **78 passed** in 25.8 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1327 passed, 23 skipped, 243 subtests** in 103.19 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1345 passed, 5 skipped**, and **0 containers left behind** |
+| Strict truncation | `tests/test_snapshots.py::DurableMemoryTests` + `SnapshotRepositoryTests` | **passed** — a truncation deletes the ghost row and frees the step for the resumed timeline; a revert drops the abandoned tags and `next_step` returns to `target + 1` |
+| Recovery patch | `tests/test_egress.py::EgressApplyTests` | **passed** — a clean egress leaves no patch, a failed one keeps it and names its path, and the artifact passes `git apply --check -p1` |
+| Audit | `grep` over the critical path | no debug statements, no `breakpoint()`, no hardcoded absolute paths, no bare `except:`; every broad handler is on a documented observer |
 | Durable memory | `tests/test_snapshots.py::DurableMemoryTests` + `tests/test_mcp.py::SnapshotStepTests` | **passed** — a blob round-trips, a no-spend step still records its memory, truncation zeroes the spend but keeps the memory, a pre-Phase-37 table is migrated, and a fresh loop boots holding an earlier pass's step-1 memory |
 | Egress | `tests/test_egress.py` | **14 passed** — the baseline is a point in time; the delta is measured against it; a human edit (or deletion) of a path the agent touched is a collision; an unrelated edit is not; the apply lands add/modify/delete, refuses on a collision, and rolls back on a mid-apply failure; the service refuses unverified work, applies verified work, reports a conflict, and `workspace_merge(approve=True)` is the same gate |
 | Extraction UI | `tests/ui/live-run.spec.mjs` | **14 passed** — Apply to Project appears only for verified work, posts the egress, hides after applying, and surfaces a collision as a refusal |

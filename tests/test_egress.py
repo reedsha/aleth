@@ -165,6 +165,50 @@ class EgressApplyTests(unittest.TestCase):
         self.assertEqual(_read(self.host, "pkg/mod.py"), "value = 1\n")
         self.assertTrue(os.path.exists(os.path.join(self.host, "pkg/gone.py")))
 
+    def test_a_clean_egress_leaves_no_recovery_patch_behind(self):
+        shadow = self._shadow()
+
+        staging.apply_egress(shadow)
+
+        self.assertFalse(os.path.exists(os.path.join(self.host, staging.EGRESS_PATCH_NAME)))
+
+    def test_a_failed_egress_keeps_the_recovery_patch_and_says_where(self):
+        """The artifact is the one guarantee that survives a crash: an in-process rollback cannot."""
+        shadow = self._shadow()
+
+        def broken(source, target):
+            raise OSError("the disk is full")
+
+        with mock.patch.object(staging.atomic_io, "copy_file_atomic", broken):
+            with self.assertRaises(staging.StagingError) as caught:
+                staging.apply_egress(shadow)
+
+        self.assertIn(staging.EGRESS_PATCH_NAME, str(caught.exception))
+        patch = os.path.join(self.host, staging.EGRESS_PATCH_NAME)
+        self.assertTrue(os.path.isfile(patch))
+        body = _read(self.host, staging.EGRESS_PATCH_NAME)
+        self.assertIn("a/pkg/mod.py", body)
+        self.assertIn("b/pkg/new.py", body)
+
+    def test_the_recovery_patch_is_a_real_patch(self):
+        """A recovery artifact nobody can apply is not one: the framing is what ``git apply`` wants."""
+        shadow = self._shadow()
+
+        def broken(source, target):
+            raise OSError("the disk is full")
+
+        with mock.patch.object(staging.atomic_io, "copy_file_atomic", broken):
+            with self.assertRaises(staging.StagingError):
+                staging.apply_egress(shadow)
+
+        import subprocess
+
+        completed = subprocess.run(
+            ["git", "apply", "--check", "-p1", staging.EGRESS_PATCH_NAME],
+            cwd=self.host, capture_output=True, text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
 
 class EgressServiceTests(unittest.TestCase):
     """``EngineService.egress_intent``: the gate, through the surface the UI calls."""
