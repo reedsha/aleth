@@ -352,6 +352,53 @@ class IntentLedger:
         finally:
             connection.close()
 
+    def step_high_water(self, intent_id: str) -> int:
+        """The highest step number this intent has reached in the active timeline, or ``0``.
+
+        The step ceiling is read from here rather than from a loop counter (Phase 44), and the
+        distinction is the whole point: the loop numbers steps for the life of the *shadow*, and a
+        rewind deletes the abandoned rows (:meth:`truncate_to_step`). So this is exactly "how many
+        steps this intent has taken", and a rewind to step 15 genuinely leaves ten steps of a
+        thirty-step budget -- a local counter would hand them all back.
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return 0
+        connection = _connect(self.path)
+        try:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(step), 0) FROM intent_step_spend WHERE intent_id = ?",
+                (resolved,),
+            ).fetchone()
+            return int(row[0] or 0) if row is not None else 0
+        finally:
+            connection.close()
+
+    def cost_cents(self, intent_id: str) -> float:
+        """What this intent has cost so far, in cents, summed in SQL over its per-step rows.
+
+        The tokens are the model-dependent part and the ledger already stores them exactly, so the
+        price is applied here rather than in a column: one indexed aggregate, and no second copy of
+        the number to drift out of sync with the tokens it is derived from (Phase 44).
+        """
+        resolved = str(intent_id or "").strip()
+        if not resolved:
+            return 0.0
+        from tools import token_budget
+
+        prompt_rate = token_budget.CENTS_PER_1K_PROMPT_TOKENS / 1000.0
+        completion_rate = token_budget.CENTS_PER_1K_COMPLETION_TOKENS / 1000.0
+        connection = _connect(self.path)
+        try:
+            row = connection.execute(
+                "SELECT COALESCE(SUM(prompt_tokens * ? + completion_tokens * ?), 0)"
+                " FROM intent_step_spend WHERE intent_id = ?",
+                (prompt_rate, completion_rate, resolved),
+            ).fetchone()
+            return float(row[0] or 0.0) if row is not None else 0.0
+        finally:
+            connection.close()
+
     def interrupt(self, intent_id: str, note: str = "") -> bool:
         """Hold a *running* intent for the user. ``True`` when it took.
 

@@ -285,6 +285,59 @@ class DurableMemoryTests(unittest.TestCase):
         self.assertEqual(upgraded.truncate_to_step("old", 1), (50, 0))
 
 
+class CircuitBreakerLedgerTests(unittest.TestCase):
+    """Phase 44: the two state-backed ceilings are read from the ledger, not counted in a loop.
+
+    The distinction is the whole point of the phase: a ceiling that lives in a loop variable is
+    handed back by a rewind, and one that lives in the database is not.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="aleth_breaker_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.ledger = IntentLedger(os.path.join(self.tmp, "state.db"))
+
+    def test_the_step_high_water_is_the_active_timeline(self):
+        self.assertEqual(self.ledger.step_high_water("i1"), 0)
+
+        for step in (1, 2, 3):
+            self.ledger.record_step_spend("i1", step, prompt=1, completion=0)
+
+        self.assertEqual(self.ledger.step_high_water("i1"), 3)
+
+    def test_a_rewind_drops_the_high_water_with_the_rows(self):
+        """Rewinding to step 15 leaves the steps 16-30 genuinely unspent."""
+        for step in range(1, 31):
+            self.ledger.record_step_spend("i1", step, prompt=1, completion=0)
+
+        self.ledger.truncate_to_step("i1", 15)
+
+        self.assertEqual(self.ledger.step_high_water("i1"), 15)
+
+    def test_the_cost_is_the_tokens_priced_by_the_configured_rate(self):
+        from tools import token_budget
+
+        self.ledger.record_step_spend("i1", 1, prompt=1000, completion=500)
+
+        self.assertAlmostEqual(
+            self.ledger.cost_cents("i1"), token_budget.cost_cents(1000, 500), places=6
+        )
+
+    def test_the_cost_aggregates_every_step(self):
+        from tools import token_budget
+
+        self.ledger.record_step_spend("i1", 1, prompt=1000, completion=0)
+        self.ledger.record_step_spend("i1", 2, prompt=1000, completion=0)
+
+        self.assertAlmostEqual(
+            self.ledger.cost_cents("i1"), token_budget.cost_cents(2000, 0), places=6
+        )
+
+    def test_an_unknown_intent_has_taken_no_steps_and_cost_nothing(self):
+        self.assertEqual(self.ledger.step_high_water("nope"), 0)
+        self.assertEqual(self.ledger.cost_cents("nope"), 0.0)
+
+
 class RollbackLedgerTests(unittest.TestCase):
     """The rewind target is a ledger fact, because the loop is another thread (and process)."""
 

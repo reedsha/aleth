@@ -1121,6 +1121,172 @@ class RunLivenessGateTests(MCPServerTestCase):
         self.assertIn("shutting down", str(caught.exception))
 
 
+class IntentCircuitBreakerTests(MCPServerTestCase):
+    """Phase 44: the three hard stops -- steps, money, and repetition.
+
+    Each is a termination, not a warning: the intent is failed and the model is not called again.
+    The step and money ceilings are read from the ledger, so they survive a pass boundary and a
+    rewind; the repetition breaker is deterministic and lives in the loop's own state.
+    """
+
+    class _Completion:
+        def __init__(self, text="", tool_calls=None):
+            self.text = text
+            self.tool_calls = tool_calls or []
+
+    def _ledger_with_running(self, intent_id):
+        from api.intents import Intent
+        from storage.db import default_db_path, get_store
+        from storage.intents import IntentLedger
+
+        get_store()  # applies the telemetry schema, as a boot does
+        ledger = IntentLedger(default_db_path())
+        intent = Intent(id=intent_id, action_type="custom", message="go",
+                        action_params={}, enqueued_at=0.0)
+        ledger.record(intent)
+        self.assertTrue(ledger.claim(intent))
+        return ledger
+
+    def _run(self, completer, **kwargs):
+        from orchestration.mcp_session import MCPSessionContext
+        from orchestration.workflow.agent_loop import run_tool_loop
+
+        self._write("mod.py", "x = 1\n")
+        with MCPSessionContext(self.tmp) as session:
+            return run_tool_loop(
+                session=session, role="coder", system_prompt="SYS",
+                user_message="go", completer=completer, **kwargs
+            )
+
+    def _counting(self):
+        calls = []
+
+        def completer(*, system, messages, tools):
+            calls.append(1)
+            return self._Completion(text="done")
+
+        return calls, completer
+
+    # -- the ledger-backed step ceiling --------------------------------------
+    def test_the_step_ceiling_is_read_from_the_ledger(self):
+        from orchestration.workflow.agent_loop import MAX_STEPS_PER_INTENT, AgentStepLimitExceeded
+
+        ledger = self._ledger_with_running("i-steps")
+        for step in range(1, MAX_STEPS_PER_INTENT + 1):
+            ledger.record_step_spend("i-steps", step, prompt=1, completion=0)
+        calls, completer = self._counting()
+
+        with self.assertRaises(AgentStepLimitExceeded):
+            self._run(completer, intent_id="i-steps", ledger=ledger)
+
+        self.assertEqual(calls, [], "the model was called after the intent's step ceiling")
+
+    def test_a_rewind_gives_back_only_the_steps_it_undid(self):
+        """The ledger-backed ceiling is what makes a rewind economically meaningful."""
+        from orchestration.workflow.agent_loop import MAX_STEPS_PER_INTENT
+
+        ledger = self._ledger_with_running("i-rewind")
+        for step in range(1, MAX_STEPS_PER_INTENT + 1):
+            ledger.record_step_spend("i-rewind", step, prompt=1, completion=0)
+        ledger.truncate_to_step("i-rewind", MAX_STEPS_PER_INTENT - 10)
+        calls, completer = self._counting()
+
+        self._run(completer, intent_id="i-rewind", ledger=ledger)
+
+        self.assertEqual(len(calls), 1, "a rewound intent must be allowed to run again")
+
+    # -- the money ceiling ---------------------------------------------------
+    def test_the_money_ceiling_kills_the_run(self):
+        from tools import token_budget
+
+        ledger = self._ledger_with_running("i-cost")
+        # Enough prompt tokens, at the configured rate, to breach the ceiling exactly.
+        prompt = int(token_budget.MAX_COST_CENTS / token_budget.CENTS_PER_1K_PROMPT_TOKENS * 1000)
+        ledger.record_step_spend("i-cost", 1, prompt=prompt, completion=0)
+        calls, completer = self._counting()
+
+        with self.assertRaises(token_budget.CostBudgetExceeded) as caught:
+            self._run(completer, intent_id="i-cost", ledger=ledger, max_tokens=10 ** 9)
+
+        self.assertEqual(calls, [], "the model was called after the cost ceiling")
+        self.assertIn("Cost ceiling reached", str(caught.exception))
+
+    def test_a_run_under_the_ceiling_is_not_stopped(self):
+        from tools import token_budget
+
+        ledger = self._ledger_with_running("i-cheap")
+        ledger.record_step_spend("i-cheap", 1, prompt=1000, completion=0)
+        calls, completer = self._counting()
+
+        text, _ = self._run(completer, intent_id="i-cheap", ledger=ledger)
+
+        self.assertEqual(text, "done")
+        self.assertEqual(len(calls), 1)
+        self.assertLess(ledger.cost_cents("i-cheap"), token_budget.MAX_COST_CENTS)
+
+    # -- the repetition breaker ----------------------------------------------
+    def test_the_repetition_breaker_stops_the_apology_loop(self):
+        from orchestration.workflow.agent_loop import AgentStuckInLoopError, REPEAT_LIMIT
+
+        ledger = self._ledger_with_running("i-stuck")
+        calls = []
+
+        def completer(*, system, messages, tools):
+            calls.append(1)
+            return self._Completion(tool_calls=[
+                {"name": "no_such_tool", "arguments": {"path": "mod.py"}}
+            ])
+
+        with self.assertRaises(AgentStuckInLoopError) as caught:
+            self._run(completer, intent_id="i-stuck", ledger=ledger, max_steps=10)
+
+        # Exactly the limit: the call that *would* have been the fourth is never made.
+        self.assertEqual(len(calls), REPEAT_LIMIT)
+        self.assertIn("repeated", str(caught.exception))
+
+    def test_a_successful_call_resets_the_repetition_streak(self):
+        """Two identical failures then a success is progress, not a loop."""
+        from orchestration.workflow.agent_loop import AgentStuckInLoopError
+
+        ledger = self._ledger_with_running("i-reset")
+        script = [
+            self._Completion(tool_calls=[{"name": "read_file", "arguments": {"path": "missing.py"}}]),
+            self._Completion(tool_calls=[{"name": "read_file", "arguments": {"path": "missing.py"}}]),
+            self._Completion(tool_calls=[{"name": "read_file", "arguments": {"path": "mod.py"}}]),
+            self._Completion(tool_calls=[{"name": "read_file", "arguments": {"path": "missing.py"}}]),
+            self._Completion(text="done"),
+        ]
+        remaining = list(script)
+
+        def completer(*, system, messages, tools):
+            return remaining.pop(0) if remaining else self._Completion(text="done")
+
+        text, _ = self._run(completer, intent_id="i-reset", ledger=ledger, max_steps=10)
+
+        self.assertEqual(text, "done")
+
+    def test_the_signature_ignores_key_order_and_the_tool_name_matters(self):
+        from orchestration.workflow.agent_loop import _call_signature
+
+        self.assertEqual(
+            _call_signature("read_file", {"a": 1, "b": 2}),
+            _call_signature("read_file", {"b": 2, "a": 1}),
+        )
+        self.assertNotEqual(
+            _call_signature("read_file", {"a": 1}),
+            _call_signature("write_file", {"a": 1}),
+        )
+
+    def test_an_error_result_covers_a_raised_tool_and_a_non_zero_exit(self):
+        from orchestration.workflow.agent_loop import _is_error_result
+
+        self.assertTrue(_is_error_result("Error: no such file"))
+        self.assertTrue(_is_error_result("[Exit Code: 1]\nboom"))
+        self.assertTrue(_is_error_result("[Exit Code: 137]\n[OOM-KILLED]"))
+        self.assertFalse(_is_error_result("[Exit Code: 0]\nfine"))
+        self.assertFalse(_is_error_result("all good"))
+
+
 class ContextWindowTests(MCPServerTestCase):
     """Phase 31: the payload is bounded, and the model is told what it lost.
 

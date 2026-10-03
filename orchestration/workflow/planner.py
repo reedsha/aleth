@@ -334,6 +334,7 @@ def _from_llm(
     if session is not None:
         from orchestration.workflow.agent_loop import (
             AgentStepLimitExceeded,
+            AgentStuckInLoopError,
             RunAborted,
             run_tool_loop,
         )
@@ -390,7 +391,12 @@ def _from_llm(
         except TokenBudgetExceeded:
             # ...and for the budget: a run that spent its allowance is a fact about the *user's
             # money*, and reporting it as "the model could not plan" would hide the only number
-            # that matters (Phase 32).
+            # that matters (Phase 32). ``CostBudgetExceeded`` is a subclass, so the money ceiling
+            # arrives here too (Phase 44).
+            raise
+        except AgentStuckInLoopError:
+            # ...and for a model repeating the same failing call: that is a loop, not a model that
+            # could not answer, and swallowing it would hide the repetition (Phase 44).
             raise
         except Exception:
             return None

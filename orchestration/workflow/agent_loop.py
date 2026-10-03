@@ -29,6 +29,7 @@ that total before every call and every tool execution.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -46,6 +47,26 @@ MAX_AGENT_STEPS = 30
 
 # One spelling, shared with the engine that reads the terminal event and fails the intent.
 STEP_LIMIT_MESSAGE = "Exceeded maximum execution steps"
+
+# The hard ceiling on one *intent* (Phase 44), read from the ledger rather than from a counter. The
+# per-pass ceiling above bounds one invocation; this bounds the whole run across every pass the
+# autonomous loop drives, and it survives a pass boundary and a rewind because the number lives in
+# the database. A rewind deletes the abandoned rows, so rewinding to step 15 genuinely leaves ten
+# steps of a thirty-step budget.
+MAX_STEPS_PER_INTENT = 30
+INTENT_STEP_LIMIT_MESSAGE = "Exceeded maximum execution steps for this intent"
+
+# The money ceiling's terminal message. A run killed for cost has to say so: the user is owed the
+# number that ended it, not a generic "the model failed".
+COST_LIMIT_MESSAGE = "Intent aborted: Cost ceiling reached."
+
+# The repetition breaker (Phase 44). The same call, the same arguments, failing the same way, this
+# many times in a row is not deliberation -- it is the apology loop, and no further turn will change
+# the result. Three, because two can be a retry after a transient fault.
+REPEAT_LIMIT = 3
+STUCK_IN_LOOP_MESSAGE = (
+    "Agent stuck in a loop: the same failing tool call was repeated with identical arguments"
+)
 
 # The context window (Phase 31): the last few turns are carried verbatim, and once the history is
 # longer than ``COMPRESS_AFTER_TURNS`` everything outside that window is folded into the summary.
@@ -92,6 +113,15 @@ class RunAborted(RuntimeError):
     """
 
 
+class AgentStuckInLoopError(RuntimeError):
+    """The model repeated the same failing tool call past the repetition limit (Phase 44).
+
+    A distinct fault from the step ceiling: the model is not taking *more* steps, it is taking the
+    same one. Raised so the run fails loudly and stops paying for apologies, rather than spinning
+    until a step or token ceiling happens to catch it.
+    """
+
+
 ABORTED_MESSAGE = "the intent was aborted before this pass finished"
 
 # Why a graceful shutdown stops the loop (Phase 42). Distinct from an abort because the cause is
@@ -105,6 +135,41 @@ def _tool_schemas(tools: List[Any]) -> List[Dict[str, Any]]:
     from tools.mcp_tools import openai_tool_schemas
 
     return openai_tool_schemas(tools)
+
+
+def _call_signature(name: str, arguments: Any) -> str:
+    """A stable fingerprint of one tool call: its name and its arguments, canonicalised.
+
+    JSON with sorted keys, so two calls that differ only in dict insertion order are the *same*
+    call -- which is what "the exact same tool call" has to mean for a deterministic detector.
+    """
+    payload = arguments if isinstance(arguments, dict) else {}
+    try:
+        rendered = json.dumps(
+            payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"), default=str
+        )
+    except (TypeError, ValueError):
+        rendered = str(payload)
+    return f"{name}\u0000{rendered}"
+
+
+# The exec server reports a command's outcome as ``[Exit Code: N]`` rather than raising, so a failing
+# test run arrives as a *result*.
+_EXIT_CODE_RE = re.compile(r"\[Exit Code:\s*(-?\d+)\]")
+
+
+def _is_error_result(result: str) -> bool:
+    """Whether a tool's result is a failure: a raised tool, or a command that exited non-zero.
+
+    The exec server reports a command as ``[Exit Code: N]`` rather than raising, so a failing test
+    run is a *result*, not an exception -- and the repetition breaker has to see it as one, or it
+    would never catch the apology loop it exists for.
+    """
+    text = str(result or "")
+    if text.startswith("Error:"):
+        return True
+    match = _EXIT_CODE_RE.search(text)
+    return match is not None and int(match.group(1)) != 0
 
 
 def _render_turn(turn: Sequence[Dict[str, Any]]) -> str:
@@ -535,6 +600,62 @@ def _check_budget(ledger: Any, intent_id: str, limit: Optional[int]) -> None:
         )
 
 
+def _steps_taken(ledger: Any, intent_id: str) -> int:
+    """The intent's high-water step, from the ledger. ``0`` when there is nothing to read."""
+    if ledger is None or not str(intent_id or "").strip():
+        return 0
+    try:
+        return int(ledger.step_high_water(intent_id))
+    except Exception as error:
+        print(
+            f"[agent-loop] the step count could not be read: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 0
+
+
+def _cost_cents(ledger: Any, intent_id: str) -> float:
+    """The intent's bill so far, in cents, from the ledger. ``0.0`` when there is nothing to read."""
+    if ledger is None or not str(intent_id or "").strip():
+        return 0.0
+    try:
+        return float(ledger.cost_cents(intent_id))
+    except Exception as error:
+        print(
+            f"[agent-loop] the cost could not be read: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 0.0
+
+
+def _check_step_ceiling(ledger: Any, intent_id: str, role: str) -> None:
+    """Refuse the next step when the *intent* has taken its whole allowance (Phase 44).
+
+    Read from the ledger, never from a loop counter: the ceiling has to survive a pass boundary and
+    a rewind, and a rewind must hand back only the steps that were actually undone. A no-ledger loop
+    (a bare unit test) is unbounded here and bounded by its own ``max_steps`` instead.
+    """
+    taken = _steps_taken(ledger, intent_id)
+    if taken and taken >= MAX_STEPS_PER_INTENT:
+        _record_fault(
+            ledger, intent_id, kind="INTENT_STEP_LIMIT_EXCEEDED",
+            detail=INTENT_STEP_LIMIT_MESSAGE, role=role, steps=taken,
+        )
+        raise AgentStepLimitExceeded(INTENT_STEP_LIMIT_MESSAGE)
+
+
+def _check_cost_ceiling(ledger: Any, intent_id: str) -> None:
+    """Refuse the next step when the intent has spent its money allowance (Phase 44).
+
+    The hard currency stop. The ledger stores exact token counts; the price is applied here, and the
+    ceiling is a bound on the user's wallet rather than on the model's willingness to stop.
+    """
+    spent = _cost_cents(ledger, intent_id)
+    if spent and token_budget.cost_exceeded(spent, limit=token_budget.max_cost_cents()):
+        _record_fault(ledger, intent_id, kind="COST_LIMIT_EXCEEDED", detail=COST_LIMIT_MESSAGE)
+        raise token_budget.CostBudgetExceeded(COST_LIMIT_MESSAGE)
+
+
 def run_tool_loop(
     *,
     session: Any,
@@ -586,6 +707,12 @@ def run_tool_loop(
     ``resume_context`` is the injection point for a caller that already holds a memory blob (a run
     re-launched after a rewind). When it is empty the loop hydrates on its own from a rewind the
     ledger still has queued, so a pass boundary is covered without a caller having to know.
+
+    **Three hard circuit breakers bound it (Phase 44).** The step ceiling and the money ceiling are
+    read from the ledger at the top of every step -- so they survive a pass boundary and a rewind,
+    and a rewind hands back only the steps it actually undid -- and the repetition breaker raises the
+    moment the same failing tool call is issued with identical arguments past
+    :data:`REPEAT_LIMIT`. All three fail the intent; none of them is a warning.
     """
     tools = session.get_bound_tools(role) if session is not None else []
     by_name = {tool.name: tool for tool in tools}
@@ -604,6 +731,10 @@ def run_tool_loop(
     # planner passes under one intent and they share one shadow, so per-pass numbering would let
     # pass two's step 1 overwrite pass one's snapshot.
     run_step = snapshots.next_step(workspace_root) if snapshots_on else 1
+    # Phase 44: the repetition breaker's state. The signature and streak of the *last* failing call,
+    # carried across steps because an apology loop does not respect a step boundary.
+    repeat_signature: Optional[str] = None
+    repeat_streak = 0
 
     # Boot: a rewind queued before this loop started. That is the pass-boundary case -- the
     # operator rewound a step that belonged to an earlier invocation -- and it is why the memory is
@@ -659,6 +790,10 @@ def run_tool_loop(
             ))
             raise RunAborted(SHUTDOWN_MESSAGE)
         sync_after_gate()
+        # Phase 44, after the gate because the gate is what applies a pending rewind -- and a rewind
+        # truncates the ledger, so the ceilings must read the timeline *after* it is rewound.
+        _check_step_ceiling(ledger, intent_id, role)
+        _check_cost_ceiling(ledger, intent_id)
         _check_budget(ledger, intent_id, max_tokens)
 
         payload = _payload(
@@ -718,6 +853,25 @@ def run_tool_loop(
                 "type": "tool_execution_complete", "intent_id": intent_id,
                 "tool": name, "result": result,
             })
+            # Phase 44: the repetition breaker. The same call with the same arguments, failing the
+            # same way, three times in a row is not deliberation -- it is a loop, and no further
+            # apology will change the result. A success or a different call resets the streak.
+            errored = _is_error_result(result)
+            signature = _call_signature(name, arguments)
+            if errored and signature == repeat_signature:
+                repeat_streak += 1
+            elif errored:
+                repeat_signature = signature
+                repeat_streak = 1
+            else:
+                repeat_signature = None
+                repeat_streak = 0
+            if repeat_streak >= REPEAT_LIMIT:
+                _record_fault(
+                    ledger, intent_id, kind="STUCK_IN_LOOP",
+                    detail=STUCK_IN_LOOP_MESSAGE, role=role, steps=step,
+                )
+                raise AgentStuckInLoopError(STUCK_IN_LOOP_MESSAGE)
             # Phase 35: snapshot the step if the tool changed a file. The test is git's -- the
             # shadow's own repository -- not a list of "tools that write", because a shell command
             # writes files too and a list would be a claim that rots. Silent by contract: a snapshot
@@ -758,7 +912,17 @@ def _abort_detail(ledger: Any, intent_id: str) -> str:
 
 
 def _record_step_limit(ledger: Any, intent_id: str, role: str, steps: int) -> None:
-    """Write the fault to the forensic ledger, joined to the intent. Best effort.
+    """The per-pass ceiling's fault. Delegates to the one fault writer (Phase 44)."""
+    _record_fault(
+        ledger, intent_id, kind="STEP_LIMIT_EXCEEDED", detail=STEP_LIMIT_MESSAGE,
+        role=role, steps=steps,
+    )
+
+
+def _record_fault(
+    ledger: Any, intent_id: str, *, kind: str, detail: str, role: str = "", steps: int = 0
+) -> None:
+    """Write a loop fault to the forensic ledger, joined to the intent. Best effort.
 
     Skipped outright when the intent is no longer live: the engine must not write telemetry for a
     run that has already been aborted, and a fault row for one would be exactly the detached noise
@@ -769,7 +933,7 @@ def _record_step_limit(ledger: Any, intent_id: str, role: str, steps: int) -> No
     """
     if ledger is None:
         print(
-            "[agent-loop] the step-limit fault has no ledger to be recorded in",
+            f"[agent-loop] the {kind} fault has no ledger to be recorded in",
             file=sys.stderr,
         )
         return
@@ -782,14 +946,14 @@ def _record_step_limit(ledger: Any, intent_id: str, role: str, steps: int) -> No
         telemetry.record_agent_fault(
             ledger.path,
             intent_id=intent_id,
-            kind="STEP_LIMIT_EXCEEDED",
+            kind=str(kind),
             role=str(role),
-            detail=STEP_LIMIT_MESSAGE,
+            detail=str(detail),
             steps=int(steps),
         )
     except Exception as error:
         print(
-            f"[agent-loop] the step-limit fault could not be recorded: "
+            f"[agent-loop] the {kind} fault could not be recorded: "
             f"{type(error).__name__}: {error}",
             file=sys.stderr,
         )

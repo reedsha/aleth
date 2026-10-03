@@ -13,10 +13,21 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 43)
+## ⚡ 0. Current State at This Handoff (Phase 44)
 
-- **Phases 5 → 43 are complete and CI-green.** Phase 43 (sandboxing the blast radius) is the latest.
-  `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most recently.
+- **Phases 5 → 44 are complete and CI-green.** Phase 44 (economic and state circuit breakers) is the
+  latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most
+  recently.
+- **Three hard stops bound an intent (Phase 44), all of them failing it, none of them a warning.**
+  The **step ceiling** (`MAX_STEPS_PER_INTENT = 30`) is `MAX(step)` over `intent_step_spend`, not a
+  loop counter -- so a rewind, which deletes the abandoned rows, gives back only the steps it undid.
+  The **money ceiling** (`MAX_COST_CENTS = 500`, i.e. $5.00) is `SUM(prompt_tokens * rate +
+  completion_tokens * rate)` over the same rows, terminating with `CostBudgetExceeded("Intent
+  aborted: Cost ceiling reached.")`. The **repetition breaker** fails the same failing tool call
+  (identical name and canonicalised arguments) issued `REPEAT_LIMIT = 3` times in a row with
+  `AgentStuckInLoopError` -- where "failing" means a raised tool *or* a non-zero `[Exit Code: N]`,
+  because a failing test run is a result, not an exception. All three are checked after the
+  liveness/rewind gate and before the model call, and `planner._from_llm` re-raises them.
 - **The shutdown drain is bounded (Phase 43).** `lifecycle.drain(timeout=DRAIN_TIMEOUT_SECONDS=10)`
   runs the registered stops on a daemon thread and waits with a deadline; the signal handler reads a
   `False` as the signal to stop being polite -- it sweeps the containers and exits `1` rather than
@@ -1630,7 +1641,7 @@ pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
 | Build | `npm run build` | 59 modules |
 | UI tests | `npx playwright test` | **78 passed** in 27.9 s |
-| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1385 passed, 24 skipped, 243 subtests** in 104.08 s (`-n auto`) |
+| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1398 passed, 24 skipped, 243 subtests** in 98.04 s (`-n auto`) |
 | Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1372 passed, 5 skipped** on the Phase 39 tree, 0 containers left behind. The WSL venv predates the Phase 41 hard `keyring` import and cannot install it offline, so it is no longer the local authority -- CI is. |
 | Shutdown flag & drain | `tests/test_lifecycle.py` (new) | **9 passed** — the flag flips once, the event every loop reads is the same object, drains run newest-first, a failing drain does not stop the others, a drain can unregister itself mid-drain, and `reset` clears flag and registry |
 | HTTP 503 | `tests/test_api_gateway.py::ShutdownRefusalTests` | **2 passed** — a request during a shutdown is a 503 naming the reason, and the server registers then forgets its drain |
@@ -1641,6 +1652,10 @@ pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 | Drain escalation | `tests/test_docker_sandbox.py::ShutdownSweepTests::test_the_handler_escalates_when_the_drain_times_out` | **passed** — a timed-out drain still sweeps the containers and exits **1** |
 | Command timeout cap | `tests/test_mcp.py::MCPExecServerTests::test_the_timeout_clamp_is_total` + `test_a_model_supplied_timeout_reaches_the_runner_capped` | **passed** — the clamp is total (None/negative/garbage → default or 1, `10**6` → the 60 s ceiling) and a model-supplied timeout reaches `run_isolated` capped |
 | Container budget | `tests/test_docker_sandbox.py::CommandContractTests` | **passed** — memory/swap/cpus/pids pinned to the bounded defaults, one bind mount (the workspace), `--network=none`, and the budget cannot be widened past the ceiling |
+| Step ceiling (ledger) | `tests/test_mcp.py::IntentCircuitBreakerTests::test_the_step_ceiling_is_read_from_the_ledger` + `test_a_rewind_gives_back_only_the_steps_it_undid` | **passed** — a spent intent refuses before the model is called, and a rewind frees exactly the undone steps |
+| Money ceiling | `tests/test_mcp.py::IntentCircuitBreakerTests::test_the_money_ceiling_kills_the_run` + `test_a_run_under_the_ceiling_is_not_stopped` | **passed** — the cost is summed over the per-step rows, breaches fail with "Cost ceiling reached", and a cheap run proceeds |
+| Repetition breaker | `tests/test_mcp.py::IntentCircuitBreakerTests::test_the_repetition_breaker_stops_the_apology_loop` + `test_a_successful_call_resets_the_repetition_streak` | **passed** — three identical failing calls raise `AgentStuckInLoopError` and a success resets the streak |
+| Breaker ledger | `tests/test_snapshots.py::CircuitBreakerLedgerTests` | **passed** — `step_high_water` tracks the active timeline and drops with a truncation; `cost_cents` prices the tokens by the configured rate |
 | Secrets | `tests/test_harness.py::SecretsTests` + `ZeroTrustAuditTests` | **passed** — a credential round-trips through the keyring, `list` reports names only, an empty value and an unknown provider are refused, no backend is a *reported* failure, the environment is loaded from the store, an exported name wins, and a loaded credential leaves no bytes in the state directory |
 | Logging | `tests/test_harness.py::EngineLogTests` | **passed** — one JSON object with timestamp/level/message, the run's correlation id attached, `maxBytes`/`backupCount` at 50 MB × 3, and a second `configure` does not double the lines |
 | Pre-flight | `tests/test_harness.py::PreflightTests` + `CliTests` | **passed** — each check answers, each failure carries its fix, a held port names the command to find the holder, `enforce` refuses and says nothing started, and `aleth boot` aborts before reaching the daemon |

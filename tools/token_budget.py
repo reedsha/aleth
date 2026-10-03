@@ -30,6 +30,16 @@ from typing import Any, Optional
 MAX_INTENT_TOKENS = 250_000
 MAX_TOKENS_ENV = "ALETH_MAX_INTENT_TOKENS"
 
+# What a token costs, in cents, and the ceiling on one intent's bill (Phase 44). A *blended* rate
+# rather than per-model: the loop records token counts, not the model that produced them, so one
+# configured price is the honest model of "what this run costs" -- and the ceiling is a bound on the
+# user's money, which is the number that actually matters. Both are overridable for a deployment
+# with different economics.
+CENTS_PER_1K_PROMPT_TOKENS = 0.25
+CENTS_PER_1K_COMPLETION_TOKENS = 1.0
+MAX_COST_CENTS = 500.0
+MAX_COST_ENV = "ALETH_MAX_COST_CENTS"
+
 # The vendored encoding's filename is the SHA-1 of the URL tiktoken fetched it from -- that is the
 # cache key tiktoken computes, so the file has to be named it for the loader to find it. The blob
 # itself is checked against tiktoken's published SHA-256 when it is installed here.
@@ -82,6 +92,15 @@ def install_cache_dir() -> str:
 
 class TokenBudgetExceeded(RuntimeError):
     """The intent has spent its whole token budget. A hard stop, and deliberately not retryable."""
+
+
+class CostBudgetExceeded(TokenBudgetExceeded):
+    """The intent has spent its whole money allowance. A hard stop, like the token ceiling.
+
+    A subclass because it is the same fact in a different unit -- the budget is spent -- so a caller
+    that already handles :class:`TokenBudgetExceeded` handles this too, and the token ceiling keeps
+    its own meaning.
+    """
 
 
 def max_intent_tokens() -> int:
@@ -144,16 +163,50 @@ def budget_exceeded(spent: int, *, limit: Optional[int] = None) -> bool:
     return int(spent) >= int(limit if limit is not None else max_intent_tokens())
 
 
+def max_cost_cents() -> float:
+    """The money ceiling, from the environment when it is set to a usable number."""
+    raw = (os.environ.get(MAX_COST_ENV) or "").strip()
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return MAX_COST_CENTS
+
+
+def cost_cents(prompt_tokens: int, completion_tokens: int) -> float:
+    """What those token counts cost, in cents. Pure arithmetic, in one place.
+
+    Prompt and completion are priced apart because they are priced apart by every provider; the
+    counts themselves come from the ledger, which stores them exactly.
+    """
+    return (
+        max(0, int(prompt_tokens)) / 1000.0 * CENTS_PER_1K_PROMPT_TOKENS
+        + max(0, int(completion_tokens)) / 1000.0 * CENTS_PER_1K_COMPLETION_TOKENS
+    )
+
+
+def cost_exceeded(spent_cents: float, *, limit: Optional[float] = None) -> bool:
+    """Whether the bill has reached the ceiling. One comparison, in one place."""
+    return float(spent_cents) >= float(limit if limit is not None else max_cost_cents())
+
+
 __all__ = [
+    "CENTS_PER_1K_COMPLETION_TOKENS",
+    "CENTS_PER_1K_PROMPT_TOKENS",
     "CHARS_PER_TOKEN",
     "ENCODING_CACHE_KEY",
     "ENCODING_NAME",
+    "CostBudgetExceeded",
+    "MAX_COST_CENTS",
+    "MAX_COST_ENV",
     "MAX_INTENT_TOKENS",
     "MAX_TOKENS_ENV",
     "TokenBudgetExceeded",
     "budget_exceeded",
+    "cost_cents",
+    "cost_exceeded",
     "count_tokens",
     "install_cache_dir",
+    "max_cost_cents",
     "max_intent_tokens",
     "vendor_dir",
 ]
