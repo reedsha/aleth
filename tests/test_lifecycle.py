@@ -6,6 +6,7 @@ own teardown without one failure taking the others down. These pin the mechanism
 a thread or a signal in the way.
 """
 
+import threading
 import unittest
 
 from tools import lifecycle
@@ -97,6 +98,24 @@ class DrainTests(unittest.TestCase):
         lifecycle.drain()  # the second pass must not re-run the unregistered one
 
         self.assertEqual(order, ["second", "first", "second"])
+
+    def test_an_empty_drain_is_immediate(self):
+        self.assertTrue(lifecycle.drain(timeout=5))
+
+    def test_a_drain_within_its_budget_reports_success(self):
+        ran = []
+        lifecycle.register_drain(lambda: ran.append(1))
+
+        self.assertTrue(lifecycle.drain(timeout=5))
+        self.assertEqual(ran, [1])
+
+    def test_a_drain_that_outlives_its_budget_reports_a_timeout(self):
+        """Phase 43: a loop blocked on a long call cannot hold the caller forever."""
+        release = threading.Event()
+        self.addCleanup(release.set)
+        lifecycle.register_drain(lambda: release.wait(5))
+
+        self.assertFalse(lifecycle.drain(timeout=0.1))
 
     def test_reset_clears_both_the_flag_and_the_registry(self):
         calls = []

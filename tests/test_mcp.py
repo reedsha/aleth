@@ -291,6 +291,36 @@ class MCPExecServerTests(MCPServerTestCase):
         )
         self.assertEqual(argv[argv.index("--workdir") + 1], "/workspace")
 
+    def test_the_timeout_clamp_is_total(self):
+        """Phase 43: no tool argument can ask for an unbounded command."""
+        from tools import mcp_exec_server
+
+        clamp = mcp_exec_server._clamp_command_timeout
+        self.assertEqual(clamp(None), mcp_exec_server.DEFAULT_TIMEOUT_SECONDS)
+        self.assertEqual(clamp("nonsense"), mcp_exec_server.DEFAULT_TIMEOUT_SECONDS)
+        self.assertEqual(clamp(0), 1)
+        self.assertEqual(clamp(-5), 1)
+        self.assertEqual(clamp(15), 15)
+        self.assertEqual(clamp(10 ** 9), mcp_exec_server.MAX_COMMAND_TIMEOUT_SECONDS)
+        # The ceiling is short on purpose: a bounded command cannot become a silent miner.
+        self.assertLessEqual(mcp_exec_server.MAX_COMMAND_TIMEOUT_SECONDS, 60)
+
+    def test_a_model_supplied_timeout_reaches_the_runner_capped(self):
+        from tools import docker_sandbox, mcp_exec_server
+
+        seen = {}
+
+        def fake_run(command, *, cwd, timeout, **kwargs):
+            seen["timeout"] = timeout
+            return docker_sandbox.IsolatedResult(0, "ok", "", sandboxed=True)
+
+        with mock.patch.object(docker_sandbox, "run_isolated", side_effect=fake_run):
+            mcp_exec_server.run_workspace_command_result(
+                "echo hi", root=self.tmp, timeout=10 ** 6
+            )
+
+        self.assertEqual(seen["timeout"], mcp_exec_server.MAX_COMMAND_TIMEOUT_SECONDS)
+
     def test_a_command_runs_with_cwd_forced_to_the_root(self):
         script = self._script("where.py", "import os\nprint(os.getcwd())\n")
 

@@ -47,6 +47,12 @@ SERVER_NAME = "aleth-exec"
 SERVER_VERSION = "1.0.0"
 
 DEFAULT_TIMEOUT_SECONDS = 30
+# The hard wall-clock ceiling on a *model-requested* command (Phase 43). The tool exposes a
+# ``timeout_seconds`` argument; without a ceiling a hallucinating agent could ask for an hour and
+# turn the sandbox into a silent DDoS or crypto-mining worker. The engine's own phases (setup,
+# verification) do **not** come through here -- they call ``docker_sandbox.run_isolated`` directly
+# with their own declared, clamped budgets -- so this caps the agent and nothing else.
+MAX_COMMAND_TIMEOUT_SECONDS = 60
 # The model-facing cap lives in ``tools.result_budget`` (Phase 26), beside the file-read cap it
 # shares its number with: one budget for everything a tool hands the model, stated in bytes.
 
@@ -200,6 +206,21 @@ class CommandEscaped(Exception):
     """An argument resolved outside the workspace root. Never a soft failure."""
 
 
+def _clamp_command_timeout(timeout: Any, fallback: int = DEFAULT_TIMEOUT_SECONDS) -> int:
+    """A model-requested timeout, held to :data:`MAX_COMMAND_TIMEOUT_SECONDS`. Never unbounded.
+
+    The last line of defence, like ``docker_sandbox._clamp_limits``: whatever a tool call says, the
+    answer is a positive integer no larger than the ceiling. A malformed value falls back to the
+    default rather than raising -- a bad timeout is a request to run the command, not a reason to
+    refuse it.
+    """
+    try:
+        value = int(timeout) if timeout is not None else int(fallback)
+    except (TypeError, ValueError):
+        value = int(fallback)
+    return max(1, min(value, MAX_COMMAND_TIMEOUT_SECONDS))
+
+
 def run_workspace_command_result(
     command: str, *, root: str, timeout: int = DEFAULT_TIMEOUT_SECONDS,
     resource_profile: str = "default",
@@ -215,9 +236,12 @@ def run_workspace_command_result(
 
     ``resource_profile`` names the budget the container runs under (``tools.docker_sandbox``). It
     is set from the plan's capabilities, never from a tool argument, so a model cannot buy itself
-    more memory or CPU.
+    more memory or CPU. ``timeout`` is likewise clamped to
+    :data:`MAX_COMMAND_TIMEOUT_SECONDS`, so a model cannot buy itself more wall-clock either.
     """
     from tools import docker_sandbox
+
+    timeout = _clamp_command_timeout(timeout)
 
     # Resolved to a *bounded* pair here, in the parent's own module: an unknown name is the
     # default profile, and the builder clamps whatever it is handed.

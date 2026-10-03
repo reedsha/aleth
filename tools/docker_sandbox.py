@@ -977,9 +977,15 @@ def install_shutdown_sweep(stage: str = "shutdown", extra: Optional[Callable[[],
     **A signal is a request, not a kill (Phase 42).** The handler flips the process-wide shutdown
     flag (``tools.lifecycle``), so every loop -- the HTTP server, the intent worker, the agent's step
     loop -- stops at its own safe boundary instead of having its state yanked out from under it. It
-    then drains what the running components registered (bounded), sweeps the containers, and exits
-    ``0``. A second signal during the drain is idempotent, and a SIGKILL is precisely the case the
-    *boot* sweep exists for: nothing can run to collect it, so the next boot is the only collector.
+    then drains what the running components registered, sweeps the containers, and exits ``0``.
+
+    **The drain is bounded (Phase 43).** A loop blocked on a long network call cannot observe the
+    flag until that call returns, so the drain gets :data:`tools.lifecycle.DRAIN_TIMEOUT_SECONDS`
+    and no more. If it does not finish in time, the handler stops being polite: it sweeps the
+    containers and exits ``1`` rather than wait for a second Ctrl+C to kill the interpreter
+    mid-write. A second signal during the drain is idempotent, and a SIGKILL is precisely the case
+    the *boot* sweep exists for: nothing can run to collect it, so the next boot is the only
+    collector.
     """
     _sweep = build_shutdown_sweep(stage, extra)
     atexit.register(_sweep)
@@ -991,7 +997,12 @@ def install_shutdown_sweep(stage: str = "shutdown", extra: Optional[Callable[[],
         from tools import lifecycle
 
         lifecycle.begin_shutdown()
-        lifecycle.drain()
+        if not lifecycle.drain():
+            # Phase 43: the loops did not yield inside the budget. A second Ctrl+C is seconds away
+            # and would kill the interpreter mid-write, so escalate now -- reap the containers and
+            # leave with a failure status rather than wait for that.
+            _sweep()
+            raise SystemExit(1)
         _sweep()
         raise SystemExit(0)
 

@@ -657,12 +657,14 @@ class ShutdownSweepTests(unittest.TestCase):
         self.addCleanup(lifecycle.reset)
         order = []
 
+        def _drain():
+            order.append("drain")
+            return True
+
         with mock.patch.object(docker_sandbox.atexit, "register"), \
                 mock.patch.object(docker_sandbox.signal, "signal") as install, \
                 mock.patch.object(docker_sandbox, "build_shutdown_sweep") as build, \
-                mock.patch.object(
-                    lifecycle, "drain", side_effect=lambda: order.append("drain")
-                ):
+                mock.patch.object(lifecycle, "drain", side_effect=_drain):
             build.return_value = mock.Mock(side_effect=lambda: order.append("sweep"))
             docker_sandbox.install_shutdown_sweep("shutdown")
             handler = install.call_args_list[0].args[1]
@@ -672,6 +674,32 @@ class ShutdownSweepTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 0)
         self.assertTrue(lifecycle.is_shutting_down())
         self.assertEqual(order, ["drain", "sweep"])
+
+    def test_the_handler_escalates_when_the_drain_times_out(self):
+        """Phase 43: a drain that outlives its budget must not leave the daemon hanging.
+
+        The loops did not yield -- a second Ctrl+C is seconds away -- so the handler sweeps and
+        exits 1 rather than wait for the interpreter to be killed mid-write.
+        """
+        from tools import lifecycle
+
+        lifecycle.reset()
+        self.addCleanup(lifecycle.reset)
+        order = []
+
+        with mock.patch.object(docker_sandbox.atexit, "register"), \
+                mock.patch.object(docker_sandbox.signal, "signal") as install, \
+                mock.patch.object(docker_sandbox, "build_shutdown_sweep") as build, \
+                mock.patch.object(lifecycle, "drain", return_value=False):
+            build.return_value = mock.Mock(side_effect=lambda: order.append("sweep"))
+            docker_sandbox.install_shutdown_sweep("shutdown")
+            handler = install.call_args_list[0].args[1]
+            with self.assertRaises(SystemExit) as caught:
+                handler(signal.SIGTERM, None)
+
+        self.assertEqual(caught.exception.code, 1)
+        self.assertTrue(lifecycle.is_shutting_down())
+        self.assertEqual(order, ["sweep"])
 
 
 if __name__ == "__main__":

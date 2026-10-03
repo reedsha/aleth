@@ -34,6 +34,12 @@ _shutdown = threading.Event()
 _drains: List[Callable[[], None]] = []
 _lock = threading.Lock()
 
+# The strict ceiling on the cooperative drain (Phase 43). A loop blocked on a long network call
+# cannot observe the flag until that call returns, so an unbounded drain would wait forever -- the
+# operator loses patience, hits Ctrl+C again, and the interpreter dies mid-write anyway. Past this
+# the caller must escalate: reap the containers and leave with a failure status.
+DRAIN_TIMEOUT_SECONDS = 10.0
+
 
 def shutdown_event() -> threading.Event:
     """The event itself, for a loop that would rather wait on it than poll."""
@@ -79,23 +85,46 @@ def clear_drains() -> None:
         _drains.clear()
 
 
-def drain() -> None:
-    """Run every registered stop, newest first, and **never raise**.
+def drain(timeout: float = DRAIN_TIMEOUT_SECONDS) -> bool:
+    """Run every registered stop, **bounded**. Returns whether the drain finished in time.
 
-    Best effort by contract: a component that cannot tidy must not stop the others from tidying, and
-    nothing on a signal path may replace the sender's exit status with a traceback. Each stop bounds
-    its own wait -- this loop adds no second timeout that could drift from it.
+    A blocking stop -- an HTTP server joining a worker that is itself blocked on a ninety-second
+    model call -- cannot be interrupted from here, so the whole drain runs on a worker thread and
+    the caller waits with a deadline. A ``False`` is the signal to escalate: the loops did not
+    yield inside the budget, and the caller must stop being polite.
+
+    Best effort within the budget: one stop that raises must not stop the others, and nothing on a
+    signal path may replace the sender's exit status with a traceback. Each stop still bounds its
+    own internal waits; this is the outer ceiling that guarantees the *caller* returns.
     """
     with _lock:
         drains = list(reversed(_drains))
-    for stop in drains:
-        try:
-            stop()
-        except Exception as error:
-            print(
-                f"[lifecycle] a drain step failed: {type(error).__name__}: {error}",
-                file=sys.stderr,
-            )
+    if not drains:
+        return True
+    finished = threading.Event()
+
+    def _run() -> None:
+        for stop in drains:
+            try:
+                stop()
+            except Exception as error:
+                print(
+                    f"[lifecycle] a drain step failed: {type(error).__name__}: {error}",
+                    file=sys.stderr,
+                )
+        finished.set()
+
+    # A daemon thread: if the deadline passes the caller exits the process, and a thread that would
+    # keep it alive must not.
+    worker = threading.Thread(target=_run, name="aleth-drain", daemon=True)
+    worker.start()
+    if finished.wait(timeout=max(0.0, float(timeout))):
+        return True
+    print(
+        f"[lifecycle] the drain did not finish within {float(timeout):.0f}s; escalating",
+        file=sys.stderr,
+    )
+    return False
 
 
 def reset() -> None:
@@ -106,6 +135,7 @@ def reset() -> None:
 
 
 __all__ = [
+    "DRAIN_TIMEOUT_SECONDS",
     "begin_shutdown",
     "clear_drains",
     "drain",
