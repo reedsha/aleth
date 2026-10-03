@@ -131,6 +131,10 @@ jobs:
         #
         # ``shell: bash`` is load-bearing on Windows: the body is POSIX shell, and the default
         # shell there is PowerShell, which cannot parse it at all.
+        #
+        # ``--junitxml`` is for the step below: it records the failing test *names*, which are then
+        # surfaced as annotations. A pipeline that reports only "exit 1" costs a whole cycle to
+        # diagnose, and the raw log is auth-gated.
         shell: bash
         run: |
           set -e
@@ -140,10 +144,35 @@ jobs:
             chmod 666 /var/run/docker.sock 2>/dev/null || true
             useradd -m -s /bin/bash alethrunner 2>/dev/null || true
             chown -R alethrunner:alethrunner .
-            su alethrunner -c "python -m pytest -v -s -m 'not llm'"
+            su alethrunner -c "python -m pytest -v -s -m 'not llm' --junitxml=pytest-results.xml"
           else
-            python -m pytest -v -s -m "not llm"
+            python -m pytest -v -s -m "not llm" --junitxml=pytest-results.xml
           fi
+
+      - name: Name the failing tests
+        # pytest's own report names every failure; this turns those names into annotations, which
+        # are readable without the (auth-gated) raw log -- and which make the run self-describing.
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+
+          found = False
+          for path in sorted(glob.glob("pytest-results*.xml")):
+              try:
+                  root = ET.parse(path).getroot()
+              except Exception as error:
+                  print(f"::error::could not read {path}: {error}")
+                  continue
+              for case in root.iter("testcase"):
+                  if any(child.tag in ("failure", "error") for child in case):
+                      found = True
+                      print(f"::error::{case.get('classname')}::{case.get('name')}")
+          if not found:
+              print("::error::the suite failed without a recorded test failure")
+          PY
 
   test-immutable:
     name: test-immutable
