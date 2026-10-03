@@ -26,10 +26,37 @@ def _write(root, name, text):
 
 class _LedgerCase(unittest.TestCase):
     def setUp(self):
+        from storage.connection import STATE_ROOT_ENV
+        from tools import workspace
+
         self.tmp = tempfile.mkdtemp(prefix="aleth_maint_")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        # A **private** workspace, so this test's state directory -- and therefore the staging base a
+        # shadow lands in -- is its own. The real base is shared and mutable: ``test_staging`` wipes
+        # it in ``setUp`` and ``test_retention`` sweeps it, so a shadow created there can be
+        # collected by another worker before this test looks at it. Isolating the pointer is what
+        # makes these tests deterministic under ``-n auto``.
+        self._saved = (workspace.PLAN_DIR, workspace.PROJECT_DIR, os.environ.get(STATE_ROOT_ENV))
+        workspace.PLAN_DIR = self.tmp
+        workspace.PROJECT_DIR = self.tmp
+        workspace.publish_state_root()
+        self._state_dir = workspace.state_dir()
+        self.addCleanup(self._restore_workspace)
         self.db_path = os.path.join(self.tmp, "state.db")
         self.ledger = IntentLedger(self.db_path)
+
+    def _restore_workspace(self):
+        from storage.connection import STATE_ROOT_ENV
+        from tools import staging, workspace
+
+        staging.remove_tree(staging.staging_base())
+        shutil.rmtree(self._state_dir, ignore_errors=True)
+        workspace.PLAN_DIR, workspace.PROJECT_DIR = self._saved[0], self._saved[1]
+        root = self._saved[2]
+        if root is None:
+            os.environ.pop(STATE_ROOT_ENV, None)
+        else:
+            os.environ[STATE_ROOT_ENV] = root
 
     def _intent(self, intent_id, status):
         from api.intents import Intent
