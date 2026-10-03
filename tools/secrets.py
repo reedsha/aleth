@@ -25,9 +25,17 @@ from __future__ import annotations
 
 import contextvars
 import os
-from typing import Any, Dict, Iterable, List, Optional
+import sys
+from typing import Any, Dict, List, Optional
 
 import keyring
+
+try:  # the exception hierarchy is stable, but a missing module must not be fatal here
+    from keyring.errors import KeyringError
+    from keyring.errors import InitError
+    _KEYRING_ERRORS: tuple = (KeyringError, InitError)
+except Exception:  # pragma: no cover - only on a keyring that renames its errors
+    _KEYRING_ERRORS = (Exception,)
 
 # The service name every credential is filed under, so a person can find them in their own
 # keychain UI rather than wondering what wrote them.
@@ -42,6 +50,46 @@ PROVIDERS: Dict[str, str] = {
 }
 
 _BY_ENV: Dict[str, str] = {env: name for name, env in PROVIDERS.items()}
+
+
+# A headless deployment -- an Alpine container, an EC2 instance, a CI runner -- has no D-Bus
+# session, no GUI and no unlocked keyring, so the platform backend raises on first use. That is not
+# a fault to crash on: the credential store degrades to the environment, which is exactly how a
+# server is configured. The warning is emitted **once**, because a per-call log line would bury the
+# operational record in noise.
+_WARNED_UNAVAILABLE = False
+
+
+def _warn_unavailable(error: BaseException) -> None:
+    """Say once that the keyring is unusable and the environment is the fallback."""
+    global _WARNED_UNAVAILABLE
+    if _WARNED_UNAVAILABLE:
+        return
+    _WARNED_UNAVAILABLE = True
+    print(
+        f"[Secrets] the OS keyring is unavailable ({type(error).__name__}: {error}); "
+        "falling back to environment variables for credentials.",
+        file=sys.stderr,
+    )
+
+
+def _read_backend(backend: Any, name: str) -> str:
+    """One keyring read, hardened. ``""`` when the store is absent or cannot answer.
+
+    Catches everything on purpose. ``keyring`` raises its own ``KeyringError``/``InitError`` when
+    no backend can be initialised, and the backend underneath may raise a D-Bus or OS error that
+    is none of those -- and a credential lookup is not a place to take a daemon down.
+    """
+    try:
+        return str((backend or keyring).get_password(SERVICE, name) or "")
+    except _KEYRING_ERRORS as error:
+        _warn_unavailable(error)
+        return ""
+    except Exception as error:
+        # A backend that failed below the keyring API: a D-Bus disconnect, a locked keychain, a
+        # missing ``SecretStorage``. Same answer, same warning.
+        _warn_unavailable(error)
+        return ""
 
 
 class SecretError(RuntimeError):
@@ -77,9 +125,11 @@ class SecretStore:
         override = self._overrides.get(name)
         if override:
             return override
-        stored = get_secret(name, backend=self._backend)
+        stored = _read_backend(self._backend, name)
         if stored:
             return stored
+        # The intended path in a headless deployment: the environment is the credential source, and
+        # it is read, never written.
         return (os.environ.get(PROVIDERS[name]) or "").strip()
 
     def env(self, env_name: str) -> str:
@@ -134,11 +184,18 @@ def credential(env_name: str) -> str:
 
 
 def available() -> bool:
-    """Whether the keyring backend can be used. ``keyring`` itself is a hard dependency."""
+    """Whether the keyring backend can be used.
+
+    A *probe*, and it answers ``False`` rather than raising: a headless host is a supported
+    deployment, not a failure. ``keyring`` itself is still a hard dependency -- the module must
+    import -- but a host with no desktop store degrades to the environment.
+    """
     try:
-        keyring.get_keyring()
+        backend = keyring.get_keyring()
+        backend.get_password(SERVICE, "__aleth_probe__")
         return True
-    except Exception:
+    except Exception as error:
+        _warn_unavailable(error)
         return False
 
 
@@ -175,10 +232,7 @@ def get_secret(provider: str, *, backend: Any = None) -> str:
     name = str(provider or "").strip().lower()
     if name not in PROVIDERS:
         return ""
-    try:
-        return str((backend or keyring).get_password(SERVICE, name) or "")
-    except Exception:
-        return ""
+    return _read_backend(backend, name)
 
 
 def clear_secret(provider: str, *, backend: Any = None) -> bool:

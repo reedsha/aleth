@@ -141,6 +141,72 @@ class SecretsTests(unittest.TestCase):
         finally:
             secrets._ACTIVE.reset(token)
 
+    def test_the_suite_never_touches_the_host_credential_store(self):
+        """Hermeticity, asserted: the conftest installs an in-memory backend (Phase 41.5).
+
+        Without it a test reaches the Windows Credential Locker on a developer's machine and the
+        D-Bus ``SecretService`` on a headless runner -- which is how the Linux legs went red.
+        """
+        import keyring
+
+        backend = keyring.get_keyring()
+
+        self.assertNotIn("SecretService", type(backend).__name__)
+        self.assertNotIn("WinVault", type(backend).__name__)
+        self.assertNotIn("chainer", type(backend).__module__)
+
+    def test_a_broken_keyring_falls_back_to_the_environment(self):
+        """The headless deployment: no D-Bus, no keychain -- the environment is the source.
+
+        This is the fix for the red build. The keyring raises, the store swallows it, says so once,
+        and reads the environment. It must not crash and it must not mutate ``os.environ``.
+        """
+        import keyring
+        from keyring.errors import KeyringError
+
+        os.environ["OPENAI_API_KEY"] = "sk-from-the-environment"
+
+        def explode(*_args, **_kwargs):
+            raise KeyringError("no D-Bus session is available")
+
+        with mock.patch.object(keyring, "get_password", explode):
+            store = secrets.SecretStore()
+            resolved = store.env("OPENAI_API_KEY")
+
+        self.assertEqual(resolved, "sk-from-the-environment")
+        # ...and nothing was written back.
+        self.assertEqual(os.environ["OPENAI_API_KEY"], "sk-from-the-environment")
+
+    def test_a_keyring_that_fails_below_its_own_api_is_also_survivable(self):
+        """A D-Bus disconnect is not a ``KeyringError``; the hardened read catches it anyway."""
+        os.environ["OPENAI_API_KEY"] = "sk-env"
+
+        class Exploding:
+            def get_password(self, *_args, **_kwargs):
+                raise RuntimeError("the connection to the bus is closed")
+
+        self.assertEqual(secrets.SecretStore(backend=Exploding()).env("OPENAI_API_KEY"), "sk-env")
+
+    def test_an_unavailable_keyring_is_reported_once_not_per_call(self):
+        import keyring
+        from keyring.errors import KeyringError
+
+        def explode(*_args, **_kwargs):
+            raise KeyringError("no backend")
+
+        secrets._WARNED_UNAVAILABLE = False
+        self.addCleanup(setattr, secrets, "_WARNED_UNAVAILABLE", False)
+        with mock.patch.object(keyring, "get_password", explode), \
+                mock.patch("sys.stderr") as err:
+            for _ in range(3):
+                secrets.get_secret("openai")
+
+        written = "".join(str(call.args[0]) for call in err.write.call_args_list if call.args)
+        self.assertEqual(
+            written.count("the OS keyring is unavailable"), 1,
+            "the warning must not repeat per call",
+        )
+
 
 def _noop():
     return None

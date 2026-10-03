@@ -15,6 +15,43 @@ import os
 import shutil
 import tempfile
 
+import keyring
+import keyring.backend
+
+
+class _HermeticKeyring(keyring.backend.KeyringBackend):
+    """An in-memory keyring, so the suite never touches the host's own credential store.
+
+    Phase 41.5. Without this, every test that resolves a credential reaches the *real* backend:
+    the Windows Credential Locker on a developer's machine (which the suite would then pollute),
+    and ``SecretService`` on a headless Ubuntu runner -- where there is no D-Bus session, no GUI
+    and no unlocked keyring, so the call fails and takes collection down with it. A unit test that
+    depends on the host's desktop environment is not a unit test.
+
+    Subclassing ``KeyringBackend`` rather than importing a backend module on purpose: the
+    in-memory backend has moved between keyring releases, and the base class has not.
+    """
+
+    priority = 1
+
+    def __init__(self):
+        self._data = {}
+
+    def set_password(self, service, username, password):
+        self._data[(service, username)] = password
+
+    def get_password(self, service, username):
+        return self._data.get((service, username))
+
+    def delete_password(self, service, username):
+        self._data.pop((service, username), None)
+
+
+# Installed before any engine module is imported, so ``tools.secrets`` binds to this and never to
+# the platform backend. Module scope, not a fixture: collection-time failures are the ones that
+# cannot be caught later.
+keyring.set_keyring(_HermeticKeyring())
+
 import pytest
 
 from tools import workspace
