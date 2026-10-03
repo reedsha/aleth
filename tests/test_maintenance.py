@@ -167,12 +167,17 @@ class ReclaimTests(_LedgerCase):
         # ``reclaim`` must TRUNCATE, not merely checkpoint: PASSIVE leaves the log at its
         # high-water mark. A writer stays open so the WAL exists at all -- SQLite removes it when the
         # last connection closes -- which is also the realistic case, the sweeper running while the
-        # daemon holds the database. Autocommit, so the writer holds no lingering read mark.
+        # daemon holds the database.
+        #
+        # The assertion is on the **log**, not on the file's byte count. ``TRUNCATE`` resets the WAL
+        # (its frame count goes to zero) and *asks* the OS to shrink the file, but whether the file
+        # shrinks is the platform's business -- a handle held elsewhere pins the size on Windows,
+        # which is exactly what CI does and a dev machine does not. Asserting a byte count that only
+        # one OS delivers is how a test becomes a lie.
         writer = sqlite3.connect(self.db_path, isolation_level=None)
         try:
-            # Autocheckpoint off, so the log is not reset underneath the assertion below -- its size
-            # is then a fact about the writes, not about when the 1,000-page threshold happened to
-            # trip.
+            # Autocheckpoint off, so the log is not reset underneath the measurement -- its size is
+            # then a fact about the writes, not about when the 1,000-page threshold happened to trip.
             writer.execute("PRAGMA wal_autocheckpoint=0")
             for step in range(1, 300):
                 writer.execute(
@@ -194,12 +199,12 @@ class ReclaimTests(_LedgerCase):
         finally:
             writer.close()
 
+        busy, log_frames, checkpointed = (int(value) for value in checkpoint)
+        # Not busy: the only other connection is idle, so the checkpoint must have succeeded.
+        self.assertEqual(busy, 0, f"the checkpoint was busy: {checkpoint}")
+        # The log is empty afterwards -- that is what TRUNCATE means, and it is the portable claim.
+        self.assertEqual(log_frames, 0, f"the log was not truncated: {checkpoint}")
         self.assertLessEqual(after, before, "the log grew during reclamation")
-        if checkpoint[0] == 0:
-            # Not busy: TRUNCATE emptied the log. A *busy* checkpoint -- another connection holding
-            # the WAL -- truncates nothing and reports it, which is the documented exception and the
-            # correct outcome (blocking an active run would be worse).
-            self.assertEqual(after, 0, "a successful TRUNCATE checkpoint must empty the log")
 
     def test_reclaim_on_a_missing_database_is_not_a_fault(self):
         self.assertEqual(
