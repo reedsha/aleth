@@ -26,6 +26,17 @@ from tools import token_budget
 
 token_budget.install_cache_dir()
 
+# The operational layer (Phase 40), installed before the sweeps so their reports are recorded:
+# structured JSON logging to a rotating, bounded file, and the credentials the OS keyring holds
+# loaded into memory (never written back -- the keyring is the store, the environment is the
+# hand-off). Both are best-effort: an engine that cannot log or cannot reach a keyring still runs.
+from tools import engine_log, secrets
+
+engine_log.configure()
+
+for _provider in secrets.install_into_environment():
+    print(f"[Config] loaded {_provider} from the OS keyring")
+
 from tools.docker_sandbox import (
     install_shutdown_sweep,
     sweep_orphaned_containers,

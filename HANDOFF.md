@@ -13,10 +13,18 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 39)
+## ⚡ 0. Current State at This Handoff (Phase 40)
 
-- **Phases 5 → 39 are complete and CI-green.** Phase 39 (hardening and the final cut) is the latest.
+- **Phases 5 → 40 are complete and CI-green.** Phase 40 (the production harness) is the latest.
   `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most recently.
+- **Credentials live in the OS keyring (Phase 40).** `tools/secrets.py` + `aleth keys
+  set/clear/list`. The keyring is the store, the environment is the in-memory hand-off, and `list`
+  reports names only. A zero-trust test asserts a loaded credential leaves no bytes anywhere in the
+  state directory or the ledger.
+- **The record is structured and bounded (Phase 40).** `tools/engine_log.py`: one JSON object per
+  line with the run's correlation id, on a 50 MB × 3 rotating handler under the state directory.
+- **The engine refuses to start half-broken (Phase 40).** `aleth boot` pre-flights the container
+  runtime, `git`, the API port and the credential store, and aborts with a fix line per failure.
 - **Truncation is strict (Phase 39).** A rewind deletes the abandoned timeline on **both** sides:
   `IntentLedger.truncate_to_step` deletes the rows and `snapshots.truncate_after` drops the tags, so
   the resumed run continues at `target + 1` instead of colliding with its own ghost. Linear history
@@ -1578,12 +1586,15 @@ the product code; the figures above are from harness benchmarks, not runtime tel
 
 | Gate | Command | Result |
 | --- | --- | --- |
-| Clean tree baseline | `git --no-optional-locks status --short` | clean at `0b5f439` (Phase 38) before this pass |
+| Clean tree baseline | `git --no-optional-locks status --short` | clean at `49195f4` (Phase 39) before this pass |
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
 | Build | `npm run build` | 59 modules |
-| UI tests | `npx playwright test` | **78 passed** in 25.8 s |
-| Backend | `venv/Scripts/python.exe -m pytest` | **1327 passed, 23 skipped, 243 subtests** in 103.19 s (`-n auto`; CI adds `-m "not llm"`) |
-| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1345 passed, 5 skipped**, and **0 containers left behind** |
+| UI tests | `npx playwright test` | **78 passed** in 27.9 s |
+| Backend | `venv/Scripts/python.exe -m pytest` | **1354 passed, 23 skipped, 243 subtests** in 110.47 s (`-n auto`; CI adds `-m "not llm"`) |
+| Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1372 passed, 5 skipped**, and **0 containers left behind** |
+| Secrets | `tests/test_harness.py::SecretsTests` + `ZeroTrustAuditTests` | **passed** — a credential round-trips through the keyring, `list` reports names only, an empty value and an unknown provider are refused, no backend is a *reported* failure, the environment is loaded from the store, an exported name wins, and a loaded credential leaves no bytes in the state directory |
+| Logging | `tests/test_harness.py::EngineLogTests` | **passed** — one JSON object with timestamp/level/message, the run's correlation id attached, `maxBytes`/`backupCount` at 50 MB × 3, and a second `configure` does not double the lines |
+| Pre-flight | `tests/test_harness.py::PreflightTests` + `CliTests` | **passed** — each check answers, each failure carries its fix, a held port names the command to find the holder, `enforce` refuses and says nothing started, and `aleth boot` aborts before reaching the daemon |
 | Strict truncation | `tests/test_snapshots.py::DurableMemoryTests` + `SnapshotRepositoryTests` | **passed** — a truncation deletes the ghost row and frees the step for the resumed timeline; a revert drops the abandoned tags and `next_step` returns to `target + 1` |
 | Recovery patch | `tests/test_egress.py::EgressApplyTests` | **passed** — a clean egress leaves no patch, a failed one keeps it and names its path, and the artifact passes `git apply --check -p1` |
 | Audit | `grep` over the critical path | no debug statements, no `breakpoint()`, no hardcoded absolute paths, no bare `except:`; every broad handler is on a documented observer |

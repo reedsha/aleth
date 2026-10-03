@@ -47,6 +47,10 @@ dependencies = [
     # correctness rests on it, and its encoding is **vendored** under ``vendor/tiktoken/`` so the
     # count is exact offline instead of approximated.
     "tiktoken>=0.7",
+    # The OS keyring (Phase 40). Credentials live in the platform store -- macOS Keychain, Windows
+    # Credential Locker, the Secret Service API -- rather than a plaintext ``.env``. Imported lazily
+    # by ``tools.secrets``, so a checkout without it still boots; the CLI reports the gap.
+    "keyring>=24",
     "astchunk>=0.1.0",
     # --- the app shell ---
     "python-dotenv>=1.2",
@@ -75,7 +79,13 @@ test = [
 # The app is run from source rather than installed, but a manifest that could not be built would
 # be a manifest nobody can use. These are the importable packages and top-level modules.
 packages = ["agents", "api", "core", "orchestration", "storage", "tools"]
-py-modules = ["app", "bridge_bus", "env_boot", "main", "registry"]
+py-modules = ["app", "bridge_bus", "cli", "env_boot", "main", "registry"]
+
+[project.scripts]
+# The supported entry point (Phase 40): ``aleth keys ...`` and ``aleth boot``. The pre-flight lives
+# here rather than in ``main.py`` so that a developer importing the engine is not killed by a
+# missing docker daemon, while an operator starting it is never allowed to start half-broken.
+aleth = "cli:main"
 
 # The vendored tokenizer encoding (Phase 33). It ships as data rather than inside a package because
 # it is not importable -- it is a blob tiktoken looks up by name in ``TIKTOKEN_CACHE_DIR``, which the
