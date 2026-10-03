@@ -65,8 +65,37 @@ def check_git() -> Check:
     )
 
 
+def check_process_lock() -> Check:
+    """The authoritative liveness question (Phase 41): is another engine running *this project*?
+
+    A port probe cannot tell an Aleth daemon from an unrelated program, and it cannot tell a ghost
+    from a live one -- so the lock is what decides. A stale lock is not a failure: the boot reaps it.
+    """
+    from tools import process_lock
+    from tools.workspace import state_dir
+
+    try:
+        state = process_lock.check(state_dir())
+    except Exception as error:
+        return Check(
+            "process lock", False, f"{type(error).__name__}: {error}",
+            "check the permissions on the state directory and retry",
+        )
+    if state.acquired:
+        return Check("process lock", True, state.detail)
+    return Check(
+        "process lock", False, state.detail,
+        f"another Aleth engine is already running for this project. Stop it, or remove "
+        f"{state.path} if you are certain it is stale.",
+    )
+
+
 def check_port(port: int) -> Check:
-    """The daemon's port must be free -- a squatter produces a bind error naming nothing."""
+    """The daemon's port must be free -- a squatter produces a bind error naming nothing.
+
+    Kept beside the process lock rather than replaced by it: the lock answers "another *engine*",
+    and this answers "something else", which is the one case the lock cannot see.
+    """
     wanted = int(port)
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -102,7 +131,7 @@ def run_checks(port: Optional[int] = None) -> List[Check]:
         from api.server import default_port
 
         port = default_port()
-    return [check_docker(), check_git(), check_port(port), check_keyring()]
+    return [check_docker(), check_git(), check_process_lock(), check_port(port), check_keyring()]
 
 
 def failures(checks: List[Check]) -> List[Check]:
@@ -145,6 +174,7 @@ __all__ = [
     "check_git",
     "check_keyring",
     "check_port",
+    "check_process_lock",
     "enforce",
     "failures",
     "report",

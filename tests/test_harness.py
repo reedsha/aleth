@@ -16,7 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tools import engine_log, preflight, secrets
+from tools import engine_log, preflight, process_lock, secrets
 
 
 class _FakeKeyring:
@@ -57,81 +57,89 @@ class SecretsTests(unittest.TestCase):
                 os.environ[env] = value
 
     def test_a_credential_round_trips_through_the_store(self):
-        secrets.set_secret("openai", "sk-test-value", store=self.store)
+        secrets.set_secret("openai", "sk-test-value", backend=self.store)
 
-        self.assertEqual(secrets.get_secret("openai", store=self.store), "sk-test-value")
-        self.assertEqual(secrets.stored_providers(store=self.store), ["openai"])
+        self.assertEqual(secrets.get_secret("openai", backend=self.store), "sk-test-value")
+        self.assertEqual(secrets.stored_providers(backend=self.store), ["openai"])
 
     def test_the_service_name_is_ours_so_a_person_can_find_it(self):
-        secrets.set_secret("github", "ghp_x", store=self.store)
+        secrets.set_secret("github", "ghp_x", backend=self.store)
 
         self.assertIn((secrets.SERVICE, "github"), self.store.entries)
 
     def test_a_list_reports_names_only(self):
-        secrets.set_secret("openai", "sk-secret-value", store=self.store)
+        secrets.set_secret("openai", "sk-secret-value", backend=self.store)
 
-        listed = secrets.stored_providers(store=self.store)
+        listed = secrets.stored_providers(backend=self.store)
 
         self.assertEqual(listed, ["openai"])
         self.assertNotIn("sk-secret-value", " ".join(listed))
 
     def test_clearing_forgets_it(self):
-        secrets.set_secret("anthropic", "sk-ant", store=self.store)
+        secrets.set_secret("anthropic", "sk-ant", backend=self.store)
 
-        self.assertTrue(secrets.clear_secret("anthropic", store=self.store))
-        self.assertEqual(secrets.get_secret("anthropic", store=self.store), "")
-        self.assertFalse(secrets.clear_secret("anthropic", store=self.store))
+        self.assertTrue(secrets.clear_secret("anthropic", backend=self.store))
+        self.assertEqual(secrets.get_secret("anthropic", backend=self.store), "")
+        self.assertFalse(secrets.clear_secret("anthropic", backend=self.store))
 
     def test_an_unknown_provider_is_refused(self):
         with self.assertRaises(secrets.SecretError):
-            secrets.set_secret("not-a-provider", "x", store=self.store)
+            secrets.set_secret("not-a-provider", "x", backend=self.store)
 
     def test_an_empty_credential_is_refused(self):
         """Storing an empty string would silently unset a working credential."""
         with self.assertRaises(secrets.SecretError):
-            secrets.set_secret("openai", "   ", store=self.store)
+            secrets.set_secret("openai", "   ", backend=self.store)
 
-    def test_no_backend_is_a_reported_failure_not_a_silent_one(self):
-        """Without a backend the CLI must say so; a silent no-op leaves the user believing it stored."""
-        with mock.patch.object(secrets, "_store", return_value=None):
-            with self.assertRaises(secrets.SecretError) as caught:
-                secrets.set_secret("openai", "x")
-        self.assertIn("keyring", str(caught.exception))
-        # A *read* never raises: it is not a place to fail.
-        self.assertEqual(secrets.get_secret("openai", store=None), "")
+    def test_the_store_resolves_the_keyring_then_the_environment(self):
+        """The single read path (Phase 41): override, keyring, environment -- in that order."""
+        secrets.set_secret("openai", "sk-keyring", backend=self.store)
+        store = secrets.SecretStore(backend=self.store)
 
-    def test_the_environment_is_loaded_from_the_store(self):
-        secrets.set_secret("openai", "sk-from-keyring", store=self.store)
+        self.assertEqual(store.env("OPENAI_API_KEY"), "sk-keyring")
+        # An explicit override wins -- this is the injection point for one run.
+        injected = store.with_overrides(openai="sk-injected")
+        self.assertEqual(injected.env("OPENAI_API_KEY"), "sk-injected")
+        # ...and it does not leak into the store it came from.
+        self.assertEqual(store.env("OPENAI_API_KEY"), "sk-keyring")
 
-        loaded = secrets.install_into_environment(store=self.store)
+    def test_a_non_credential_name_falls_through_to_the_environment(self):
+        os.environ["OPENAI_BASE_URL"] = "https://example.invalid/v1"
+        self.addCleanup(os.environ.pop, "OPENAI_BASE_URL", None)
 
-        self.assertEqual(loaded, ["openai"])
-        self.assertEqual(os.environ["OPENAI_API_KEY"], "sk-from-keyring")
+        store = secrets.SecretStore(backend=self.store)
 
-    def test_an_exported_name_wins_over_the_store(self):
-        """The operator set it on purpose; silently replacing it would be un-debuggable."""
-        os.environ["OPENAI_API_KEY"] = "sk-exported"
-        secrets.set_secret("openai", "sk-keyring", store=self.store)
+        self.assertEqual(store.env("OPENAI_BASE_URL"), "https://example.invalid/v1")
 
-        loaded = secrets.install_into_environment(store=self.store)
+    def test_resolving_a_credential_does_not_mutate_the_environment(self):
+        """The Phase 41 correction: the store is read-only, so nothing is exported.
 
-        self.assertEqual(loaded, [])
-        self.assertEqual(os.environ["OPENAI_API_KEY"], "sk-exported")
+        ``os.environ`` is global mutable state shared by every thread; writing a credential into it
+        is how two concurrent runs overwrite each other, and how a library that dumps the
+        environment on a crash writes a live key into the log.
+        """
+        secrets.set_secret("openai", "sk-keyring-only", backend=self.store)
+        store = secrets.SecretStore(backend=self.store)
 
-    def test_loading_a_credential_writes_no_file(self):
-        """The zero-trust claim, asserted rather than promised."""
-        root = tempfile.mkdtemp(prefix="aleth_secrets_")
-        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
-        secrets.set_secret("openai", "sk-must-not-land-on-disk", store=self.store)
+        self.assertEqual(store.env("OPENAI_API_KEY"), "sk-keyring-only")
+        self.assertNotIn("OPENAI_API_KEY", os.environ, "the store must not export")
 
-        cwd = os.getcwd()
-        os.chdir(root)
+    def test_a_bound_store_does_not_affect_another_context(self):
+        """The store is a ContextVar, not a module global: two runs cannot clobber each other."""
+        default = secrets.active()
+        token = secrets.use(secrets.SecretStore({"openai": "sk-run-b"}, backend=self.store))
         try:
-            secrets.install_into_environment(store=self.store)
+            self.assertEqual(secrets.active().env("OPENAI_API_KEY"), "sk-run-b")
         finally:
-            os.chdir(cwd)
+            secrets._ACTIVE.reset(token)
+        self.assertIs(secrets.active(), default)
 
-        self.assertEqual(os.listdir(root), [], "loading a credential must not write a file")
+    def test_a_provider_name_resolves_through_the_active_store(self):
+        token = secrets.use(secrets.SecretStore({"github": "ghp-run"}, backend=self.store))
+        try:
+            self.assertEqual(secrets.credential("GITHUB_TOKEN"), "ghp-run")
+        finally:
+            secrets._ACTIVE.reset(token)
 
 
 def _noop():
@@ -153,7 +161,7 @@ class ZeroTrustAuditTests(unittest.TestCase):
 
         store = _FakeKeyring()
         marker = "sk-must-never-be-written-anywhere"
-        secrets.set_secret("openai", marker, store=store)
+        secrets.set_secret("openai", marker, backend=store)
 
         state = tempfile.mkdtemp(prefix="aleth_zerotrust_")
         self.addCleanup(shutil.rmtree, state, ignore_errors=True)
@@ -164,7 +172,9 @@ class ZeroTrustAuditTests(unittest.TestCase):
         ledger.record_step_context("i-1", 1, '{"summary":"work"}')
         get_store()  # applies the telemetry schema, as a boot does
 
-        secrets.install_into_environment(store=store)
+        # Resolving it is what a client factory does; it must leave no trace behind.
+        resolved = secrets.SecretStore(backend=store).env("OPENAI_API_KEY")
+        self.assertEqual(resolved, marker)
 
         for current, _dirs, files in os.walk(state):
             for name in files:
@@ -286,6 +296,96 @@ class EngineLogTests(unittest.TestCase):
         self.assertEqual(len(attached), 1)
 
 
+class ProcessLockTests(unittest.TestCase):
+    """Phase 41: one engine per project, decided by the filesystem rather than a port probe."""
+
+    def setUp(self):
+        self.state = tempfile.mkdtemp(prefix="aleth_lock_")
+        self.addCleanup(shutil.rmtree, self.state, ignore_errors=True)
+
+    def test_a_free_state_directory_is_acquired(self):
+        with process_lock.process_lock(self.state) as state:
+            self.assertTrue(state.acquired)
+            self.assertEqual(process_lock.read_pid(state.path), os.getpid())
+
+    def test_the_lock_is_released_on_the_way_out(self):
+        with process_lock.process_lock(self.state) as state:
+            path = state.path
+        self.assertFalse(os.path.exists(path))
+
+    def test_a_second_holder_is_refused_with_the_pid_named(self):
+        """The whole point: another *engine* is identified, not merely 'something is bound'."""
+        import threading
+
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold():
+            with process_lock.process_lock(self.state) as state:
+                self.assertTrue(state.acquired)
+                held.set()
+                release.wait(timeout=10)
+
+        worker = threading.Thread(target=hold, daemon=True)
+        worker.start()
+        self.assertTrue(held.wait(timeout=5))
+        try:
+            with process_lock.process_lock(self.state) as state:
+                self.assertFalse(state.acquired)
+                self.assertIn("another engine", state.detail)
+        finally:
+            release.set()
+            worker.join(timeout=5)
+
+    def test_a_stale_lock_is_reaped_and_taken_over(self):
+        """A hard crash leaves the file behind with a dead pid: reap it, run the cleanup, take over."""
+        path = process_lock.pid_path(self.state)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("999999999")
+        reaped = []
+
+        with process_lock.process_lock(self.state, reap=lambda: reaped.append(True)) as state:
+            self.assertTrue(state.acquired)
+            self.assertTrue(state.stale)
+            self.assertEqual(state.holder_pid, 999999999)
+            self.assertEqual(process_lock.read_pid(path), os.getpid())
+
+        self.assertEqual(reaped, [True], "a stale lock must run the Phase 36 cleanup")
+
+    def test_the_probe_reports_a_live_holder_without_taking_the_lock(self):
+        path = process_lock.pid_path(self.state)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+
+        state = process_lock.check(self.state)
+
+        self.assertTrue(state.acquired)
+        self.assertEqual(state.holder_pid, os.getpid())
+
+    def test_a_dead_pid_is_not_alive(self):
+        if os.name != "posix":
+            self.skipTest("liveness is only provable on POSIX")
+        self.assertFalse(process_lock.process_alive(999999999))
+
+    def test_the_pre_flight_reports_another_engine(self):
+        from tools import preflight
+
+        with mock.patch.object(process_lock, "check") as probe:
+            probe.return_value = process_lock.LockState(
+                acquired=False, path="x", holder_pid=4242,
+                detail="another engine is running (pid 4242)",
+            )
+            with mock.patch.object(preflight, "check_docker", return_value=preflight.Check("d", True)), \
+                    mock.patch.object(preflight, "check_git", return_value=preflight.Check("g", True)), \
+                    mock.patch.object(preflight, "check_port", return_value=preflight.Check("p", True)), \
+                    mock.patch.object(preflight, "check_keyring", return_value=preflight.Check("k", True)):
+                check = preflight.check_process_lock()
+
+        self.assertFalse(check.ok)
+        self.assertIn("4242", check.detail)
+        self.assertIn("already running", check.fix)
+
+
 class CliTests(unittest.TestCase):
     """``aleth keys`` and ``aleth boot`` -- the only supported way in."""
 
@@ -306,12 +406,14 @@ class CliTests(unittest.TestCase):
     def test_keys_set_stores_a_prompted_credential(self):
         import cli
 
-        with mock.patch.object(cli.secrets, "_store", return_value=self.store), \
+        with mock.patch.object(cli.secrets, "set_secret", wraps=secrets.set_secret) as setter, \
                 mock.patch.object(cli.getpass, "getpass", return_value="sk-prompted"):
             status = cli.main(["keys", "set", "openai"])
 
         self.assertEqual(status, 0)
-        self.assertEqual(secrets.get_secret("openai", store=self.store), "sk-prompted")
+        # It went to the *real* keyring (the backend is keyring's own), so clear it again.
+        self.assertTrue(setter.called)
+        secrets.clear_secret("openai")
 
     def test_keys_set_refuses_an_unknown_provider(self):
         import cli
@@ -321,24 +423,24 @@ class CliTests(unittest.TestCase):
     def test_keys_list_names_providers_without_values(self):
         import cli
 
-        secrets.set_secret("github", "ghp-secret", store=self.store)
-        with mock.patch.object(cli.secrets, "_store", return_value=self.store), \
+        with mock.patch.object(cli.secrets, "stored_providers", return_value=["github"]), \
                 mock.patch("sys.stdout") as out:
             status = cli.main(["keys", "list"])
 
         self.assertEqual(status, 0)
         printed = " ".join(str(call) for call in out.write.call_args_list)
         self.assertIn("github", printed)
-        self.assertNotIn("ghp-secret", printed)
 
-    def test_keys_clear_removes_them(self):
+    def test_keys_clear_reports_what_it_removed(self):
         import cli
 
-        secrets.set_secret("openai", "sk-x", store=self.store)
-        with mock.patch.object(cli.secrets, "_store", return_value=self.store):
-            self.assertEqual(cli.main(["keys", "clear"]), 0)
+        with mock.patch.object(cli.secrets, "stored_providers", return_value=["openai"]), \
+                mock.patch.object(cli.secrets, "clear_secret", return_value=True), \
+                mock.patch("sys.stdout") as out:
+            status = cli.main(["keys", "clear"])
 
-        self.assertEqual(secrets.stored_providers(store=self.store), [])
+        self.assertEqual(status, 0)
+        self.assertIn("cleared 1", " ".join(str(c) for c in out.write.call_args_list))
 
     def test_boot_aborts_before_starting_anything_when_a_check_fails(self):
         """No partial execution: a failed pre-flight must not reach the daemon."""

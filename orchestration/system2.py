@@ -29,6 +29,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from tools import secrets
+
 # The opt-out. Unset means "enabled once configured", so a checkout with a ``.env``
 # starts making real calls, while the test suite sets this to ``0`` to pin the offline
 # path deterministically instead of depending on the developer's shell.
@@ -117,7 +119,7 @@ def provider_config(
             "base_url": declared_base.rstrip("/"),
         }
 
-    key = (os.environ.get(ENV_API_KEY) or "").strip()
+    key = secrets.credential(ENV_API_KEY)
     base = (os.environ.get(ENV_BASE_URL) or "").strip()
     if not key or not base:
         return None

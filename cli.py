@@ -22,7 +22,7 @@ import getpass
 import sys
 from typing import List, Optional
 
-from tools import engine_log, preflight, secrets
+from tools import engine_log, preflight, process_lock, secrets
 
 
 def _keys_set(args: argparse.Namespace) -> int:
@@ -79,20 +79,39 @@ def _keys_clear(args: argparse.Namespace) -> int:
 
 
 def _boot(args: argparse.Namespace) -> int:
-    """Pre-flight, then start the daemon. Aborts on any failed check."""
+    """Pre-flight, take the process lock, then start the daemon. Aborts on any failed check."""
     from api.server import default_port
+    from tools.workspace import state_dir
 
     port = int(args.port) if args.port else default_port()
     if not preflight.enforce(port=port):
         return 1
-    # The keyring is the store; the environment is the hand-off (Phase 40). Memory only.
-    loaded = secrets.install_into_environment()
     engine_log.configure()
-    if loaded:
-        print(f"loaded credentials from the OS keyring: {', '.join(loaded)}")
-    import app
+    # Phase 41: one engine per project, decided by an OS file lock rather than a port probe. A
+    # stale lock from a hard crash is reaped here, and the Phase 36 sweep runs at the moment the
+    # crash is discovered rather than at the next boot.
+    from tools.docker_sandbox import purge_managed_containers, sweep_orphaned_containers
 
-    app.main()
+    def reap() -> None:
+        sweep_orphaned_containers("stale-lock")
+        purge_managed_containers()
+
+    with process_lock.process_lock(state_dir(), reap=reap) as state:
+        if not state.acquired:
+            print(f"\nrefusing to start: {state.detail}", file=sys.stderr)
+            print(
+                f"  stop it, or remove {state.path} if you are certain it is stale.",
+                file=sys.stderr,
+            )
+            return 1
+        if state.stale:
+            print(f"[Lock] {state.detail}")
+        resolved = secrets.active().providers()
+        if resolved:
+            print(f"credentials available: {', '.join(resolved)}")
+        import app
+
+        app.main()
     return 0
 
 

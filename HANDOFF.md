@@ -13,14 +13,27 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 40)
+## ⚡ 0. Current State at This Handoff (Phase 41)
 
-- **Phases 5 → 40 are complete and CI-green.** Phase 40 (the production harness) is the latest.
-  `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most recently.
-- **Credentials live in the OS keyring (Phase 40).** `tools/secrets.py` + `aleth keys
-  set/clear/list`. The keyring is the store, the environment is the in-memory hand-off, and `list`
-  reports names only. A zero-trust test asserts a loaded credential leaves no bytes anywhere in the
-  state directory or the ledger.
+- **Phases 5 → 41 are complete and CI-green.** Phase 41 (process integrity and dependency
+  injection) is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at
+  what changed most recently.
+- **Secrets are resolved, not exported (Phase 41).** `tools/secrets.py` has a `SecretStore` bound to
+  a `contextvars.ContextVar`; `credential(env_name)` is the single read path and the client factories
+  (`core/config.py`, `orchestration/system2.py`, `tools/system2_cost.py`) call it. There is **no**
+  `os.environ` mutation anywhere: the environment is read as a last resort and never written.
+- **`keyring` is a hard dependency (Phase 41).** A module-level import, no lazy fallback: optional
+  security is no security, because a checkout that boots without it is one whose users fall back to
+  plaintext. CI installs it from `pyproject.toml`; a dev venv created before it was declared must be
+  reinstalled (`pip install -e ".[test]"`).
+- **The process lock is deterministic (Phase 41).** `tools/process_lock.py` holds
+  `<state_dir>/aleth.pid` under an exclusive OS file lock for the daemon's lifetime; a live holder
+  refuses the boot with the pid named, and a stale lock from a hard crash is reaped -- running the
+  Phase 36 sweep at the moment the crash is discovered. `check_process_lock` is the authoritative
+  pre-flight check; `check_port` stays beside it for the one case the lock cannot see (some *other*
+  program holding the port).
+- **Credentials live in the OS keyring (Phase 40).** `aleth keys set/clear/list`; `list` reports
+  names only.
 - **The record is structured and bounded (Phase 40).** `tools/engine_log.py`: one JSON object per
   line with the run's correlation id, on a 50 MB × 3 rotating handler under the state directory.
 - **The engine refuses to start half-broken (Phase 40).** `aleth boot` pre-flights the container

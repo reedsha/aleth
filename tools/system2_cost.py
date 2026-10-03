@@ -113,9 +113,13 @@ class Meter:
         from openai import OpenAI
 
         base = os.environ.get("OPENAI_BASE_URL")
-        key = os.environ.get("OPENAI_API_KEY")
+        # Through the credential store (Phase 41): a key that lives only in the OS keyring must
+        # reach this client without ever being exported to the process environment.
+        from tools import secrets
+
+        key = secrets.credential("OPENAI_API_KEY")
         if not base or not key:
-            raise RuntimeError("OPENAI_BASE_URL / OPENAI_API_KEY are not set; check .env")
+            raise RuntimeError("OPENAI_BASE_URL is unset, or no OPENAI_API_KEY could be resolved")
         self.model = model
         self._client = OpenAI(api_key=key, base_url=base.rstrip("/"))
 

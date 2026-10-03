@@ -140,8 +140,11 @@ def default_config() -> BootloaderConfig:
     configured, and claiming otherwise would let the router select a model that cannot answer.
     """
     from agents.model_routing import architect_model, coder_model
+    from tools import secrets
 
-    key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+    # Resolved through the credential store (Phase 41), not read from the environment: a key held
+    # only in the OS keyring must reach the fleet, and nothing exports it to ``os.environ`` any more.
+    key = secrets.credential("OPENAI_API_KEY")
     base_url = (os.environ.get("OPENAI_BASE_URL") or "").strip() or None
 
     def tier(route: str, *, needs_key: bool) -> Optional[TierConfig]:

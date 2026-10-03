@@ -30,12 +30,16 @@ token_budget.install_cache_dir()
 # structured JSON logging to a rotating, bounded file, and the credentials the OS keyring holds
 # loaded into memory (never written back -- the keyring is the store, the environment is the
 # hand-off). Both are best-effort: an engine that cannot log or cannot reach a keyring still runs.
-from tools import engine_log, secrets
+from tools import engine_log, preflight, process_lock, secrets
 
 engine_log.configure()
 
-for _provider in secrets.install_into_environment():
-    print(f"[Config] loaded {_provider} from the OS keyring")
+# Phase 41: what the credential store can resolve, **by name only** -- the keyring is the store and
+# nothing is exported to ``os.environ`` any more. Printed so an operator can see what the engine
+# found without a credential ever reaching a log line.
+_resolved = secrets.active().providers()
+if _resolved:
+    print(f"[Config] credentials available: {', '.join(_resolved)}")
 
 from tools.docker_sandbox import (
     install_shutdown_sweep,
