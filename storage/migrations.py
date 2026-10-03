@@ -32,19 +32,43 @@ _FILENAME_RE = re.compile(r"^(\d+)_[A-Za-z0-9_\-]+\.sql$")
 
 VERSION_TABLE = "schema_version"
 
-# The two idempotency errors a *repair* statement may raise. SQLite has no conditional DDL, so the
-# baseline that must repair a database predating it uses plain ``ALTER``s -- and "the column is
-# already there" (or already gone) is the wanted outcome, not a failure. Narrow on purpose: only an
-# ``ALTER TABLE`` may raise them, and any other error still rolls the whole patch back.
-_TOLERATED = ("duplicate column name", "no such column")
+# A repair ``ALTER``, recognised by its own syntax -- our SQL, not SQLite's error text. The baseline
+# must add a column a pre-baseline database is missing, and SQLite has no ``ADD COLUMN IF NOT
+# EXISTS``; so the runner decides from the catalog whether the ``ALTER`` is still needed, and skips
+# it when it is not. Deterministic, and independent of any message a binding happens to produce.
+_ADD_COLUMN_RE = re.compile(
+    r"^\s*ALTER\s+TABLE\s+[\"'\[]?(\w+)[\"'\]]?\s+ADD\s+COLUMN\s+[\"'\[]?(\w+)",
+    re.IGNORECASE,
+)
+_DROP_COLUMN_RE = re.compile(
+    r"^\s*ALTER\s+TABLE\s+[\"'\[]?(\w+)[\"'\]]?\s+DROP\s+COLUMN\s+[\"'\[]?(\w+)",
+    re.IGNORECASE,
+)
 
 
-def _tolerable(statement: str, error: Exception) -> bool:
-    """Whether ``error`` means the ``ALTER``'s intent is already satisfied."""
-    if not str(statement or "").strip().upper().startswith("ALTER TABLE"):
-        return False
-    message = str(error).lower()
-    return any(fragment in message for fragment in _TOLERATED)
+def _column_present(connection: sqlite3.Connection, table: str, column: str) -> bool:
+    """Whether ``table`` already has ``column``, asked of the catalog (``PRAGMA table_info``).
+
+    A missing table answers ``False``; the caller decides what that means for its statement.
+    """
+    rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(str(row[1]) == column for row in rows)
+
+
+def _already_satisfied(connection: sqlite3.Connection, statement: str) -> bool:
+    """Whether a repair ``ALTER`` has nothing left to do, decided by inspection, never by error.
+
+    Only ``ADD COLUMN`` and ``DROP COLUMN`` are treated this way: they are the two statements whose
+    *intent* (the column's presence) is observable in the catalog before they run. Everything else
+    executes unconditionally, and a genuine failure still rolls the whole patch back.
+    """
+    add = _ADD_COLUMN_RE.match(statement)
+    if add is not None and _column_present(connection, add.group(1), add.group(2)):
+        return True
+    drop = _DROP_COLUMN_RE.match(statement)
+    if drop is not None and not _column_present(connection, drop.group(1), drop.group(2)):
+        return True
+    return False
 
 
 class MigrationError(RuntimeError):
@@ -163,12 +187,9 @@ def migrate(
             try:
                 connection.execute("BEGIN EXCLUSIVE TRANSACTION")
                 for statement in _statements(script):
-                    try:
-                        connection.execute(statement)
-                    except sqlite3.OperationalError as error:
-                        if _tolerable(statement, error):
-                            continue
-                        raise
+                    if _already_satisfied(connection, statement):
+                        continue
+                    connection.execute(statement)
                 connection.execute(
                     f"UPDATE {VERSION_TABLE} SET version = ?", (int(number),)
                 )

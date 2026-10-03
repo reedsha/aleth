@@ -310,23 +310,23 @@ class IntentLedger:
         finally:
             connection.close()
 
-    def cost_cents(self, intent_id: str) -> float:
-        """What this intent has cost so far, in cents: the **sum of the frozen per-step prices**.
+    def cost_micros(self, intent_id: str) -> int:
+        """What this intent has cost so far, in micros: the **sum of the frozen per-step prices**.
 
         No pricing happens here. Each step's cost was written when it ran
         (:meth:`record_step_spend`), so this is a ledger read -- the bill does not move when a rate
-        in the environment does (Phase 45).
+        in the environment does (Phases 45-46). Integer throughout.
         """
         resolved = str(intent_id or "").strip()
         if not resolved:
-            return 0.0
+            return 0
         connection = _connect(self.path)
         try:
             row = connection.execute(
-                "SELECT COALESCE(SUM(cost_cents), 0) FROM intent_step_spend WHERE intent_id = ?",
+                "SELECT COALESCE(SUM(cost_micros), 0) FROM intent_step_spend WHERE intent_id = ?",
                 (resolved,),
             ).fetchone()
-            return float(row[0] or 0.0) if row is not None else 0.0
+            return int(row[0] or 0) if row is not None else 0
         finally:
             connection.close()
 
@@ -419,10 +419,10 @@ class IntentLedger:
 
         Three writes, on purpose. The cumulative token columns are what the token breaker reads
         before every call -- one indexed read, no aggregation -- the per-step rows are the ledger
-        that makes a rollback's truncation expressible (Phase 35), and ``cost_cents`` is the step's
-        price **frozen at the moment it was incurred** (Phase 45). Pricing is never derived again:
-        API rates change, and a rate read at query time would retroactively re-price work that was
-        already done. All three are upserts, so a retried step adds to its own row.
+        that makes a rollback's truncation expressible (Phase 35), and ``cost_micros`` is the step's
+        price **frozen at the moment it was incurred** (Phases 45-46). Pricing is never derived
+        again: API rates change, and a rate read at query time would retroactively re-price work
+        that was already done. All three are upserts, so a retried step adds to its own row.
         """
         resolved = str(intent_id or "").strip()
         if not resolved:
@@ -433,18 +433,18 @@ class IntentLedger:
             return
         from tools import token_budget
 
-        cost = token_budget.cost_cents(prompt_tokens, completion_tokens)
+        cost = token_budget.cost_micros(prompt_tokens, completion_tokens)
         connection = _connect(self.path)
         try:
             with connection:
                 connection.execute(
                     "INSERT INTO intent_step_spend"
-                    " (intent_id, step, prompt_tokens, completion_tokens, cost_cents, recorded_at)"
+                    " (intent_id, step, prompt_tokens, completion_tokens, cost_micros, recorded_at)"
                     " VALUES (?, ?, ?, ?, ?, ?)"
                     " ON CONFLICT(intent_id, step) DO UPDATE SET"
                     " prompt_tokens = prompt_tokens + excluded.prompt_tokens,"
                     " completion_tokens = completion_tokens + excluded.completion_tokens,"
-                    " cost_cents = cost_cents + excluded.cost_cents,"
+                    " cost_micros = cost_micros + excluded.cost_micros,"
                     " recorded_at = excluded.recorded_at",
                     (resolved, int(step), prompt_tokens, completion_tokens, cost, time.time()),
                 )

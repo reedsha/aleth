@@ -30,15 +30,13 @@ from typing import Any, Optional
 MAX_INTENT_TOKENS = 250_000
 MAX_TOKENS_ENV = "ALETH_MAX_INTENT_TOKENS"
 
-# What a token costs, in cents, and the ceiling on one intent's bill (Phase 44). A *blended* rate
-# rather than per-model: the loop records token counts, not the model that produced them, so one
-# configured price is the honest model of "what this run costs" -- and the ceiling is a bound on the
-# user's money, which is the number that actually matters. Both are overridable for a deployment
-# with different economics.
-CENTS_PER_1K_PROMPT_TOKENS = 0.25
-CENTS_PER_1K_COMPLETION_TOKENS = 1.0
-MAX_COST_CENTS = 500.0
-MAX_COST_ENV = "ALETH_MAX_COST_CENTS"
+# What a token costs, in **micros** -- 1e-6 of a dollar, so 1 cent is 10,000 micros -- and the
+# ceiling on one intent's bill (Phases 44-45). Integers, always: money is never a float. 0.25c / 1K
+# prompt and 1.0c / 1K completion, expressed in micros.
+MICROS_PER_1K_PROMPT_TOKENS = 2_500
+MICROS_PER_1K_COMPLETION_TOKENS = 10_000
+MAX_COST_MICROS = 5_000_000  # $5.00
+MAX_COST_ENV = "ALETH_MAX_COST_MICROS"
 
 # The vendored encoding's filename is the SHA-1 of the URL tiktoken fetched it from -- that is the
 # cache key tiktoken computes, so the file has to be named it for the loader to find it. The blob
@@ -163,50 +161,52 @@ def budget_exceeded(spent: int, *, limit: Optional[int] = None) -> bool:
     return int(spent) >= int(limit if limit is not None else max_intent_tokens())
 
 
-def max_cost_cents() -> float:
+def max_cost_micros() -> int:
     """The money ceiling, from the environment when it is set to a usable number."""
     raw = (os.environ.get(MAX_COST_ENV) or "").strip()
     try:
-        return max(0.0, float(raw))
+        return max(0, int(raw))
     except (TypeError, ValueError):
-        return MAX_COST_CENTS
+        return MAX_COST_MICROS
 
 
-def cost_cents(prompt_tokens: int, completion_tokens: int) -> float:
-    """What those token counts cost, in cents. Pure arithmetic, in one place.
+def cost_micros(prompt_tokens: int, completion_tokens: int) -> int:
+    """What those token counts cost, in micros, rounded to the nearest micro.
 
-    Prompt and completion are priced apart because they are priced apart by every provider; the
-    counts themselves come from the ledger, which stores them exactly.
+    Integer arithmetic throughout. A fractional cent cannot be represented in binary floating point,
+    and a bill that drifts by a fraction of a cent per step drifts without bound -- which is exactly
+    what a hard ceiling must not do.
     """
-    return (
-        max(0, int(prompt_tokens)) / 1000.0 * CENTS_PER_1K_PROMPT_TOKENS
-        + max(0, int(completion_tokens)) / 1000.0 * CENTS_PER_1K_COMPLETION_TOKENS
+    total = (
+        max(0, int(prompt_tokens)) * MICROS_PER_1K_PROMPT_TOKENS
+        + max(0, int(completion_tokens)) * MICROS_PER_1K_COMPLETION_TOKENS
     )
+    return (total + 500) // 1000
 
 
-def cost_exceeded(spent_cents: float, *, limit: Optional[float] = None) -> bool:
-    """Whether the bill has reached the ceiling. One comparison, in one place."""
-    return float(spent_cents) >= float(limit if limit is not None else max_cost_cents())
+def cost_exceeded(spent_micros: int, *, limit: Optional[int] = None) -> bool:
+    """Whether the bill has reached the ceiling. One integer comparison, in one place."""
+    return int(spent_micros) >= int(limit if limit is not None else max_cost_micros())
 
 
 __all__ = [
-    "CENTS_PER_1K_COMPLETION_TOKENS",
-    "CENTS_PER_1K_PROMPT_TOKENS",
     "CHARS_PER_TOKEN",
     "ENCODING_CACHE_KEY",
     "ENCODING_NAME",
     "CostBudgetExceeded",
-    "MAX_COST_CENTS",
     "MAX_COST_ENV",
+    "MAX_COST_MICROS",
     "MAX_INTENT_TOKENS",
     "MAX_TOKENS_ENV",
+    "MICROS_PER_1K_COMPLETION_TOKENS",
+    "MICROS_PER_1K_PROMPT_TOKENS",
     "TokenBudgetExceeded",
     "budget_exceeded",
-    "cost_cents",
     "cost_exceeded",
+    "cost_micros",
     "count_tokens",
     "install_cache_dir",
-    "max_cost_cents",
+    "max_cost_micros",
     "max_intent_tokens",
     "vendor_dir",
 ]

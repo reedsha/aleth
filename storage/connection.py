@@ -75,6 +75,19 @@ def default_db_path() -> str:
     return os.path.join(state_dir(), DB_FILENAME)
 
 
+def _is_new_database(db_path: str) -> bool:
+    """Whether ``db_path`` has not been written yet, so its file properties can still be chosen.
+
+    ``auto_vacuum`` is a property of the *file*, and it can only be set before the header exists.
+    Setting ``journal_mode`` writes that header, and afterwards the pragma needs a full ``VACUUM``
+    to take effect -- so the choice has to be made here, on the first connection to a new file.
+    """
+    try:
+        return os.path.getsize(str(db_path)) == 0
+    except OSError:
+        return True
+
+
 def connect(
     db_path: str, *, isolation_level: Optional[str] = "", **kwargs: Any
 ) -> sqlite3.Connection:
@@ -84,6 +97,9 @@ def connect(
     transactions (autocommit mode, so ``BEGIN``/``COMMIT`` are its own); everything else wants the
     driver's implicit transactions.
     """
+    # Decided *before* the connection exists: connecting creates the file, and the pragma below only
+    # applies while the file is still empty.
+    new_database = _is_new_database(db_path)
     connection = sqlite3.connect(
         str(db_path),
         # The driver's own wait, in seconds, set from the same number the pragma below states so
@@ -93,6 +109,11 @@ def connect(
         **kwargs,
     )
     connection.row_factory = sqlite3.Row
+    if new_database:
+        # Incremental auto-vacuum (Phase 46): free pages are released by ``incremental_vacuum`` in
+        # the maintenance sweeper rather than by a full ``VACUUM``, which would take a write lock on
+        # the whole file and fail an active run with ``database is locked``.
+        connection.execute("PRAGMA auto_vacuum=INCREMENTAL")
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=NORMAL")
     connection.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")

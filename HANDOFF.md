@@ -13,11 +13,25 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 45)
+## ⚡ 0. Current State at This Handoff (Phase 46)
 
-- **Phases 5 → 45 are complete and CI-green.** Phase 45 (schema evolution and the frozen cost ledger)
-  is the latest. `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed
-  most recently.
+- **Phases 5 → 46 are complete and CI-green.** Phase 46 (integer money, a catalog-driven migration
+  runner, and the disk-rot sweeper) is the latest. `MASTER_CONTEXT.md` is the ground truth; this
+  section only points at what changed most recently.
+- **Money is integer micros (Phase 46).** `intent_step_spend.cost_micros` is an INTEGER in units of
+  1e-6 dollars (1 cent = 10,000 micros), written by `record_step_spend` and read back as a sum.
+  `003_migrate_currency_to_micros.sql` converts the old `cost_cents REAL` and drops it. Floating
+  point cannot represent a fractional cent, so the strict ceiling was computed from an inexact
+  number; `tools/token_budget.py` now has integer rates and `cost_micros()`.
+- **The migration runner inspects the catalog, not error strings (Phase 46).** It recognises its own
+  `ALTER TABLE ... ADD|DROP COLUMN` syntax and asks `PRAGMA table_info` whether the column is present
+  before executing -- no `except sqlite3.OperationalError` on a message that is not an API contract.
+- **The daemon prunes and reclaims on a timer (Phase 46).** `storage/maintenance.py`: a background
+  sweeper (6 h, first pass immediate) TTL-purges terminal intents older than
+  `ALETH_RETENTION_DAYS` (default 30) -- rows, faults and the shadow directory -- then runs
+  `wal_checkpoint(TRUNCATE)`, `optimize` and a bounded `incremental_vacuum`. No full `VACUUM`: it
+  would take a write lock and fail an active run. `auto_vacuum=INCREMENTAL` is set by
+  `storage.connection.connect` on a new database, before `journal_mode=WAL`.
 - **A step's cost is frozen when it runs (Phase 45).** `intent_step_spend.cost_cents` is written by
   `record_step_spend` and read back as `SUM(cost_cents)`; nothing re-prices stored tokens at read
   time, so an API price change or an overridden rate cannot rewrite the bill of work already done.
@@ -1651,7 +1665,7 @@ pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
 | Build | `npm run build` | 59 modules |
 | UI tests | `npx playwright test` | **78 passed** in 27.9 s |
-| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1410 passed, 24 skipped, 243 subtests** in 109.10 s (`-n auto`) |
+| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1424 passed, 24 skipped, 243 subtests** in 104.92 s (`-n auto`) |
 | Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1372 passed, 5 skipped** on the Phase 39 tree, 0 containers left behind. The WSL venv predates the Phase 41 hard `keyring` import and cannot install it offline, so it is no longer the local authority -- CI is. |
 | Shutdown flag & drain | `tests/test_lifecycle.py` (new) | **9 passed** — the flag flips once, the event every loop reads is the same object, drains run newest-first, a failing drain does not stop the others, a drain can unregister itself mid-drain, and `reset` clears flag and registry |
 | HTTP 503 | `tests/test_api_gateway.py::ShutdownRefusalTests` | **2 passed** — a request during a shutdown is a 503 naming the reason, and the server registers then forgets its drain |
@@ -1669,7 +1683,11 @@ pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 | Migration sequence | `tests/test_migrations.py::SequenceTests` | **passed** — the real sequence is contiguous from 1, and a gap or a duplicate is refused |
 | Migration runner | `tests/test_migrations.py::RunnerTests` | **passed** — a fresh database reaches the newest version with every table; a v1 database is upgraded to v2 (not recreated); the upgrade backfills pre-column rows; a failing patch rolls back *including* its version; and `migrate_on_boot` refuses |
 | Frozen cost | `tests/test_snapshots.py::CircuitBreakerLedgerTests::test_the_cost_is_frozen_at_write_time_and_not_repriced` | **passed** — changing the rate constants does not change an already-recorded step's cost |
-| Wheel ships the patches | `pip wheel . --no-deps --no-build-isolation` + `unzip -l` | **passed** — `storage/migrations/001_initial_schema.sql` and `002_add_cost_cents.sql` are inside the wheel, so `test-immutable` can boot them |
+| Wheel ships the patches | `pip wheel . --no-deps --no-build-isolation` + `unzip -l` | **passed** — `storage/migrations/001_initial_schema.sql`, `002_add_cost_cents.sql` and `003_migrate_currency_to_micros.sql` are inside the wheel, so `test-immutable` can boot them |
+| Integer money | `tests/test_snapshots.py::CircuitBreakerLedgerTests::test_the_cost_is_an_exact_integer` + `tests/test_migrations.py::RunnerTests::test_the_float_cost_column_is_converted_to_micros` | **passed** — 1,000 steps sum exactly as ints, and a v2 `cost_cents REAL` becomes `cost_micros = 12500` with the float dropped |
+| TTL purge | `tests/test_maintenance.py::PurgeTests` | **passed** — old terminal intents lose their step rows, faults and shadow; a recent one and a live one are kept; a missing database is not a fault |
+| Reclamation | `tests/test_maintenance.py::ReclaimTests` | **passed** — a fresh database is `auto_vacuum=INCREMENTAL`, and `reclaim` truncates the WAL to zero bytes while a writer is open |
+| Sweeper thread | `tests/test_maintenance.py::SweeperTests` | **passed** — `run_maintenance` purges and reclaims in one pass, the thread runs a pass and stops promptly, and `start_maintenance` is idempotent |
 | Secrets | `tests/test_harness.py::SecretsTests` + `ZeroTrustAuditTests` | **passed** — a credential round-trips through the keyring, `list` reports names only, an empty value and an unknown provider are refused, no backend is a *reported* failure, the environment is loaded from the store, an exported name wins, and a loaded credential leaves no bytes in the state directory |
 | Logging | `tests/test_harness.py::EngineLogTests` | **passed** — one JSON object with timestamp/level/message, the run's correlation id attached, `maxBytes`/`backupCount` at 50 MB × 3, and a second `configure` does not double the lines |
 | Pre-flight | `tests/test_harness.py::PreflightTests` + `CliTests` | **passed** — each check answers, each failure carries its fix, a held port names the command to find the holder, `enforce` refuses and says nothing started, and `aleth boot` aborts before reaching the daemon |

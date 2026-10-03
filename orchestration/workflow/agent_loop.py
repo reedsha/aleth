@@ -614,18 +614,18 @@ def _steps_taken(ledger: Any, intent_id: str) -> int:
         return 0
 
 
-def _cost_cents(ledger: Any, intent_id: str) -> float:
-    """The intent's bill so far, in cents, from the ledger. ``0.0`` when there is nothing to read."""
+def _cost_micros(ledger: Any, intent_id: str) -> int:
+    """The intent's bill so far, in micros, from the ledger. ``0`` when there is nothing to read."""
     if ledger is None or not str(intent_id or "").strip():
-        return 0.0
+        return 0
     try:
-        return float(ledger.cost_cents(intent_id))
+        return int(ledger.cost_micros(intent_id))
     except Exception as error:
         print(
             f"[agent-loop] the cost could not be read: {type(error).__name__}: {error}",
             file=sys.stderr,
         )
-        return 0.0
+        return 0
 
 
 def _check_step_ceiling(ledger: Any, intent_id: str, role: str) -> None:
@@ -650,8 +650,8 @@ def _check_cost_ceiling(ledger: Any, intent_id: str) -> None:
     The hard currency stop. The ledger stores exact token counts; the price is applied here, and the
     ceiling is a bound on the user's wallet rather than on the model's willingness to stop.
     """
-    spent = _cost_cents(ledger, intent_id)
-    if spent and token_budget.cost_exceeded(spent, limit=token_budget.max_cost_cents()):
+    spent = _cost_micros(ledger, intent_id)
+    if spent and token_budget.cost_exceeded(spent, limit=token_budget.max_cost_micros()):
         _record_fault(ledger, intent_id, kind="COST_LIMIT_EXCEEDED", detail=COST_LIMIT_MESSAGE)
         raise token_budget.CostBudgetExceeded(COST_LIMIT_MESSAGE)
 

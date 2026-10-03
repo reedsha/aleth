@@ -129,6 +129,13 @@ def _boot(args: argparse.Namespace) -> int:
             migrate_on_boot()
         except MigrationError:
             return 1
+        # Phase 46: the sweeper that prunes expired state and reclaims the file. It stops through
+        # the same drain the signal handler runs, so a shutdown does not leave it mid-sweep.
+        from storage.maintenance import start_maintenance, stop_maintenance
+        from tools import lifecycle
+
+        lifecycle.register_drain(stop_maintenance)
+        start_maintenance()
         import app
 
         app.main()

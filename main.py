@@ -53,6 +53,15 @@ try:
 except MigrationError:
     raise SystemExit(1)
 
+# Phase 46: the maintenance sweeper -- TTL purge plus WAL truncation and incremental vacuum -- runs
+# for the daemon's life. It starts after the migration (the schema has to be current) and stops
+# through the same drain the signal handler runs, so a shutdown never leaves it mid-sweep.
+from storage.maintenance import start_maintenance, stop_maintenance
+from tools import lifecycle
+
+lifecycle.register_drain(stop_maintenance)
+start_maintenance()
+
 from tools.docker_sandbox import (
     install_shutdown_sweep,
     sweep_orphaned_containers,

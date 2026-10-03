@@ -319,9 +319,7 @@ class CircuitBreakerLedgerTests(unittest.TestCase):
 
         self.ledger.record_step_spend("i1", 1, prompt=1000, completion=500)
 
-        self.assertAlmostEqual(
-            self.ledger.cost_cents("i1"), token_budget.cost_cents(1000, 500), places=6
-        )
+        self.assertEqual(self.ledger.cost_micros("i1"), token_budget.cost_micros(1000, 500))
 
     def test_the_cost_aggregates_every_step(self):
         from tools import token_budget
@@ -329,9 +327,17 @@ class CircuitBreakerLedgerTests(unittest.TestCase):
         self.ledger.record_step_spend("i1", 1, prompt=1000, completion=0)
         self.ledger.record_step_spend("i1", 2, prompt=1000, completion=0)
 
-        self.assertAlmostEqual(
-            self.ledger.cost_cents("i1"), token_budget.cost_cents(2000, 0), places=6
-        )
+        self.assertEqual(self.ledger.cost_micros("i1"), token_budget.cost_micros(2000, 0))
+
+    def test_the_cost_is_an_exact_integer(self):
+        """Phase 46: money is never a float, so a long run's bill is exact, not drifting."""
+        from tools import token_budget
+
+        for step in range(1, 1001):
+            self.ledger.record_step_spend("i1", step, prompt=1, completion=0)
+
+        self.assertIsInstance(self.ledger.cost_micros("i1"), int)
+        self.assertEqual(self.ledger.cost_micros("i1"), token_budget.cost_micros(1, 0) * 1000)
 
     def test_the_cost_is_frozen_at_write_time_and_not_repriced(self):
         """Phase 45: the ledger records what a step cost, not what it would cost today.
@@ -342,21 +348,22 @@ class CircuitBreakerLedgerTests(unittest.TestCase):
         from tools import token_budget
 
         self.ledger.record_step_spend("i1", 1, prompt=1000, completion=1000)
-        recorded = self.ledger.cost_cents("i1")
-        self.assertGreater(recorded, 0.0)
+        recorded = self.ledger.cost_micros("i1")
+        self.assertGreater(recorded, 0)
 
-        original = token_budget.CENTS_PER_1K_PROMPT_TOKENS
+        original_prompt = token_budget.MICROS_PER_1K_PROMPT_TOKENS
+        original_completion = token_budget.MICROS_PER_1K_COMPLETION_TOKENS
         try:
-            token_budget.CENTS_PER_1K_PROMPT_TOKENS = original * 100
-            token_budget.CENTS_PER_1K_COMPLETION_TOKENS = original * 100
-            self.assertAlmostEqual(self.ledger.cost_cents("i1"), recorded, places=6)
+            token_budget.MICROS_PER_1K_PROMPT_TOKENS = original_prompt * 100
+            token_budget.MICROS_PER_1K_COMPLETION_TOKENS = original_completion * 100
+            self.assertEqual(self.ledger.cost_micros("i1"), recorded)
         finally:
-            token_budget.CENTS_PER_1K_PROMPT_TOKENS = original
-            token_budget.CENTS_PER_1K_COMPLETION_TOKENS = 1.0
+            token_budget.MICROS_PER_1K_PROMPT_TOKENS = original_prompt
+            token_budget.MICROS_PER_1K_COMPLETION_TOKENS = original_completion
 
     def test_an_unknown_intent_has_taken_no_steps_and_cost_nothing(self):
         self.assertEqual(self.ledger.step_high_water("nope"), 0)
-        self.assertEqual(self.ledger.cost_cents("nope"), 0.0)
+        self.assertEqual(self.ledger.cost_micros("nope"), 0)
 
 
 class RollbackLedgerTests(unittest.TestCase):

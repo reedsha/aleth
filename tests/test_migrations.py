@@ -100,7 +100,8 @@ class RunnerTests(unittest.TestCase):
                           "intent_ledger", "intent_step_spend", "execution_telemetry",
                           "routing_decisions", "agent_faults"):
                 self.assertIn(table, tables, table)
-            self.assertIn("cost_cents", _columns(connection, "intent_step_spend"))
+            self.assertIn("cost_micros", _columns(connection, "intent_step_spend"))
+            self.assertNotIn("cost_cents", _columns(connection, "intent_step_spend"))
         finally:
             connection.close()
 
@@ -110,23 +111,25 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(migrations.migrate_path(self.db_path), first)
 
     def test_an_existing_database_is_upgraded_not_recreated(self):
-        """The whole point: a database written before cost_cents gets the column, not a crash."""
+        """The whole point: a database written before the cost column gets it, not a crash."""
         self.assertEqual(migrations.migrate_path(self.db_path, directory=self._baseline_dir()), 1)
 
         connection = self._connect()
         try:
             self.assertNotIn(
-                "cost_cents", _columns(connection, "intent_step_spend"),
+                "cost_micros", _columns(connection, "intent_step_spend"),
                 "the baseline must predate the patch",
             )
         finally:
             connection.close()
 
-        self.assertEqual(migrations.migrate_path(self.db_path), 2)
+        self.assertEqual(migrations.migrate_path(self.db_path), 3)
 
         connection = self._connect()
         try:
-            self.assertIn("cost_cents", _columns(connection, "intent_step_spend"))
+            columns = _columns(connection, "intent_step_spend")
+            self.assertIn("cost_micros", columns)
+            self.assertNotIn("cost_cents", columns)
         finally:
             connection.close()
 
@@ -148,12 +151,46 @@ class RunnerTests(unittest.TestCase):
         connection = self._connect()
         try:
             cost = connection.execute(
-                "SELECT cost_cents FROM intent_step_spend WHERE intent_id = 'i1' AND step = 1"
+                "SELECT cost_micros FROM intent_step_spend WHERE intent_id = 'i1' AND step = 1"
             ).fetchone()[0]
         finally:
             connection.close()
-        # 1000 prompt at 0.25c/1K + 1000 completion at 1.0c/1K.
-        self.assertAlmostEqual(float(cost), 1.25, places=6)
+        # 1000 prompt at 2,500 micros/1K + 1000 completion at 10,000 micros/1K = 12,500 micros
+        # (1.25 cents), carried through the float column by 002 and frozen as an integer by 003.
+        self.assertEqual(int(cost), 12500)
+
+    def test_the_float_cost_column_is_converted_to_micros(self):
+        """Phase 46: a v2 database's REAL cents become exact integer micros, and the float is gone."""
+        v2 = os.path.join(self.tmp, "v2")
+        os.makedirs(v2, exist_ok=True)
+        for name in ("001_initial_schema.sql", "002_add_cost_cents.sql"):
+            shutil.copy(os.path.join(migrations.MIGRATIONS_DIR, name), os.path.join(v2, name))
+        migrations.migrate_path(self.db_path, directory=v2)
+
+        connection = self._connect()
+        try:
+            connection.execute(
+                "INSERT INTO intent_step_spend"
+                " (intent_id, step, prompt_tokens, completion_tokens, cost_cents, recorded_at)"
+                " VALUES ('i1', 1, 1000, 1000, 1.25, 0.0)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        self.assertEqual(migrations.migrate_path(self.db_path), 3)
+
+        connection = self._connect()
+        try:
+            columns = _columns(connection, "intent_step_spend")
+            self.assertIn("cost_micros", columns)
+            self.assertNotIn("cost_cents", columns)
+            micros = connection.execute(
+                "SELECT cost_micros FROM intent_step_spend WHERE intent_id = 'i1' AND step = 1"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(int(micros), 12500)
 
     def test_a_failing_patch_rolls_back_and_does_not_advance_the_version(self):
         """A patch that fails must leave *nothing*: not its statements, not its number."""

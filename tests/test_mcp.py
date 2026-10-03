@@ -1200,8 +1200,9 @@ class IntentCircuitBreakerTests(MCPServerTestCase):
         from tools import token_budget
 
         ledger = self._ledger_with_running("i-cost")
-        # Enough prompt tokens, at the configured rate, to breach the ceiling exactly.
-        prompt = int(token_budget.MAX_COST_CENTS / token_budget.CENTS_PER_1K_PROMPT_TOKENS * 1000)
+        # Enough prompt tokens, at the configured rate, to breach the ceiling exactly:
+        # ``cost_micros(prompt, 0) >= MAX_COST_MICROS``.
+        prompt = token_budget.MAX_COST_MICROS * 1000 // token_budget.MICROS_PER_1K_PROMPT_TOKENS
         ledger.record_step_spend("i-cost", 1, prompt=prompt, completion=0)
         calls, completer = self._counting()
 
@@ -1222,7 +1223,7 @@ class IntentCircuitBreakerTests(MCPServerTestCase):
 
         self.assertEqual(text, "done")
         self.assertEqual(len(calls), 1)
-        self.assertLess(ledger.cost_cents("i-cheap"), token_budget.MAX_COST_CENTS)
+        self.assertLess(ledger.cost_micros("i-cheap"), token_budget.MAX_COST_MICROS)
 
     # -- the repetition breaker ----------------------------------------------
     def test_the_repetition_breaker_stops_the_apology_loop(self):
