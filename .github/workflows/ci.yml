@@ -177,6 +177,57 @@ jobs:
               print("::error::the suite failed without a recorded test failure")
           PY
 
+  test-image:
+    # Phase 47: the artifact is a claim, so it is built and booted here. A Dockerfile that only ever
+    # builds by hand is a Dockerfile that bit-rots -- and the two things this proves (one port serves
+    # both the UI and the API, and the System 1 checkpoint is configuration) are the phase's whole
+    # point.
+    name: test-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the single artifact
+        run: docker build -t aleth .
+      - name: Boot it and smoke-test the one port
+        run: |
+          set -e
+          docker run -d --name aleth-smoke --network host \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -e ALETH_STATE_DIR=/tmp/aleth-state \
+            -e ALETH_API_PORT=8799 \
+            aleth
+          ready=""
+          for attempt in $(seq 1 24); do
+            if curl -fsS -m 5 http://127.0.0.1:8799/api/health > /tmp/health.json 2>/dev/null; then
+              ready="yes"; break
+            fi
+            sleep 5
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::the artifact never answered on its port"
+            docker logs aleth-smoke 2>&1 | tail -n 40
+            exit 1
+          fi
+          cat /tmp/health.json
+          grep -q '"status":"ok"' /tmp/health.json
+          # One socket serves the UI at / and the API at /api -- and a client route is the document.
+          test "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8799/)" = "200"
+          test "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8799/plan/42)" = "200"
+          test "$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8799/api/health)" = "200"
+          echo '--- what the engine said ---'
+          docker logs aleth-smoke 2>&1 | tail -n 20
+      - name: The System 1 checkpoint is configuration
+        run: |
+          set -e
+          default=$(docker run --rm --entrypoint python aleth -c 'from agents import laya_model; print(laya_model.model_name())')
+          override=$(docker run --rm -e ALETH_SYSTEM_ONE_MODEL=multilingual --entrypoint python aleth -c 'from agents import laya_model; print(laya_model.model_name())')
+          echo "default=$default override=$override"
+          test "$default" = "english"
+          test "$override" = "multilingual"
+      - name: Tear down
+        if: always()
+        run: docker rm -f aleth-smoke || true
+
   test-immutable:
     name: test-immutable
     runs-on: ubuntu-latest

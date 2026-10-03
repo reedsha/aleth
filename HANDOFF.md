@@ -13,11 +13,25 @@
 
 ---
 
-## ⚡ 0. Current State at This Handoff (Phase 46)
+## ⚡ 0. Current State at This Handoff (Phase 47)
 
-- **Phases 5 → 46 are complete and CI-green.** Phase 46 (integer money, a catalog-driven migration
-  runner, and the disk-rot sweeper) is the latest. `MASTER_CONTEXT.md` is the ground truth; this
-  section only points at what changed most recently.
+- **Phases 5 → 47 are complete and CI-green.** Phase 47 (distribution and packaging) is the latest.
+  `MASTER_CONTEXT.md` is the ground truth; this section only points at what changed most recently.
+- **The artifact is one image, one process, one port (Phase 47).** `Dockerfile` (root) is a
+  three-stage build: Node compiles `ui/` into `dist/`, Python builds a venv with the compiled Rust
+  core and the declared dependencies, and the runtime carries the venv, the built UI and the two
+  host tools the engine drives (`git`, and the `docker` CLI from Docker's repository). `torch` comes
+  from PyTorch's CPU index first, so the image is **2.84 GB** instead of 10.4 GB. `README.md` has
+  the exact run command; the socket mount is not optional, and the deployment uses `--network host`
+  because the security boundary is loopback-only.
+- **`aleth serve` is the headless daemon (Phase 47).** Pre-flight, process lock, migrations, the
+  maintenance sweeper, then the unified server -- in that order, before a request is accepted. The
+  gateway serves the built UI at `/` (with an SPA fallback: an extension-less path is a client
+  route) and the typed API at `/api`, from one socket. `aleth boot` is the same engine plus the
+  desktop window; `_prepare_daemon()` is shared so the two cannot drift.
+- **The System 1 checkpoint is configuration (Phase 47).** `ALETH_SYSTEM_ONE_MODEL` names it, read at
+  runtime when the resolver is built (default `english`), and threaded to both `Backend(model=...)`
+  and `Router(default=...)`. The System 2 names were already env-driven (`agents/model_routing.py`).
 - **Money is integer micros (Phase 46).** `intent_step_spend.cost_micros` is an INTEGER in units of
   1e-6 dollars (1 cent = 10,000 micros), written by `record_step_spend` and read back as a sum.
   `003_migrate_currency_to_micros.sql` converts the old `cost_cents REAL` and drops it. Floating
@@ -1665,7 +1679,7 @@ pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 | Lint | `npm run lint` | clean, exit 0 — ESLint **and** `depcruise`: **0 violations** (35 modules, 188 dependencies) |
 | Build | `npm run build` | 59 modules |
 | UI tests | `npx playwright test` | **78 passed** in 27.9 s |
-| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1424 passed, 24 skipped, 243 subtests** in 104.92 s (`-n auto`) |
+| Backend | `venv/Scripts/python.exe -m pytest -m "not llm"` | **1435 passed, 24 skipped, 243 subtests** in 123.31 s (`-n auto`) |
 | Backend (Linux, daemon live) | `~/aleth-venv/bin/python -m pytest -m 'not llm' -n4` in WSL | **1372 passed, 5 skipped** on the Phase 39 tree, 0 containers left behind. The WSL venv predates the Phase 41 hard `keyring` import and cannot install it offline, so it is no longer the local authority -- CI is. |
 | Shutdown flag & drain | `tests/test_lifecycle.py` (new) | **9 passed** — the flag flips once, the event every loop reads is the same object, drains run newest-first, a failing drain does not stop the others, a drain can unregister itself mid-drain, and `reset` clears flag and registry |
 | HTTP 503 | `tests/test_api_gateway.py::ShutdownRefusalTests` | **2 passed** — a request during a shutdown is a 503 naming the reason, and the server registers then forgets its drain |
@@ -1688,6 +1702,10 @@ pass (`7590138`, Phase 41.5, before the Phase 42 changes).
 | TTL purge | `tests/test_maintenance.py::PurgeTests` | **passed** — old terminal intents lose their step rows, faults and shadow; a recent one and a live one are kept; a missing database is not a fault |
 | Reclamation | `tests/test_maintenance.py::ReclaimTests` | **passed** — a fresh database is `auto_vacuum=INCREMENTAL`, and `reclaim` runs a non-busy `TRUNCATE` checkpoint that resets the WAL's frame count (whether the *file* shrinks is the OS's business — a handle held elsewhere pins the size on Windows, which is why the assertion is on the log, not on a byte count) |
 | CI names its failures | `.github/workflows/ci.yml` | the suite writes `--junitxml` and a follow-up step emits each failing testcase as a `::error::` annotation, so a red run says *which* test failed without the auth-gated raw log (this is how the WAL failure above was diagnosed) |
+| System 1 model config | `tests/test_laya_model.py::SystemOneModelTests` | **6 passed** — the default is `english`, a blank value is the default, the name is read from the *live* environment, the resolver pins it on every call, and the Router is constructed with it as `default=` |
+| SPA routing | `tests/test_api_gateway.py::SpaRoutingTests` | **4 passed** — `/` and an extension-less client route serve the document, a real asset is served as itself, and a missing asset is still a 404 |
+| Headless entry point | `tests/test_harness.py::CliTests::test_serve_aborts_before_starting_anything_when_a_check_fails` | **passed** — `aleth serve` runs the same pre-flight as `boot` and refuses on a failure |
+| The artifact | `docker build -t aleth .` + `docker run --network host -v /var/run/docker.sock:...` on WSL | **built and booted** — 2.84 GB; the pre-flight passes (keyring reports and falls back), the ledger migrates to **schema version 3**, and `/`, `/plan/42`, `/console.html` and `/api/health` all answer 200 from the one socket. `ALETH_SYSTEM_ONE_MODEL` reads `english` by default, `multilingual` from `-e`, and `typed-decisions` from a mounted `.env` |
 | Sweeper thread | `tests/test_maintenance.py::SweeperTests` | **passed** — `run_maintenance` purges and reclaims in one pass, the thread runs a pass and stops promptly, and `start_maintenance` is idempotent |
 | Secrets | `tests/test_harness.py::SecretsTests` + `ZeroTrustAuditTests` | **passed** — a credential round-trips through the keyring, `list` reports names only, an empty value and an unknown provider are refused, no backend is a *reported* failure, the environment is loaded from the store, an exported name wins, and a loaded credential leaves no bytes in the state directory |
 | Logging | `tests/test_harness.py::EngineLogTests` | **passed** — one JSON object with timestamp/level/message, the run's correlation id attached, `maxBytes`/`backupCount` at 50 MB × 3, and a second `configure` does not double the lines |

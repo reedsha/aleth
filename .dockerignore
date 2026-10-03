@@ -1,0 +1,37 @@
+# The build context, pruned (Phase 47). Everything here is either regenerated inside the image or
+# is machine state that must never enter it -- a stale ``dist/``, a host virtualenv, or the
+# operator's state database.
+
+.git
+.github
+node_modules
+dist
+test-results
+playwright-report
+
+venv
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+build
+crates/*/target
+
+.env
+.aleth_id
+aleth_state.db
+aleth_state.db-wal
+aleth_state.db-shm
+knowledge_vectors
+my_project_workspace
+
+# Documentation and the test suite are not part of the artifact: the image ships the engine and the
+# built UI, and the tests run against the checkout.
+tests
+*.md
+tags.txt
+deepagents_state.db
+playwright.config.mjs
+eslint.config.mjs
+.dependency-cruiser.cjs
+.aleth_backups

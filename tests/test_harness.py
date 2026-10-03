@@ -517,6 +517,15 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(status, 1)
 
+    def test_serve_aborts_before_starting_anything_when_a_check_fails(self):
+        """The headless entry point runs the same pre-flight as ``boot`` (Phase 47)."""
+        import cli
+
+        with mock.patch.object(cli.preflight, "enforce", return_value=False):
+            status = cli.main(["serve"])
+
+        self.assertEqual(status, 1)
+
     def test_the_parser_requires_a_command(self):
         import cli
 

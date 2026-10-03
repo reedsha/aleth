@@ -22,6 +22,10 @@ instructions to prefer the area over the kind of change did not help (4/10).
     unset, "heuristic"   the word list. The default, and the permanent fallback.
     "model"              the checkpoint, via the ``laya`` package.
 
+``ALETH_SYSTEM_ONE_MODEL`` names the **checkpoint** the backend loads (default
+:data:`DEFAULT_MODEL`). It is read when the resolver is built -- runtime, never import time -- so a
+container, a ``.env`` or a shell chooses it without an edit to this file.
+
 The checkpoint is roughly 0.8 GB of weights that the package downloads from Hugging
 Face on the first ``predict`` call, which is why "model" is opt-in and never a
 default. Any other value is reported and treated as the heuristic, so a typo in a
@@ -65,12 +69,14 @@ __all__ = [
     "BACKEND_MODEL",
     "DEFAULT_MODEL",
     "ENV_BACKEND",
+    "ENV_MODEL",
     "Backend",
     "Resolver",
     "active_engine",
     "classify",
     "install",
     "installed",
+    "model_name",
     "questions",
     "reset",
     "warm_up",
@@ -82,6 +88,11 @@ ENV_BACKEND = "LAYA_BACKEND"
 BACKEND_HEURISTIC = "heuristic"
 BACKEND_MODEL = "model"
 
+# The checkpoint, by name, read at *runtime* (Phase 47). A distributed artifact cannot have its
+# model compiled in: the deployment decides which checkpoint the System 1 seam loads, and the
+# decision has to be readable from a container's environment or a ``.env`` without a rebuild.
+ENV_MODEL = "ALETH_SYSTEM_ONE_MODEL"
+
 # The checkpoint these questions are written against, by the name the package's Router
 # knows it by: "english" resolves to the repo root of convaiinnovations/laya (421M
 # ModernBERT-large, ~804 MB). The *repository id* is not a valid value here -- Router
@@ -91,6 +102,17 @@ BACKEND_MODEL = "model"
 # drop-in, because these questions are English and the typed-decisions checkpoint is
 # selected by matching a question set against its own workflow.
 DEFAULT_MODEL = "english"
+
+
+def model_name(environ: Optional[Mapping[str, str]] = None) -> str:
+    """The System 1 checkpoint, read **at call time**.
+
+    Read here rather than bound to a module constant so the deployment chooses it: a container's
+    environment, a ``.env``, or a test pointing the seam at a stub. An unset or blank name is the
+    documented default, which is what keeps the engine's behaviour unchanged where nobody sets it.
+    """
+    source = os.environ if environ is None else environ
+    return str(source.get(ENV_MODEL) or "").strip() or DEFAULT_MODEL
 
 # The questions below address the payload by name (`request`), so the state is passed
 # as a mapping under this key rather than as a bare string.
@@ -251,12 +273,16 @@ class Backend:
         )
 
 
-def _load_router() -> Any:
-    """Constructs the package's Router.
+def _load_router(model: str = "") -> Any:
+    """Constructs the package's Router, pinned to ``model``.
 
     Imported inside the function so that this module -- and therefore anything that
     imports it, including the decision path on a machine without the checkpoint --
     costs nothing until the model backend is actually selected.
+
+    ``default=`` is passed as well as the per-call ``model=`` the backend sends, so the Router's
+    own fallback agrees with the engine's choice instead of quietly answering from the package
+    default.
     """
     try:
         from laya import Router
@@ -270,7 +296,7 @@ def _load_router() -> Any:
             f"the installed 'laya' package has no Router ({exc}); 'agents' may be "
             f"shadowing it on sys.path"
         ) from exc
-    return Router()
+    return Router(default=str(model or "") or DEFAULT_MODEL)
 
 
 class Resolver:
@@ -281,13 +307,19 @@ class Resolver:
     constructed at most once, however many directives arrive.
     """
 
-    def __init__(self, enabled: bool, load: Callable[[], Any]):
+    def __init__(self, enabled: bool, load: Callable[[], Any], model: str = DEFAULT_MODEL):
         self._enabled = enabled
         self._load = load
+        self._model = str(model or "") or DEFAULT_MODEL
         self._lock = threading.Lock()
         self._backend: Optional[Backend] = None
         self._failure: Optional[BaseException] = None
         self._ready = False
+
+    @property
+    def model(self) -> str:
+        """The checkpoint this resolver was built for, so a caller can report the choice."""
+        return self._model
 
     @classmethod
     def from_env(
@@ -295,7 +327,12 @@ class Resolver:
         environ: Optional[Mapping[str, str]] = None,
         load: Optional[Callable[[], Any]] = None,
     ) -> "Resolver":
-        """Reads ``LAYA_BACKEND``. An unrecognised name is reported and read as the heuristic."""
+        """Reads ``LAYA_BACKEND`` and ``ALETH_SYSTEM_ONE_MODEL`` -- both at call time.
+
+        An unrecognised backend name is reported and read as the heuristic. The checkpoint name is
+        read here rather than at import, which is what makes it a deployment setting: the resolver
+        is built once per process, from whatever the environment said at that moment.
+        """
         source = os.environ if environ is None else environ
         raw = (source.get(ENV_BACKEND) or "").strip().lower()
         if raw and raw not in (BACKEND_HEURISTIC, BACKEND_MODEL):
@@ -303,7 +340,12 @@ class Resolver:
                 f"unknown {ENV_BACKEND}={raw!r}; using the {BACKEND_HEURISTIC} engine"
             )
             raw = BACKEND_HEURISTIC
-        return cls(raw == BACKEND_MODEL, load or _load_router)
+        model = model_name(source)
+        if load is not None:
+            loader = load
+        else:
+            loader = lambda: _load_router(model)
+        return cls(raw == BACKEND_MODEL, loader, model=model)
 
     @property
     def enabled(self) -> bool:
@@ -327,7 +369,7 @@ class Resolver:
             if not self._ready:
                 self._ready = True
                 try:
-                    self._backend = Backend(self._load())
+                    self._backend = Backend(self._load(), model=self._model)
                 except BaseException as exc:  # a load failure must not break a decision
                     self._failure = exc
                     _report(f"model backend unavailable, using the word list: {exc}")

@@ -15,6 +15,8 @@ import contextlib
 import io
 import os
 import pathlib
+import sys
+import types
 import unittest
 from unittest import mock
 
@@ -101,7 +103,7 @@ class GateTests(unittest.TestCase):
 
     def test_the_module_seam_defaults_to_the_word_list(self):
         router = FakeRouter(payload=_answers())
-        with mock.patch.object(laya_model, "_load_router", lambda: router):
+        with mock.patch.object(laya_model, "_load_router", lambda *_a, **_k: router):
             with mock.patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(laya_model.ENV_BACKEND, None)
                 laya_model.reset()
@@ -113,7 +115,8 @@ class GateTests(unittest.TestCase):
 
     def test_the_module_seam_takes_the_checkpoint_when_the_gate_selects_it(self):
         router = FakeRouter(payload=_answers(intent="analysis", domain="docs"))
-        with mock.patch.object(laya_model, "_load_router", lambda: router):
+        # The loader is handed the configured checkpoint (Phase 47), so the patch accepts it.
+        with mock.patch.object(laya_model, "_load_router", lambda *_a, **_k: router):
             with mock.patch.dict(os.environ, {laya_model.ENV_BACKEND: "model"}):
                 laya_model.reset()
                 self.addCleanup(laya_model.reset)
@@ -357,6 +360,72 @@ class LoadingTests(unittest.TestCase):
             "a model runtime is imported at module scope, so importing this module "
             "costs it even when the gate is off",
         )
+
+
+class SystemOneModelTests(unittest.TestCase):
+    """Phase 47: the checkpoint is **configuration**, read at runtime, not a compiled-in name.
+
+    A distributed artifact cannot have its model baked in: the deployment -- a container's
+    environment, a ``.env``, a shell -- chooses which checkpoint the System 1 seam loads, and the
+    choice has to be visible without a rebuild.
+    """
+
+    def test_the_default_is_the_documented_checkpoint(self):
+        self.assertEqual(laya_model.DEFAULT_MODEL, "english")
+        self.assertEqual(laya_model.model_name({}), laya_model.DEFAULT_MODEL)
+
+    def test_a_blank_value_is_the_default(self):
+        self.assertEqual(
+            laya_model.model_name({laya_model.ENV_MODEL: "   "}), laya_model.DEFAULT_MODEL
+        )
+
+    def test_the_name_is_read_from_the_live_environment_at_call_time(self):
+        self.assertEqual(
+            laya_model.model_name({laya_model.ENV_MODEL: "multilingual"}), "multilingual"
+        )
+        # The reader is the *live* environment, so a deployment that sets the variable after this
+        # module was imported is still honoured -- which is what "not at import time" means.
+        with mock.patch.dict(os.environ, {laya_model.ENV_MODEL: "typed-decisions"}):
+            self.assertEqual(laya_model.model_name(), "typed-decisions")
+
+    def test_the_resolver_pins_the_configured_checkpoint_on_every_call(self):
+        router = FakeRouter(payload=_answers())
+        resolver = laya_model.Resolver.from_env(
+            environ={laya_model.ENV_BACKEND: "model", laya_model.ENV_MODEL: "multilingual"},
+            load=lambda: router,
+        )
+
+        resolver.classify("add a login endpoint")
+
+        self.assertEqual(resolver.model, "multilingual")
+        self.assertEqual(router.calls[0]["model"], "multilingual")
+
+    def test_the_router_is_constructed_with_the_configured_default(self):
+        """``default=`` as well, so the package's own fallback agrees with the engine's choice."""
+        seen = {}
+
+        class _Router:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+        stub = types.SimpleNamespace(Router=_Router)
+        with mock.patch.dict(sys.modules, {"laya": stub}):
+            laya_model._load_router("multilingual")
+
+        self.assertEqual(seen.get("default"), "multilingual")
+
+    def test_an_unset_model_falls_back_to_the_default_in_the_router_too(self):
+        seen = {}
+
+        class _Router:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+
+        stub = types.SimpleNamespace(Router=_Router)
+        with mock.patch.dict(sys.modules, {"laya": stub}):
+            laya_model._load_router("")
+
+        self.assertEqual(seen.get("default"), laya_model.DEFAULT_MODEL)
 
 
 if __name__ == "__main__":

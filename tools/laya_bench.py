@@ -172,9 +172,10 @@ def _checkpoint_engine(verbose: bool) -> Any:
 
     from agents import laya_model
 
+    model = laya_model.model_name()
     if verbose:
-        print("loading the Laya checkpoint (cached after the first run)...", flush=True)
-    return laya_model.Backend(Router(), model=laya_model.DEFAULT_MODEL)
+        print(f"loading the Laya checkpoint {model!r} (cached after the first run)...", flush=True)
+    return laya_model.Backend(Router(default=model), model=model)
 
 
 def _row(text: str, width: int = 52) -> str:

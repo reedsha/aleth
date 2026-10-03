@@ -381,6 +381,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if os.path.isdir(candidate):
             candidate = os.path.join(candidate, "index.html")
+        if not os.path.isfile(candidate) and not os.path.splitext(relative)[1]:
+            # SPA fallback (Phase 47): a path with **no file extension** is a client route, not an
+            # asset, so the document is served and the page's own router decides what to show. A
+            # missing asset -- anything with an extension -- is still a 404: answering HTML for a
+            # script or a stylesheet would break the page rather than help it.
+            candidate = os.path.join(base, "index.html")
         if not os.path.isfile(candidate):
             self._denied(404, "no such asset", path)
             return

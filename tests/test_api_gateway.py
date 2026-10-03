@@ -825,5 +825,53 @@ class ShutdownRefusalTests(unittest.TestCase):
         self.assertNotIn(server.stop, lifecycle._drains)
 
 
+class SpaRoutingTests(unittest.TestCase):
+    """Phase 47: the served bundle is one page, so a client route must not 404.
+
+    The gateway serves the built frontend and the API from one socket. A path with no file
+    extension is a *client* route and gets the document; a missing asset is still a 404, because
+    answering HTML for a script would break the page rather than help it.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="aleth_spa_")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        with open(os.path.join(self.root, "index.html"), "w", encoding="utf-8") as handle:
+            handle.write("<!doctype html><title>spa</title>")
+        os.makedirs(os.path.join(self.root, "assets"), exist_ok=True)
+        with open(os.path.join(self.root, "assets", "app.js"), "w", encoding="utf-8") as handle:
+            handle.write("console.log(1)")
+        self.server = start_gateway(port=0, static_root=self.root)
+        self.addCleanup(self.server.stop)
+
+    def _get(self, path):
+        connection = http.client.HTTPConnection("127.0.0.1", self.server.bound_port, timeout=10)
+        try:
+            connection.request("GET", path)
+            response = connection.getresponse()
+            return response.status, response.read().decode("utf-8")
+        finally:
+            connection.close()
+
+    def test_the_root_serves_the_document(self):
+        status, body = self._get("/")
+        self.assertEqual(status, 200)
+        self.assertIn("spa", body)
+
+    def test_a_client_route_serves_the_document(self):
+        status, body = self._get("/plan/42")
+        self.assertEqual(status, 200)
+        self.assertIn("spa", body)
+
+    def test_a_real_asset_is_served_as_itself(self):
+        status, body = self._get("/assets/app.js")
+        self.assertEqual(status, 200)
+        self.assertIn("console.log", body)
+
+    def test_a_missing_asset_is_still_a_404(self):
+        status, _ = self._get("/assets/missing.js")
+        self.assertEqual(status, 404)
+
+
 if __name__ == "__main__":
     unittest.main()
