@@ -167,9 +167,12 @@ jobs:
                   print(f"::error::could not read {path}: {error}")
                   continue
               for case in root.iter("testcase"):
-                  if any(child.tag in ("failure", "error") for child in case):
+                  bad = [child for child in case if child.tag in ("failure", "error")]
+                  if bad:
                       found = True
-                      print(f"::error::{case.get('classname')}::{case.get('name')}")
+                      detail = (bad[0].get("message") or bad[0].text or "").strip()
+                      detail = " ".join(detail.split())[:400]
+                      print(f"::error::{case.get('classname')}::{case.get('name')} -- {detail}")
           if not found:
               print("::error::the suite failed without a recorded test failure")
           PY
