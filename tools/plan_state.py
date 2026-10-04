@@ -14,6 +14,7 @@ never writes state.
 
 import json
 import os
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -66,6 +67,19 @@ _LAST_LOAD_ERROR = ""
 # The old machine-state file. Read exactly once, to import a plan authored before the
 # store existed; then removed. Never written.
 _LEGACY_JSON = "plan.json"
+
+# One lock for every plan-level read-modify-write and every PLAN.md write in this process.
+#
+# The store's own lock serialises each *transaction*, not the logical RMW: a caller reads the
+# DAG, merges, and writes the whole task set back -- two overlapping saves each replace the set
+# from their own snapshot, and the slower writer silently erases the faster one's task additions
+# and status writes. The tagging daemon, workflow threads and API threads all write plans
+# concurrently, so the read, the merge and the save (and the markdown projection rendered from
+# the committed state) belong to one critical section. RLock because ``update_plan_task_status``
+# nests a projection write inside the same section. The engine holds a process lock at boot, so
+# in-process serialisation is the whole story; the Rust core's fs2 PlanLock guards only its own
+# (unused-by-Python) write path.
+_PLAN_WRITE_LOCK = threading.RLock()
 
 
 def last_plan_load_error() -> str:
@@ -192,7 +206,8 @@ def write_plan_markdown(content: str) -> str:
     """
     path = get_plan_markdown_path()
     try:
-        atomic_io.write_text_atomic(path, content)
+        with _PLAN_WRITE_LOCK:
+            atomic_io.write_text_atomic(path, content)
     except OSError as error:
         raise PlanWriteError(f"Failed writing the plan markdown: {error}") from error
     return path
@@ -211,9 +226,10 @@ def plan_structure_report(content: Optional[str] = None) -> Dict[str, Any]:
 
 def _write_projection(plan_id: str) -> None:
     """Re-render PLAN.md from the store (a projection, never a source of state)."""
-    markdown = get_store().render_plan_markdown(plan_id)
     try:
-        atomic_io.write_text_atomic(get_plan_markdown_path(), markdown)
+        with _PLAN_WRITE_LOCK:
+            markdown = get_store().render_plan_markdown(plan_id)
+            atomic_io.write_text_atomic(get_plan_markdown_path(), markdown)
     except OSError as error:
         print(f"[PlanState] Could not write the markdown projection: {error}")
 
@@ -235,31 +251,32 @@ def save_plan_state(plan_dict: Dict[str, Any]) -> Dict[str, Any]:
         raise PlanWriteError(prepared["error"])
     plan = prepared["plan"]
 
-    plan_id = _plan_id()
-    store = get_store()
-    existing = store.get_dag(plan_id)
-    dag = plan_dict_to_dag(
-        plan, plan_id, created_at=existing.created_at if existing else None
-    )
-    # The legacy dictionary has no dependency/target/agent fields; carry the stored ones
-    # forward so an ordinary status write does not erase what a later phase wrote.
-    merge_dag_fields(dag, existing)
-    # ``task_dependencies`` is the source of truth for topology, so the incoming document
-    # defines the edges only on the plan's FIRST write -- creation or import. Afterwards an
-    # ordinary save must not reconcile the table from whatever the caller's nodes carry: an
-    # edge added through ``add_task_dependency`` would be erased by the next status write.
-    store.save_dag(dag, sync_edges=existing is None)
+    with _PLAN_WRITE_LOCK:
+        plan_id = _plan_id()
+        store = get_store()
+        existing = store.get_dag(plan_id)
+        dag = plan_dict_to_dag(
+            plan, plan_id, created_at=existing.created_at if existing else None
+        )
+        # The legacy dictionary has no dependency/target/agent fields; carry the stored ones
+        # forward so an ordinary status write does not erase what a later phase wrote.
+        merge_dag_fields(dag, existing)
+        # ``task_dependencies`` is the source of truth for topology, so the incoming document
+        # defines the edges only on the plan's FIRST write -- creation or import. Afterwards an
+        # ordinary save must not reconcile the table from whatever the caller's nodes carry: an
+        # edge added through ``add_task_dependency`` would be erased by the next status write.
+        store.save_dag(dag, sync_edges=existing is None)
 
-    # Compiled through this module's own name on purpose: the compile is the seam a test
-    # replaces to prove a failed compile cannot be reported as a successful save.
-    try:
-        compiled_md = compile_plan_json_to_markdown(plan)
-    except Exception as error:
-        raise PlanWriteError(f"Failed compiling to PLAN.md: {error}") from error
-    try:
-        atomic_io.write_text_atomic(get_plan_markdown_path(), compiled_md)
-    except OSError as error:
-        raise PlanWriteError(f"Failed writing PLAN.md: {error}") from error
+        # Compiled through this module's own name on purpose: the compile is the seam a test
+        # replaces to prove a failed compile cannot be reported as a successful save.
+        try:
+            compiled_md = compile_plan_json_to_markdown(plan)
+        except Exception as error:
+            raise PlanWriteError(f"Failed compiling to PLAN.md: {error}") from error
+        try:
+            atomic_io.write_text_atomic(get_plan_markdown_path(), compiled_md)
+        except OSError as error:
+            raise PlanWriteError(f"Failed writing PLAN.md: {error}") from error
 
     return _adopt(plan_dict, plan)
 
@@ -291,23 +308,24 @@ def update_plan_task_status(
     only ever told about a change the database actually holds.
     """
     store = get_store()
-    plan_id = _plan_id()
-    dag = store.get_dag(plan_id)
-    if dag is None:
-        return load_plan_state()
-    resolved = _resolve_node_id(dag, task_id)
-    if resolved is None:
-        return dag_to_plan_dict(dag)
-    if not store.update_task_status(plan_id, resolved, new_status, detail_note, files):
-        return dag_to_plan_dict(dag)
-    bridge_bus.emit({
-        "type": "task_state_updated",
-        "plan_id": plan_id,
-        "task_id": resolved,
-        "status": new_status,
-    })
-    _write_projection(plan_id)
-    return dag_to_plan_dict(store.get_dag(plan_id))
+    with _PLAN_WRITE_LOCK:
+        plan_id = _plan_id()
+        dag = store.get_dag(plan_id)
+        if dag is None:
+            return load_plan_state()
+        resolved = _resolve_node_id(dag, task_id)
+        if resolved is None:
+            return dag_to_plan_dict(dag)
+        if not store.update_task_status(plan_id, resolved, new_status, detail_note, files):
+            return dag_to_plan_dict(dag)
+        bridge_bus.emit({
+            "type": "task_state_updated",
+            "plan_id": plan_id,
+            "task_id": resolved,
+            "status": new_status,
+        })
+        _write_projection(plan_id)
+        return dag_to_plan_dict(store.get_dag(plan_id))
 
 
 def append_pending_task(

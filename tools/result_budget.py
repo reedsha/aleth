@@ -13,6 +13,8 @@ be silently written to disk. The cap belongs on the model-facing side: the MCP s
 
 from __future__ import annotations
 
+import os
+
 # 16 KB, counted in **bytes** rather than characters: the budget that matters is the payload, and a
 # file of multi-byte characters costs more of it than its character count suggests.
 MAX_RESULT_BYTES = 16 * 1024
@@ -42,4 +44,32 @@ def truncate_result(text: str, *, max_bytes: int = MAX_RESULT_BYTES) -> str:
     return f"{head}{marker}{tail}"
 
 
-__all__ = ["MAX_RESULT_BYTES", "truncate_result"]
+def read_file_window(path: str, *, max_bytes: int = MAX_RESULT_BYTES) -> str:
+    """A file's text capped at ``max_bytes`` UTF-8 bytes, read through a bounded window.
+
+    :func:`truncate_result` needs only the two ends of the payload, so reading the *whole* file to
+    hand it over is memory spent on bytes nobody sees: a multi-gigabyte (or model-generated) file
+    OOMed the server before the cap applied. The head and tail windows are seeked for directly and
+    the true size comes from ``stat``, so the result is what :func:`truncate_result` would have
+    produced -- without ever holding more than twice the budget.
+    """
+    size = os.path.getsize(path)
+    if size <= max_bytes:
+        with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
+            return handle.read()
+
+    marker = f"\n...[TRUNCATED at {max_bytes // 1024}KB: {size - max_bytes} bytes omitted]\n"
+    budget = max(0, max_bytes - len(marker.encode("utf-8")))
+    keep = budget // 2
+    with open(path, "rb") as handle:
+        head_raw = handle.read(keep)
+        handle.seek(max(0, size - keep))
+        tail_raw = handle.read(keep)
+    return (
+        head_raw.decode("utf-8", errors="ignore")
+        + marker
+        + tail_raw.decode("utf-8", errors="ignore")
+    )
+
+
+__all__ = ["MAX_RESULT_BYTES", "truncate_result", "read_file_window"]

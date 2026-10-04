@@ -18,6 +18,8 @@ build
 crates/*/target
 
 .env
+# The bootloader config can carry a provider ``api_key``; it is never part of the artifact.
+aleth.config.json
 .aleth_id
 aleth_state.db
 aleth_state.db-wal

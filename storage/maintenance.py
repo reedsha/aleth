@@ -170,13 +170,31 @@ def reclaim(db_path: str) -> Dict[str, Any]:
 def run_maintenance(
     db_path: Optional[str] = None, *, ttl_days: Optional[int] = None, now: Optional[float] = None
 ) -> Dict[str, Any]:
-    """One maintenance pass: purge, then reclaim. Returns a report; never raises."""
+    """One maintenance pass: purge, trim the bounded ledgers, then reclaim. Never raises.
+
+    The row-count trim runs here too (not only at boot): ``execution_telemetry`` gains one row per
+    container execution and ``routing_decisions`` one per dispatch, so a daemon that stays up for
+    months used to accumulate both without bound between restarts -- the sweeper pruned only the
+    intent tables.
+    """
     from storage.connection import default_db_path
+    from storage import retention
 
     path = os.path.abspath(str(db_path or default_db_path()))
     purged = purge_expired(path, ttl_days=ttl_days, now=now)
+    trimmed: Dict[str, int] = {}
+    try:
+        trimmed = retention.prune_ledgers(path)
+    except Exception as error:
+        # A trim is a bound, not the run: never let it take the reclaim (or the thread) with it.
+        trimmed = {"error": f"{type(error).__name__}: {error}"}
     reclaimed = reclaim(path)
-    return {"db_path": path, "purged": purged, "reclaimed": reclaimed}
+    return {
+        "db_path": path,
+        "purged": purged,
+        "trimmed": trimmed,
+        "reclaimed": reclaimed,
+    }
 
 
 class MaintenanceThread:

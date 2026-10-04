@@ -97,8 +97,40 @@ class PhaseDetectionTests(unittest.TestCase):
             project_phases.detect_runtime(self.root)
         self.assertIn("both", str(caught.exception))
 
+        self._write(project_phases.DECLARATION_FILE, json.dumps({"image": "python:3.12-slim"}))
+        self.assertEqual(project_phases.detect_image(self.root), "python:3.12-slim")
+
+    def test_a_declared_image_the_perimeter_does_not_know_is_refused(self):
+        """An unvalidated image name is a stranger's container with the workspace and a network.
+
+        The declaration decides which image a phase runs in, and setup runs **with egress**, so a
+        name nobody vetted is exactly what the execution perimeter exists to refuse. A private or
+        pinned base is a deliberate human decision and goes in the operator's allowlist.
+        """
+        self._write("requirements.txt", "requests\n")
+        self._write("package.json", "{}")
         self._write(project_phases.DECLARATION_FILE, json.dumps({"image": "my-polyglot:1"}))
-        self.assertEqual(project_phases.detect_image(self.root), "my-polyglot:1")
+        with self.assertRaises(ValueError) as caught:
+            project_phases.detect_image(self.root)
+        self.assertIn("ALETH_PROJECT_IMAGE_ALLOWLIST", str(caught.exception))
+
+        # The operator's escape hatch is the only way that name runs -- deliberately.
+        os.environ["ALETH_PROJECT_IMAGE_ALLOWLIST"] = "my-polyglot:1"
+        try:
+            self.assertEqual(project_phases.detect_image(self.root), "my-polyglot:1")
+        finally:
+            del os.environ["ALETH_PROJECT_IMAGE_ALLOWLIST"]
+
+    def test_an_unvetted_image_cannot_spoof_an_official_name(self):
+        """Only the official python/node namespaces pass, not a lookalike on another registry."""
+        self._write(project_phases.DECLARATION_FILE, json.dumps({"image": "evil/python:3.12"}))
+        with self.assertRaises(ValueError):
+            project_phases.detect_image(self.root)
+        self._write(project_phases.DECLARATION_FILE,
+                    json.dumps({"image": "docker.io/library/node:20-alpine"}))
+        self.assertEqual(
+            project_phases.detect_image(self.root), "docker.io/library/node:20-alpine"
+        )
 
     def test_the_setup_timeout_is_hard_and_bounded(self):
         """The one phase with egress must not be able to hold the queue forever (Phase 30)."""

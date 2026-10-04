@@ -135,9 +135,12 @@ def plan_artifact(
 ) -> Dict[str, Any]:
     """Record an artifact and halt the task in ``planned``, atomically.
 
-    The status change is one SQLite transaction (via the store's ``update_task_status``),
-    and the ``artifact_planned`` event is emitted only *after* it commits -- so the UI can
-    never be told about a plan the database does not hold.
+    The status change, the Architect's assessment and the artifact row are **one** SQLite
+    transaction (``store.transaction``): if two of the three commit separately, a crash between
+    them leaves a ``planned`` node with no artifact -- never re-dispatched (only ``pending`` is)
+    and never approvable -- which is a permanently stuck node. The ``artifact_planned`` event is
+    emitted only *after* the transaction commits -- so the UI can never be told about a plan the
+    database does not hold.
 
     The Architect's assessment (``complexity_score``, ``required_capabilities``) is written onto the
     node in the same transaction. It is what Phase 7's router reads, and a score that lived only in
@@ -155,14 +158,21 @@ def plan_artifact(
     store = get_store()
     if store.get_dag(plan_id) is None:
         raise StateExecutionError(task_id, "<no plan>")
-    if not store.update_task_status(plan_id, task_id, "planned"):
-        raise StateExecutionError(task_id, "<unknown task>")
-    store.record_assessment(
-        plan_id, task_id, artifact.complexity_score, artifact.required_capabilities
-    )
-    # Persist the artifact so the approval (which may arrive in a later request) and the
-    # executor can both read back exactly what was proposed.
-    store.save_artifact(plan_id, task_id, artifact.model_dump())
+    with store.transaction() as connection:
+        if not store.update_task_status(
+            plan_id, task_id, "planned", connection=connection
+        ):
+            raise StateExecutionError(task_id, "<unknown task>")
+        store.record_assessment(
+            plan_id,
+            task_id,
+            artifact.complexity_score,
+            artifact.required_capabilities,
+            connection=connection,
+        )
+        # Persist the artifact so the approval (which may arrive in a later request) and the
+        # executor can both read back exactly what was proposed.
+        store.save_artifact(plan_id, task_id, artifact.model_dump(), connection=connection)
 
     bridge_bus.emit({"type": "artifact_planned", "artifact": artifact.model_dump()})
     bridge_bus.emit({

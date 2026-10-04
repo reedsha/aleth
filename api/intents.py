@@ -39,6 +39,11 @@ from api.schemas import IntentLedgerEntry, IntentQueueStatus, IntentRequest, Int
 # next one is the honest answer, and the frontend gets a 429 rather than an ever-growing list.
 DEFAULT_CAPACITY = 32
 
+# The most the drain loop waits between tries after a deferred intent. Backoff after a defer
+# doubles from ``poll_seconds`` up to this, so a busy engine is woken a few times a second rather
+# than re-claiming the execution slot in a tight loop for the whole length of the other run.
+MAX_DEFER_BACKOFF_SECONDS = 5.0
+
 
 class IntentQueueFull(Exception):
     """The queue is at capacity. A refusal, not a silent drop."""
@@ -87,7 +92,11 @@ class IntentQueue:
         self._capacity = max(1, int(capacity))
         self._ledger = ledger
         self._items: Deque[Intent] = collections.deque()
-        self._history: List[Intent] = []
+        # Bounded like the queue itself (``status`` answers with the newest ``capacity``): an
+        # append-only list here grew for the life of the daemon -- one object plus its
+        # ``action_params`` per accepted intent -- for a history that is only ever read as its
+        # last ``capacity`` entries.
+        self._history: Deque[Intent] = collections.deque(maxlen=self._capacity)
         self._condition = threading.Condition()
         self._accepted = 0
         self._completed = 0
@@ -167,20 +176,32 @@ class IntentQueue:
         claim stays queued at the head and this returns ``None`` -- the caller waits and comes back.
         The claim and the dequeue happen under one lock on purpose: they are one decision, and
         splitting them would let a second caller claim a slot this one is about to take.
+
+        A non-empty queue whose slot is *not* ours also waits: returning instantly here made the
+        drain loop spin at full speed for as long as the other run lasted -- one claim UPDATE and
+        one release UPDATE on SQLite per iteration, no sleep, CPU pegged. It now blocks on the
+        condition (released by ``submit``/``release``/``wake``) until the slot frees or the wait
+        elapses, and only then gives up.
         """
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
         with self._condition:
-            if not self._items:
-                self._condition.wait(timeout)
-            if not self._items:
-                return None
-            intent = self._items[0]
-            if not self._claim(intent):
-                # The project is executing. Leave it at the head; the slot is not ours yet.
-                return None
-            self._items.popleft()
-            intent.status = "running"
-            self._current = intent
-            return intent
+            while True:
+                if self._items:
+                    intent = self._items[0]
+                    if self._claim(intent):
+                        self._items.popleft()
+                        intent.status = "running"
+                        self._current = intent
+                        return intent
+                    # The project is executing. Leave it at the head; the slot is not ours yet.
+                remaining = (
+                    None if deadline is None else deadline - time.monotonic()
+                )
+                if remaining is not None and remaining <= 0:
+                    return None
+                self._condition.wait(remaining)
+                if not self._items and (deadline is None or time.monotonic() >= deadline):
+                    return None
 
     def release(self, intent: Intent) -> None:
         """Put a deferred intent back at the head of the queue and give the slot back.
@@ -240,9 +261,9 @@ class IntentQueue:
             return len(self._items)
 
     def status(self) -> IntentQueueStatus:
-        """The queue's depth and history, newest last."""
+        """The queue's depth and history, newest last (bounded by the deque's own maxlen)."""
         with self._condition:
-            items = [intent.view() for intent in self._history[-self._capacity:]]
+            items = [intent.view() for intent in self._history]
             return IntentQueueStatus(
                 depth=len(self._items),
                 capacity=self._capacity,
@@ -333,16 +354,23 @@ def run_worker(
 
     ``RunDeferred`` is the exception to that rule, and the only one: it says the run was never
     started, so the intent is handed back to the queue instead of being failed. A busy engine is a
-    reason to wait, not an outcome to record.
+    reason to wait, not an outcome to record. Each defer backs the next wait off (capped), because
+    release-and-retry immediately is a claim/release pair on SQLite every iteration for as long as
+    the busy run lasts; the backoff is a wait, never a failure.
     """
+    # Bounded backoff after a deferred intent, so a busy engine costs a few wakes a second rather
+    # than a full-speed ledger write loop. Reset as soon as an intent is actually taken.
+    defer_backoff = float(poll_seconds)
     while not stop_event.is_set():
-        intent = queue.take(timeout=poll_seconds)
+        intent = queue.take(timeout=max(defer_backoff, poll_seconds))
         if intent is None:
             continue
+        defer_backoff = float(poll_seconds)
         try:
             handler(intent)
         except RunDeferred:
             queue.release(intent)
+            defer_backoff = min(defer_backoff * 2, MAX_DEFER_BACKOFF_SECONDS)
             continue
         except Exception as error:  # the loop outlives any one intent
             queue.settle(intent, error=f"{type(error).__name__}: {error}")

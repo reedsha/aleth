@@ -29,8 +29,9 @@ from __future__ import annotations
 import multiprocessing
 import sqlite3
 import sys
+import threading
 import time
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import BrokenExecutor, CancelledError, Future, ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
@@ -42,6 +43,7 @@ from orchestration.scheduler import (
     get_executable_nodes,
 )
 from orchestration.worker import execute_node, role_payload
+from tools import engine_log
 
 # A worker is a process, and the pool must not inherit the platform's default start method.
 #
@@ -61,8 +63,12 @@ _POOL_START_METHOD = "spawn"
 # The exception types that mean "the machine failed", as opposed to "the work is wrong". Kept as
 # a tuple so ``isinstance`` is one call, and deliberately narrow: anything not listed is treated as
 # the work's problem, because silently retrying a contract violation forever is the failure mode
-# this segregation exists to prevent.
+# this segregation exists to prevent. ``BrokenExecutor`` (``BrokenProcessPool``/``BrokenThreadPool``
+# are its subclasses) is a machine fault too: it is the *pool* dying under the work -- a child
+# OOMed or was SIGKILLed -- not the work failing, and classifying it as the work's fault marks a
+# healthy node permanently dead for the crime of running on a machine that ran out of memory.
 SYSTEM_FAILURE_TYPES = (
+    BrokenExecutor,
     BrokenPipeError,
     ConnectionError,
     ConnectionResetError,
@@ -72,21 +78,39 @@ SYSTEM_FAILURE_TYPES = (
     OSError,
 )
 
+# The pool's own death names, matched as text the same way the worker's serialized exceptions
+# are: ``BrokenProcessPool`` arrives as ``"BrokenProcessPool: ..."``, and it is also the name on
+# every ``submit`` that raises after a child died. A pool in this state never recovers -- every
+# later submit raises the same -- so the only cure is a new pool (``_teardown_broken_executor``).
+BROKEN_POOL_NAMES = frozenset({"BrokenProcessPool", "BrokenThreadPool", "BrokenExecutor"})
+
+
+def is_broken_pool_error(error: Any) -> bool:
+    """Whether ``error`` (exception or text) means the process pool itself died."""
+    if isinstance(error, BrokenExecutor):
+        return True
+    name = str(error or "").split(":", 1)[0].strip()
+    return name in BROKEN_POOL_NAMES
+
 
 def is_system_failure(error: str) -> bool:
     """Whether a worker's reported error is the environment's fault rather than the work's.
 
     The worker sends its exception as ``"TypeName: message"``, because an exception object cannot
     travel through a ``Future`` across processes. The type name is matched against the system
-    failures above, plus the two that arrive as text rather than as an exception type in a child:
-    an unreadable MCP reply (``JSONDecodeError``/``ValueError`` from the protocol layer) and an
-    explicit protocol timeout.
+    failures above (including the pool's own death names -- ``BrokenProcessPool`` is the machine's
+    fault, not the work's), plus the two that arrive as text rather than as an exception type in a
+    child: an unreadable MCP reply (``JSONDecodeError``/``ValueError`` from the protocol layer) and
+    an explicit protocol timeout.
     """
     text = str(error or "")
     name = text.split(":", 1)[0].strip()
     if name in {kind.__name__ for kind in SYSTEM_FAILURE_TYPES}:
         return True
-    return name in {"JSONDecodeError", "MCPError"} or "timed out" in text.lower()
+    return (
+        name in {"JSONDecodeError", "MCPError"} or name in BROKEN_POOL_NAMES
+        or "timed out" in text.lower()
+    )
 
 
 # A node that required this capability ran a command, so it changed something and must prove it.
@@ -204,6 +228,21 @@ class Swarm:
         # The nodes this process currently has running. The only in-memory state, and the only
         # thing a crash can lose -- which costs a re-dispatch, not a guarantee.
         self._in_flight: Set[str] = set()
+        # Serialises every mutation of the shared in-memory state above (and ``_executor``):
+        # ``tick()``'s check-then-submit and a callback's clear-then-commit run on different
+        # threads, and without one lock around each decision two ticks can both see a node as
+        # free and submit it twice.
+        self._lock = threading.RLock()
+        # The in-memory mirror of the system-failure count. The persisted count is the durable
+        # one, but it is written by the very operation whose failure is being counted: if
+        # ``record_system_failure`` raises (locked, full or dying database), this mirror is what
+        # still bounds the retry, so a dead database cannot turn one fault into an infinite
+        # re-dispatch loop.
+        self._system_failures: Dict[str, int] = {}
+        # Nodes this swarm has condemned (retry budget spent and the bookkeeping write failed).
+        # In-memory only: a restart re-reads the persisted count and re-decides, which is correct
+        # -- this set exists solely so a dying store cannot make the trailing tick loop forever.
+        self._quarantined: Set[str] = set()
         # How many callbacks are currently applying an outcome. ``in_flight`` alone is not enough to
         # say the swarm is idle: a callback clears its node and *then* commits, so an observer that
         # only watched ``in_flight`` would see an idle swarm while an outcome was still being
@@ -273,6 +312,15 @@ class Swarm:
                 self.db_path, decision, plan_id=self.plan_id, task_id=str(node.get("id") or "")
             )
         except Exception as error:
+            try:
+                engine_log.get_logger("swarm").warning(
+                    "routing decision not recorded for %r: %s: %s",
+                    node.get("id"),
+                    type(error).__name__,
+                    error,
+                )
+            except Exception:
+                pass
             print(
                 f"[Swarm] routing decision not recorded for {node.get('id')!r}: "
                 f"{type(error).__name__}: {error}",
@@ -314,8 +362,9 @@ class Swarm:
         """Dispatch every runnable node not already in flight. Fires and forgets.
 
         Returns the ids it submitted, which is what a test asserts on. A node that is executable
-        but already in flight is skipped -- that is the whole of the de-duplication, because the
-        pool holds the truth about what is running.
+        but already in flight is skipped -- the de-duplication is the pool's bookkeeping plus one
+        lock around the look-submit-mark decision, because the pool holds the truth about what is
+        running and only a locked decision keeps two concurrent ticks from agreeing twice.
 
         ``intent_id`` is the run this tick belongs to, and it travels to the children in their
         descriptors (Phase 27): a swarm child plans with a tool loop, so it records telemetry, and a
@@ -334,39 +383,65 @@ class Swarm:
         connection = self._connection()
         try:
             # The retry bound is enforced by the query: a node a human has rejected to its limit is
-            # excluded here and never reaches the pool.
-            nodes = get_executable_nodes(connection, self.plan_id, max_retries=self.max_retries)
+            # excluded here and never reaches the pool. So is one whose machine-failure budget is
+            # spent: the count is written before the status flip, and a crash between the two used
+            # to leave a condemned node ``pending`` for this query to find again.
+            nodes = get_executable_nodes(
+                connection,
+                self.plan_id,
+                max_retries=self.max_retries,
+                max_system_retries=self.max_system_retries,
+            )
         finally:
             connection.close()
 
         dispatched: List[str] = []
         for node in nodes:
             node_id = node["id"]
-            if node_id in self._in_flight:
-                continue
-            try:
-                descriptor = self._descriptor_for(node, intent_id=intent_id)
-            except TaskUnroutable as error:
-                # The fleet cannot run this node, and no retry will change that: it is a
-                # configuration fact, not a transient fault. Failed once, with the reason, rather
-                # than dispatched into a model that cannot do the work.
-                self._fail_unroutable(node_id, error)
-                continue
-            future = self._executor.submit(
-                self.worker,
-                f"{self.plan_id}::{node_id}",
-                descriptor,
-                self.db_path,
-            )
-            self._in_flight.add(node_id)
-            # Bound by default argument: the callback fires long after this loop has moved on. The
-            # run identity rides the same way (Phase 28) -- the callback runs on the pool's thread,
-            # where the run's context variable is invisible, so the id is captured at dispatch.
-            future.add_done_callback(
-                lambda done, nid=node_id, iid=intent_id: self._on_worker_complete(
-                    nid, done, intent_id=iid
+            # One lock spans the whole decision -- look, submit, mark -- because two ticks on two
+            # threads must not both see the node as free and submit it twice. The trailing
+            # ``tick()`` from a completion callback can land while an API-triggered tick is
+            # mid-loop, which is exactly the interleaving this closes.
+            with self._lock:
+                if node_id in self._in_flight or node_id in self._quarantined:
+                    continue
+                try:
+                    descriptor = self._descriptor_for(node, intent_id=intent_id)
+                except TaskUnroutable as error:
+                    # The fleet cannot run this node, and no retry will change that: it is a
+                    # configuration fact, not a transient fault. Failed once, with the reason,
+                    # rather than dispatched into a model that cannot do the work.
+                    self._fail_unroutable(node_id, error)
+                    continue
+                try:
+                    future = self._executor.submit(
+                        self.worker,
+                        f"{self.plan_id}::{node_id}",
+                        descriptor,
+                        self.db_path,
+                    )
+                except BrokenExecutor as error:
+                    # The pool died under us (a child was killed): every later submit on it
+                    # raises the same, so stop dispatching, drop the pool and let the next tick
+                    # build a fresh one. The node is untouched -- still ``pending`` -- and comes
+                    # back on that next tick.
+                    print(
+                        f"[Swarm] pool broken during submit ({type(error).__name__}); "
+                        f"rebuilding on the next tick",
+                        file=sys.stderr,
+                    )
+                    self._teardown_broken_executor()
+                    break
+                self._in_flight.add(node_id)
+                # Bound by default argument: the callback fires long after this loop has moved
+                # on. The run identity rides the same way (Phase 28) -- the callback runs on the
+                # pool's thread, where the run's context variable is invisible, so the id is
+                # captured at dispatch.
+                future.add_done_callback(
+                    lambda done, nid=node_id, iid=intent_id: self._on_worker_complete(
+                        nid, done, intent_id=iid
+                    )
                 )
-            )
             dispatched.append(node_id)
         return dispatched
 
@@ -386,6 +461,23 @@ class Swarm:
         except Exception:
             pass
 
+    def _teardown_broken_executor(self) -> None:
+        """Drop a pool whose children died, so the next ``tick()`` builds a fresh one.
+
+        A ``BrokenProcessPool`` never recovers -- every later ``submit`` raises the same -- so
+        keeping the reference is what wedges the swarm for the life of the process. The futures
+        still queued on the dead pool fire their callbacks as non-outcomes (see
+        ``_on_worker_complete``), so those nodes simply stay ``pending`` and come back on the next
+        tick against the replacement pool. Never raises: this is already the failure path.
+        """
+        with self._lock:
+            executor, self._executor = self._executor, None
+        if executor is not None:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+
     def _on_worker_complete(self, node_id: str, future: Future, *, intent_id: str = "") -> None:
         """A worker finished. Runs on the **parent's** thread, which is why it can emit.
 
@@ -395,18 +487,30 @@ class Swarm:
         the process-wide bus, which is bound to the window. A worker cannot do that from its own
         interpreter, and a poller would need state the schema should not carry.
 
+        A **cancelled** future is not an outcome. ``close()`` drains the pool with
+        ``cancel_futures=True``, so every queued future lands here with ``CancelledError``: that
+        means the engine shut down, not that the work failed, and writing ``failed`` for it would
+        permanently kill a node -- only ``pending`` is ever re-dispatched -- for the crime of being
+        queued when the process exited. The node is simply left as it was.
+
         **This method must never raise.** A ``Future`` callback runs on the pool's own thread and
         nothing above it can catch: ``concurrent.futures`` prints the traceback and loses it. A
         swarm whose database has gone -- a test's temporary directory, a process shutting down --
         would otherwise spray unhandled tracebacks into teardown. Failures are reported to stderr;
         the completion itself is already recorded in ``_outcomes``.
         """
-        self._busy += 1
+        with self._lock:
+            self._busy += 1
         try:
-            self._in_flight.discard(node_id)
+            if future.cancelled() or isinstance(
+                getattr(future, "_exception", None), CancelledError
+            ):
+                return
             outcome = NodeOutcome(f"{self.plan_id}::{node_id}", node_id)
             try:
                 outcome.artifact = future.result()
+            except CancelledError:
+                return
             except Exception as error:
                 outcome.error = f"{type(error).__name__}: {error}"
             self._outcomes[node_id] = outcome
@@ -416,6 +520,19 @@ class Swarm:
             else:
                 self._handle_failure(node_id, outcome, intent_id=intent_id)
         except Exception as error:
+            # Durable record first (the callback's thread has no run context, so the intent rides
+            # in the message): an outcome that could not be applied means durable state diverged,
+            # and one unstructured stderr line in an unrotated stream is not a record of that.
+            try:
+                engine_log.get_logger("swarm").error(
+                    "outcome for %s (intent=%s) could not be applied: %s: %s",
+                    node_id,
+                    intent_id or "<none>",
+                    type(error).__name__,
+                    error,
+                )
+            except Exception:
+                pass
             print(
                 f"[Swarm] outcome for {node_id} could not be applied: "
                 f"{type(error).__name__}: {error}",
@@ -425,8 +542,9 @@ class Swarm:
             # The node stays "in flight" until its outcome has been *applied*. Clearing it first --
             # which is the obvious order -- lets an observer (or the tick below) see the node as free
             # while its commit is still running, and the node is then dispatched a second time.
-            self._in_flight.discard(node_id)
-            self._busy -= 1
+            with self._lock:
+                self._in_flight.discard(node_id)
+                self._busy -= 1
 
         # Whatever this completion released -- and anything else that became runnable -- goes out
         # now rather than at the next user action. Guarded for the same reason as the body: a
@@ -434,6 +552,15 @@ class Swarm:
         try:
             self.tick()
         except Exception as error:
+            try:
+                engine_log.get_logger("swarm").error(
+                    "trailing tick failed (intent=%s): %s: %s",
+                    intent_id or "<none>",
+                    type(error).__name__,
+                    error,
+                )
+            except Exception:
+                pass
             print(
                 f"[Swarm] trailing tick failed: {type(error).__name__}: {error}",
                 file=sys.stderr,
@@ -465,6 +592,12 @@ class Swarm:
         self._record_worker_fault(outcome, intent_id=intent_id)
         from storage.db import get_store
 
+        if is_broken_pool_error(outcome.error):
+            # The pool died with this node. Every later submit on it raises the same, so drop it
+            # now: the trailing tick at the end of the callback then builds a fresh pool and
+            # re-dispatches this node (still ``pending``) onto it.
+            self._teardown_broken_executor()
+
         store = get_store()
         if not is_system_failure(outcome.error):
             try:
@@ -476,16 +609,25 @@ class Swarm:
                 pass
             return
 
+        # The count moves in memory first: the persisted counter is written by the very store
+        # whose failure is being counted, and if that write raises, the old code returned here and
+        # left the node ``pending`` -- the trailing tick re-dispatched it, the store failed again,
+        # and one machine fault became an unbounded dispatch loop.
+        with self._lock:
+            remembered = self._system_failures.get(node_id, 0) + 1
+            self._system_failures[node_id] = remembered
         try:
             failures = store.record_system_failure(self.plan_id, node_id)
         except Exception:
-            return
+            failures = remembered
 
         if failures < self.max_system_retries:
             # Still ``pending``: the failure count moved, the node did not, and the trailing tick
             # re-dispatches it without a human in the loop.
             return
 
+        with self._lock:
+            self._system_failures.pop(node_id, None)
         try:
             store.update_task_status(
                 self.plan_id, node_id, "failed",
@@ -495,7 +637,11 @@ class Swarm:
                 ),
             )
         except Exception:
-            pass
+            # The bookkeeping write failed, but the budget is spent either way. Quarantine the
+            # node in memory so the trailing tick cannot re-dispatch one this swarm has already
+            # condemned; a restart re-reads the persisted count and re-decides.
+            with self._lock:
+                self._quarantined.add(node_id)
 
     def _record_worker_fault(self, outcome: NodeOutcome, *, intent_id: str = "") -> None:
         """Write the child's failure to the fault ledger, joined to the run. Never raises.
@@ -518,6 +664,16 @@ class Swarm:
         except Exception as error:
             # A lost fault record is reported, never fatal: the node's own failure below is what
             # the run depends on, and a telemetry write must not take that with it.
+            try:
+                engine_log.get_logger("swarm").warning(
+                    "worker fault for %s (intent=%s) could not be recorded: %s: %s",
+                    outcome.node_id,
+                    intent_id or "<none>",
+                    type(error).__name__,
+                    error,
+                )
+            except Exception:
+                pass
             print(
                 f"[Swarm] worker fault for {outcome.node_id} could not be recorded: "
                 f"{type(error).__name__}: {error}",
@@ -575,7 +731,12 @@ class Swarm:
         try:
             return [
                 node["id"]
-                for node in get_executable_nodes(connection, self.plan_id, max_retries=self.max_retries)
+                for node in get_executable_nodes(
+                    connection,
+                    self.plan_id,
+                    max_retries=self.max_retries,
+                    max_system_retries=self.max_system_retries,
+                )
                 if node["id"] not in self._in_flight
             ]
         finally:
@@ -641,11 +802,13 @@ class Swarm:
 
     def close(self) -> None:
         """Tear the pool down. Idempotent, and safe when nothing was ever dispatched."""
-        self._closed = True
-        executor, self._executor = self._executor, None
+        with self._lock:
+            self._closed = True
+            executor, self._executor = self._executor, None
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
-        self._in_flight.clear()
+        with self._lock:
+            self._in_flight.clear()
 
     def __enter__(self) -> "Swarm":
         return self.start()

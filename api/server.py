@@ -32,14 +32,14 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from api.events import FRAME_PREFIX, FRAME_SUFFIX, HEARTBEAT_FRAME, EventHub
 from api.gateway import Gateway, Request, Response, StreamResponse
 from api.intents import IntentQueue, run_worker
 from api.schemas import ErrorResponse
-from tools import lifecycle
+from tools import engine_log, lifecycle
 
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -201,6 +201,33 @@ class _Handler(BaseHTTPRequestHandler):
     server_version = "aleth-api"
 
     # -- logging ---------------------------------------------------------------
+    def handle_one_request(self) -> None:
+        self._request_started = time.monotonic()
+        super().handle_one_request()
+
+    def log_request(self, code: Any = "-", size: Any = "-") -> None:
+        """One structured record per request: method, path, status, latency, peer.
+
+        The request is where the causal chain of a run *starts*, so it goes to the rotating JSON
+        log (``tools.engine_log``) rather than only to stderr: an unrotated print stream is not an
+        operational record, and at 3AM the inbound request is what has to be joinable to the run it
+        caused. ``log_message`` keeps the human-readable mirror.
+        """
+        started = getattr(self, "_request_started", None)
+        elapsed_ms = int((time.monotonic() - started) * 1000) if started else -1
+        try:
+            engine_log.get_logger("api").info(
+                "%s %s -> %s in %dms (peer %s)",
+                self.command or "-",
+                self.path or "-",
+                code,
+                elapsed_ms,
+                self.address_string(),
+            )
+        except Exception:  # a log write must never take a request down
+            pass
+        self.log_message('"%s" %s %s', self.requestline, str(code), str(size))
+
     def log_message(self, fmt: str, *args) -> None:
         print(f"[api] {self.address_string()} {fmt % args}", file=sys.stderr)
 
@@ -500,11 +527,21 @@ class ApiServer:
         except OSError:
             if self.port == 0:
                 raise
-            print(
-                f"[api] port {self.port} is taken; binding an ephemeral one instead",
-                file=sys.stderr,
-            )
+            # The fallback stays (a test that reuses a port must still come up), but it is no
+            # longer *silent*: inside a published container a port change is an outage with a
+            # healthy-looking process behind it, so this is a CRITICAL in the durable log with
+            # the port that was actually bound -- not one stderr line nobody rotates.
             self._httpd = self._bind(0)
+            bound = int(self._httpd.server_address[1])
+            message = (
+                f"port {self.port} is taken; bound the ephemeral port {bound} instead -- "
+                f"anything expecting {self.port} cannot reach this engine"
+            )
+            print(f"[api] {message}", file=sys.stderr)
+            try:
+                engine_log.get_logger("api").critical(message)
+            except Exception:
+                pass
         self._thread = threading.Thread(
             target=self._httpd.serve_forever, name="aleth-api", daemon=True
         )

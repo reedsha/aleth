@@ -261,6 +261,13 @@ class MCPSessionContext:
                 client.initialize()
             except Exception as error:
                 self.failures[name] = str(error)
+                # The child may already be running even though the handshake failed -- and it is
+                # not in ``self._clients`` yet, so ``close()`` would never reap it. A partially
+                # started server must be torn down here or it outlives the machine's session.
+                try:
+                    client.close()
+                except Exception:
+                    pass
                 continue
             self._clients[name] = client
         return self

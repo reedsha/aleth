@@ -567,23 +567,48 @@ class PlanStore:
         )
 
     # -- artifacts ---------------------------------------------------------------
-    def save_artifact(self, plan_id: str, task_id: str, payload: Dict[str, Any]) -> None:
+    def save_artifact(
+        self,
+        plan_id: str,
+        task_id: str,
+        payload: Dict[str, Any],
+        connection: Optional[sqlite3.Connection] = None,
+    ) -> None:
         """Store the ImplementationPlanArtifact a ``planned`` task is halted on.
 
         Persisted rather than held in memory: the approval may arrive from a different
         request, minutes later, and the executor must be able to read back the exact plan
         a human approved.
+
+        With a ``connection`` the write joins **the caller's** transaction (same contract as
+        :meth:`update_task_status`): the status flip and this row must land together, or a
+        crash between two separate commits leaves a ``planned`` node with no artifact --
+        never re-dispatched and never approvable.
         """
-        with self._lock, self._connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO artifacts (plan_id, task_id, payload, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(plan_id, task_id) DO UPDATE SET
-                    payload = excluded.payload, created_at = excluded.created_at
-                """,
-                (plan_id, task_id, json.dumps(payload, ensure_ascii=True), time.time()),
-            )
+        if connection is not None:
+            self._write_artifact(connection, plan_id, task_id, payload)
+            return
+
+        with self._lock, self._connection() as own_connection:
+            self._write_artifact(own_connection, plan_id, task_id, payload)
+
+    @staticmethod
+    def _write_artifact(
+        connection: sqlite3.Connection,
+        plan_id: str,
+        task_id: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        """The write itself, on a connection whose transaction the caller controls."""
+        connection.execute(
+            """
+            INSERT INTO artifacts (plan_id, task_id, payload, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(plan_id, task_id) DO UPDATE SET
+                payload = excluded.payload, created_at = excluded.created_at
+            """,
+            (plan_id, task_id, json.dumps(payload, ensure_ascii=True), time.time()),
+        )
 
     def get_artifact(self, plan_id: str, task_id: str) -> Optional[Dict[str, Any]]:
         """The stored artifact for a task, or ``None`` when it was never planned."""
@@ -1012,24 +1037,47 @@ class PlanStore:
         task_id: str,
         complexity_score: int,
         required_capabilities: Optional[List[str]] = None,
+        connection: Optional[sqlite3.Connection] = None,
     ) -> bool:
         """Write the Architect's assessment of a task onto its node. Phase 7's router reads it.
 
         On the node rather than only in the artifact: an artifact is replaced by a re-plan, and the
         assessment is a property of the *work*, not of one proposed payload.
+
+        With a ``connection`` the write joins the caller's transaction (see
+        :meth:`update_task_status`): no BEGIN, no COMMIT and no lock of our own, because the
+        caller's :meth:`transaction` already holds the store's lock.
         """
-        with self._lock, self._connection() as connection:
-            cursor = connection.execute(
-                "UPDATE tasks SET complexity_score = ?, required_capabilities = ?"
-                " WHERE plan_id = ? AND id = ?",
-                (
-                    int(complexity_score),
-                    _dumps([str(name) for name in (required_capabilities or [])]),
-                    plan_id,
-                    task_id,
-                ),
+        if connection is not None:
+            return self._write_assessment(
+                connection, plan_id, task_id, complexity_score, required_capabilities
             )
-            return cursor.rowcount > 0
+
+        with self._lock, self._connection() as own_connection:
+            return self._write_assessment(
+                own_connection, plan_id, task_id, complexity_score, required_capabilities
+            )
+
+    @staticmethod
+    def _write_assessment(
+        connection: sqlite3.Connection,
+        plan_id: str,
+        task_id: str,
+        complexity_score: int,
+        required_capabilities: Optional[List[str]] = None,
+    ) -> bool:
+        """The write itself, on a connection whose transaction the caller controls."""
+        cursor = connection.execute(
+            "UPDATE tasks SET complexity_score = ?, required_capabilities = ?"
+            " WHERE plan_id = ? AND id = ?",
+            (
+                int(complexity_score),
+                _dumps([str(name) for name in (required_capabilities or [])]),
+                plan_id,
+                task_id,
+            ),
+        )
+        return cursor.rowcount > 0
 
     def assessment_state(self, plan_id: str, task_id: str) -> Dict[str, Any]:
         """``{"complexity_score": int, "required_capabilities": [...]}`` for a node."""

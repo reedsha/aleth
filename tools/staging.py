@@ -33,6 +33,7 @@ import difflib
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -64,6 +65,18 @@ MERGE_LOCK_FILE = "merge.lock"
 # belonging to an intent -- without an in-memory registry. Excluded from the copy and the delta.
 STAGING_MANIFEST = ".aleth_staging.json"
 
+# The authoritative copy of that manifest, kept **outside** the shadow (a sibling of the shadow
+# directory, in the staging base).
+#
+# The in-shadow manifest is written for humans and for a restart's convenience, but the shadow is
+# bind-mounted read-write into the model's command containers -- so the model can rewrite it. A
+# forged ``{"verified": true, "host_root": "C:/..."}`` there is excluded from the copy and the
+# delta, which means it is *invisible in review*, and it is exactly the state the merge gate
+# trusts: unverified work would pass egress, and ``host_root`` decides where the delta lands.
+# The sibling file is outside the mounted root and is what ``load_staging`` believes. The in-shadow
+# copy is never authoritative for ``host_root``, ``verified``, ``intent_id`` or ``plan_id``.
+TRUSTED_MANIFEST_SUFFIX = ".trusted.json"
+
 # The host as the run found it: ``{relative path: sha256}``, written at staging time (Phase 38).
 # Both sides of an egress are compared against it, which is what makes "did a person edit this
 # while the agent worked?" answerable at all. Excluded from the copy and the delta, like the
@@ -86,6 +99,48 @@ MAX_DIFF_CHARS = 200_000
 MAX_DIFF_SOURCE_BYTES = 2_000_000
 
 _CHUNK = 1024 * 1024
+
+# Credential-shaped *filenames* that must never enter a shadow or a delta.
+#
+# The process environment is sanitized (``tools.env_sanitizer``), but the file on disk is a
+# separate thing: ``.env`` sitting in a non-git workspace used to be copied into the shadow and
+# bind-mounted at ``/workspace`` into every model command container, where ``cat .env`` resolved
+# inside the root, passed containment and returned the value as tool output into the model's
+# context, the event bus and the logs. A secret the model can read is a secret the run can
+# exfiltrate, so these names are dropped at the copy boundary and hidden from the diff.
+#
+# Deliberately broad, like ``env_sanitizer.SECRET_NAME_RE``: it is used to *exclude*, and a
+# false positive costs a developer one git-add, while a false negative hands a credential to an
+# LLM. Matched against the basename, case-insensitively.
+SECRET_FILE_RE = re.compile(
+    r"""(?ix)
+    ^\.?env(\..+)?$            # .env, .env.local, env.production
+    | .*\.pem$
+    | .*\.p12$
+    | .*\.pfx$
+    | ^id_(rsa|dsa|ecdsa|ed25519)(\..+)?$   # SSH keypairs (the public half is exempted below)
+    | ^.*\.(key|keystore|jks)$
+    | ^credentials(\.json)?$
+    | ^\.npmrc$
+    | ^\.pypirc$
+    | ^\.netrc$
+    | ^secrets?(\.json|\.ya?ml|\.toml|\.ini)?$
+    | ^service[-_]?account.*\.json$
+    """
+)
+
+# Names that merely *look* like one of the above and are safe by construction: the public half of
+# a keypair, and a template that documents the shape of a secret without holding one. Excluding
+# these keeps the agent able to scaffold ``.env.example`` without hiding anything sensitive.
+PUBLIC_SECRET_LOOKALIKES = (".example", ".sample", ".template", ".dist", ".pub")
+
+
+def is_secret_file(name: str) -> bool:
+    """Whether a basename looks like a credential and must stay out of every shadow."""
+    base = os.path.basename(str(name or "")).lower()
+    if base.endswith(PUBLIC_SECRET_LOOKALIKES):
+        return False
+    return bool(SECRET_FILE_RE.match(base))
 
 
 class StagingError(RuntimeError):
@@ -182,6 +237,28 @@ def _manifest_path(staging_id: str) -> str:
     return os.path.join(staging_base(), str(staging_id), STAGING_MANIFEST)
 
 
+def _trusted_manifest_path(staging_id: str) -> str:
+    """The authoritative manifest: a sibling of the shadow, not a file inside it.
+
+    Everything under the shadow root is model-writable, so the copy kept *there* is display-only.
+    This is the one :func:`load_staging` believes.
+    """
+    return os.path.join(staging_base(), f"{staging_id}{TRUSTED_MANIFEST_SUFFIX}")
+
+
+def _write_manifests(workspace: "StagingWorkspace") -> None:
+    """Write both manifest copies: the authoritative sibling and the in-shadow convenience copy.
+
+    The sibling first: if the second write is interrupted, the durable record is the one that
+    wins on the next read, never the untrusted one.
+    """
+    payload = json.dumps(workspace.to_manifest(), indent=2)
+    atomic_io.write_text_atomic(_trusted_manifest_path(workspace.staging_id), payload)
+    atomic_io.write_text_atomic(
+        os.path.join(workspace.path, STAGING_MANIFEST), payload
+    )
+
+
 def _engine_managed_files(host_root: str) -> FrozenSet[str]:
     """Top-level names the engine owns and that must never enter the shadow or the delta.
 
@@ -191,8 +268,15 @@ def _engine_managed_files(host_root: str) -> FrozenSet[str]:
     the moment the engine saved the plan, and a merge would then write the stale plan back over
     the fresh one. ``.aleth_id`` is the project's own identity manifest, and the staging manifest
     is our own bookkeeping.
+
+    ``.aleth_phases.json`` is the phase declaration (``tools.project_phases``): it decides the
+    image a phase runs in and the shell command it executes with egress, so it is engine
+    configuration and must not be authored or edited by a run. Excluding it from the shadow and
+    the delta is what keeps the declaration the person's.
     """
-    names = {STAGING_MANIFEST, BASELINE_FILE, IDENTITY_FILE}
+    from tools.project_phases import DECLARATION_FILE
+
+    names = {STAGING_MANIFEST, BASELINE_FILE, IDENTITY_FILE, DECLARATION_FILE}
     if os.path.abspath(host_root) == os.path.abspath(get_plan_dir()):
         names.add("plan.json")
         names.add(get_active_plan_filename())
@@ -279,6 +363,11 @@ def _copy_ignore(host_root: str, included: Optional[FrozenSet[str]]):
             if name in IGNORE_DIRS or name.startswith(".tmp") or name.startswith(".drive"):
                 dropped.append(name)
                 continue
+            if is_secret_file(name):
+                # A credential-shaped file never enters the shadow: it would be bind-mounted into
+                # every model command container as readable project content.
+                dropped.append(name)
+                continue
             if at_top and name in managed:
                 dropped.append(name)
                 continue
@@ -325,6 +414,9 @@ def _iter_files(
         dirs[:] = kept
         for name in files:
             if name == STAGING_MANIFEST or (at_top and name in managed):
+                continue
+            if is_secret_file(name):
+                # Never in the shadow, and never rendered into a diff a model or a reviewer sees.
                 continue
             absolute = os.path.join(current, name)
             if os.path.islink(absolute):
@@ -471,9 +563,7 @@ def create_staging(
         os.path.join(path, BASELINE_FILE),
         json.dumps(_snapshot(host, host, included=included), separators=(",", ":")),
     )
-    atomic_io.write_text_atomic(
-        os.path.join(path, STAGING_MANIFEST), json.dumps(workspace.to_manifest(), indent=2)
-    )
+    _write_manifests(workspace)
     # Phase 35: the shadow carries its own snapshot repository, so a run can be rewound. Created
     # here -- once, at birth -- so the baseline (step 0) is the workspace exactly as handed to the
     # agent. Best-effort: a shadow without snapshots is still a usable shadow.
@@ -482,24 +572,60 @@ def create_staging(
 
 
 def load_staging(staging_id: str) -> Optional[StagingWorkspace]:
-    """The shadow recorded under ``staging_id``, or ``None`` when there is no such manifest."""
-    try:
-        with open(_manifest_path(staging_id), "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
+    """The shadow recorded under ``staging_id``, or ``None`` when there is no trusted record.
+
+    The authoritative record is the sibling ``<id>.trusted.json`` -- outside the shadow, so
+    outside the root the model's containers mount read-write. The in-shadow manifest is read only
+    when no trusted record exists (a shadow from before this split), and its ``host_root``,
+    ``verified``, ``intent_id`` and ``plan_id`` are then re-validated here rather than believed:
+    the shadow is model-writable and its manifest is excluded from the delta, so a forged one is
+    exactly the state a reviewer never sees. A record that fails validation is not a shadow --
+    returning ``None`` is what stops a merge from writing to an attacker-chosen root.
+    """
+    data = _read_manifest(_trusted_manifest_path(staging_id))
+    if data is None:
+        data = _read_manifest(_manifest_path(staging_id))
+    if data is None:
         return None
     path = os.path.join(staging_base(), str(staging_id))
+    host_root = str(data.get("host_root") or "")
     verdict = data.get("verified")
-    return StagingWorkspace(
+    workspace = StagingWorkspace(
         staging_id=str(data.get("staging_id") or staging_id),
         intent_id=str(data.get("intent_id") or ""),
         plan_id=str(data.get("plan_id") or ""),
-        host_root=str(data.get("host_root") or ""),
+        host_root=host_root,
         path=path,
         # Absent means "no suite was run", which is not the same as "it passed".
         verified=None if verdict is None else bool(verdict),
         verify_error=str(data.get("verify_error") or ""),
     )
+    return workspace if _record_is_coherent(staging_id, workspace) else None
+
+
+def _read_manifest(path: str) -> Optional[Dict[str, Any]]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _record_is_coherent(staging_id: str, workspace: StagingWorkspace) -> bool:
+    """Whether a manifest's identity and host root are the ones the engine recorded.
+
+    A trusted record is written by the engine and is coherent by construction; this check is what
+    makes the *untrusted* in-shadow fallback safe to read at all. It refuses a manifest that names
+    a different staging id, or a ``host_root`` that is not an existing absolute directory -- which
+    is the field ``apply_egress`` writes the delta under.
+    """
+    if str(workspace.staging_id) != str(staging_id):
+        return False
+    host_root = workspace.host_root
+    if not host_root or not os.path.isabs(host_root):
+        return False
+    return os.path.isdir(host_root)
 
 
 def record_verification(workspace: StagingWorkspace, ok: Optional[bool], error: str = "") -> StagingWorkspace:
@@ -510,9 +636,7 @@ def record_verification(workspace: StagingWorkspace, ok: Optional[bool], error: 
     offered for work that does not run.
     """
     updated = workspace.with_verification(ok, error)
-    atomic_io.write_text_atomic(
-        os.path.join(updated.path, STAGING_MANIFEST), json.dumps(updated.to_manifest(), indent=2)
-    )
+    _write_manifests(updated)
     return updated
 
 
@@ -533,6 +657,18 @@ def list_stagings() -> List[StagingWorkspace]:
             return 0.0
 
     for name in sorted(entries, key=_created):
+        # Only shadow directories are shadows: the trusted manifests live beside them as
+        # ``<id>.trusted.json`` and must not be mistaken for ids. An orphaned one -- its shadow
+        # gone -- is bookkeeping for nothing, so it is swept up here rather than accumulated.
+        if name.endswith(TRUSTED_MANIFEST_SUFFIX):
+            if not os.path.isdir(os.path.join(base, name[: -len(TRUSTED_MANIFEST_SUFFIX)])):
+                try:
+                    os.remove(os.path.join(base, name))
+                except OSError:
+                    pass
+            continue
+        if not os.path.isdir(os.path.join(base, name)):
+            continue
         workspace = load_staging(name)
         if workspace is not None:
             found.append(workspace)
@@ -585,7 +721,19 @@ def compute_diff(workspace: StagingWorkspace) -> Dict[str, Any]:
 
 
 def _apply_one(host_root: str, staged_root: str, relative: str, *, copy: bool) -> None:
-    destination = os.path.join(host_root, relative)
+    """Write or delete one delta path under ``host_root``. Contained, always.
+
+    ``relative`` comes from a snapshot walk, but the destination is built with ``os.path.join``
+    and then *checked*: a name containing ``..`` or rooted elsewhere would otherwise land outside
+    the workspace -- and this is the merge path, i.e. the one that writes over the person's own
+    tree. A path that does not resolve under the host root is refused rather than sanitized.
+    """
+    root = os.path.abspath(host_root)
+    destination = os.path.abspath(os.path.join(root, relative))
+    if destination != root and not destination.startswith(root + os.sep):
+        raise StagingError(
+            f"refusing to apply {relative!r}: it resolves outside the workspace root"
+        )
     if not copy:
         try:
             os.remove(destination)

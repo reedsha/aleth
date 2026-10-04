@@ -121,7 +121,15 @@ class Meter:
         if not base or not key:
             raise RuntimeError("OPENAI_BASE_URL is unset, or no OPENAI_API_KEY could be resolved")
         self.model = model
-        self._client = OpenAI(api_key=key, base_url=base.rstrip("/"))
+        # Bounded like every other client this engine builds: a metering call that hangs holds the
+        # budget run forever, and the SDK's silent default retries would multiply a billed
+        # measurement without the count ever being reported.
+        self._client = OpenAI(
+            api_key=key,
+            base_url=base.rstrip("/"),
+            timeout=30.0,
+            max_retries=0,
+        )
 
     def measure(self, system: str, tools: List[Dict[str, Any]], messages: List[Dict[str, str]]) -> Dict[str, Any]:
         """One real turn. Returns its billed input/output token counts."""

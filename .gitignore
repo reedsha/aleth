@@ -6,6 +6,11 @@ __pycache__/
 # Local secrets
 .env
 
+# The bootloader config (core/config.py) carries a provider ``api_key`` field. The example is safe
+# to commit; a filled-in ``aleth.config.json`` is a credential -- ignored exactly like ``.env``,
+# so the next ``git add`` cannot pick it up.
+aleth.config.json
+
 # Runtime workspace output: generated code and task backups are produced by running
 # the app, not authored by hand.
 my_project_workspace/
@@ -16,6 +21,11 @@ my_project_workspace/
 /aleth_state.db
 /aleth_state.db-wal
 /aleth_state.db-shm
+# The legacy database name (pre-rename) and the ctags index: machine state and tooling output.
+deepagents_state.db
+deepagents_state.db-wal
+deepagents_state.db-shm
+tags.txt
 
 # Node tooling: Vite and its dependencies
 node_modules/

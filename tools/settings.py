@@ -24,6 +24,7 @@ cannot disagree about what "not set" means.
 
 import os
 import re
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from tools import atomic_io
@@ -68,6 +69,11 @@ FIELDS: List[Dict[str, Any]] = [
 ]
 
 CONFIGURABLE_NAMES: Tuple[str, ...] = tuple(field["name"] for field in FIELDS)
+
+# Serialises ``save_settings`` writes: the `.env` rewrite and the live ``os.environ`` update are
+# one act, and two concurrent saves must not interleave their per-key writes into a mixed
+# configuration the file then makes permanent.
+_SAVE_LOCK = threading.Lock()
 
 # A value that needs no quoting when written back. Anything else (spaces, quotes, a `#`) is
 # quoted, so a value can never terminate its own line and inject a second variable.
@@ -234,23 +240,27 @@ def save_settings(values: Dict[str, Any], env_path: Optional[str] = None) -> Dic
         updates[name] = str(raw_value if raw_value is not None else "").strip()
 
     if updates:
-        path = env_file_path(env_path)
-        try:
-            _rewrite_env(path, updates)
-        except OSError as exc:
-            return validated(SettingsPayload, {
-                "success": False,
-                "found": False,
-                "filename": ENV_FILENAME,
-                "fields": read_settings(env_path)["fields"],
-                "error": f"Could not write {ENV_FILENAME}: {exc}",
-            })
+        # One lock around the whole save -- the `.env` rewrite *and* the live environment --
+        # because two concurrent saves used to interleave their per-key writes into a mixed
+        # configuration that neither caller asked for and the file then made permanent.
+        with _SAVE_LOCK:
+            path = env_file_path(env_path)
+            try:
+                _rewrite_env(path, updates)
+            except OSError as exc:
+                return validated(SettingsPayload, {
+                    "success": False,
+                    "found": False,
+                    "filename": ENV_FILENAME,
+                    "fields": read_settings(env_path)["fields"],
+                    "error": f"Could not write {ENV_FILENAME}: {exc}",
+                })
 
-        for name, value in updates.items():
-            if value:
-                os.environ[name] = value
-            else:
-                os.environ.pop(name, None)
+            for name, value in updates.items():
+                if value:
+                    os.environ[name] = value
+                else:
+                    os.environ.pop(name, None)
 
     result = read_settings(env_path)
     result["saved"] = sorted(updates)

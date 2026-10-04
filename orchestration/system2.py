@@ -210,8 +210,15 @@ def complete(
         except Exception as exc:  # pragma: no cover - import failure is environmental
             print(f"[System2] openai package unavailable: {exc}", file=sys.stderr)
             return None
+        # ``max_retries=0`` on purpose: the SDK's default two silent retries multiply every billed
+        # call up to three times and hide rate-limit pressure from the engine's own retry budgets
+        # (``rejection_attempts``/``system_failures`` never see those attempts). One call, one
+        # outcome -- the caller's failure accounting is then the only story there is.
         client = OpenAI(
-            api_key=config["api_key"], base_url=config["base_url"], timeout=timeout
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            timeout=timeout,
+            max_retries=0,
         )
 
     # A vision request carries the text plus one ``image_url`` part per image. The URLs are
@@ -326,8 +333,15 @@ def complete_with_tools(
         except Exception as exc:  # pragma: no cover - import failure is environmental
             print(f"[System2] openai package unavailable: {exc}", file=sys.stderr)
             return ToolCompletion(model=model)
+        # ``max_retries=0`` on purpose: the SDK's default two silent retries multiply every billed
+        # call up to three times and hide rate-limit pressure from the engine's own retry budgets
+        # (``rejection_attempts``/``system_failures`` never see those attempts). One call, one
+        # outcome -- the caller's failure accounting is then the only story there is.
         client = OpenAI(
-            api_key=config["api_key"], base_url=config["base_url"], timeout=timeout
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            timeout=timeout,
+            max_retries=0,
         )
 
     request: Dict[str, Any] = {

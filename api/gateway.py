@@ -200,6 +200,14 @@ class Gateway:
     def dispatch(self, request: Request) -> Union[Response, StreamResponse]:
         """Route one request. Always answers; never raises for a bad request."""
         path = request.path or "/"
+        # The typed operation table is the closed surface and outranks every infrastructure
+        # pattern. ``^/api/plan/{plan_id}$`` would otherwise capture the table's own GET paths
+        # (``document``, ``files``, ``steps``, ``structure``) as plan *ids*, which is how the UI's
+        # very first boot read -- ``get_active_plan`` on ``/api/plan/document`` -- died on a 404
+        # "unknown plan" while the server was perfectly healthy. A real plan id is now anything
+        # the table does not claim.
+        if operations.is_known_path(path):
+            return self._dispatch_operation(request)
         matched_method = False
         for method, pattern, handler in self._routes:
             match = pattern.match(path)
@@ -209,10 +217,6 @@ class Gateway:
                 matched_method = True
                 continue
             return handler(request, self, match)
-        # The typed operation surface: a closed table, so a path that is not in it is a 404 and
-        # an operation that is not implemented has no address at all.
-        if operations.is_known_path(path):
-            return self._dispatch_operation(request)
         if matched_method:
             # The path exists but not for this verb: 405 says so, where 404 would send a reader
             # looking for a typo in the path they got right.

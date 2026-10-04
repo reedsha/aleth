@@ -274,9 +274,10 @@ class OperationTableTests(unittest.TestCase):
     def test_the_gateway_keeps_no_intent_route(self):
         """The two intent routes are gone from the gateway, not merely shadowed by the table.
 
-        Scoped to the intent surface on purpose: ``/api/plan/document`` is matched by the
-        ``/api/plan/{id}`` read as a plan id, which is a pre-existing read, not a second route for
-        an operation.
+        Scoped to the intent surface on purpose. (An earlier note here excused the collision
+        between ``/api/plan/document`` and the ``/api/plan/{id}`` read as a plan id; that
+        collision was a bug -- it 404'd the UI's first boot read -- and the table now outranks
+        the pattern. See ``TableRoutePrecedenceTests``.)
         """
         intent_paths = [op.path for op in operations.OPERATIONS if "/intent/" in op.path]
         self.assertTrue(intent_paths, "the intent operations must exist somewhere")
@@ -286,6 +287,64 @@ class OperationTableTests(unittest.TestCase):
                     re.compile(pattern).match(path),
                     f"{path} is served by a gateway route as well as the operation table",
                 )
+
+
+class TableRoutePrecedenceTests(GatewayTestCase):
+    """The typed table outranks the infrastructure patterns that could swallow it.
+
+    ``/api/plan/{plan_id}``'s regex used to capture the table's own GET paths -- ``document``,
+    ``files``, ``steps``, ``structure`` -- as plan *ids*, so the UI's very first boot read
+    (``get_active_plan`` on ``/api/plan/document``) died with 404 "unknown plan" and both the
+    desktop window and a plain browser rendered *the engine is unreachable* over a perfectly
+    healthy server. The closed table is the surface; a real plan id is whatever it does not claim.
+    """
+
+    class _Reads:
+        """The service module-surface the shadowed reads need, and nothing more."""
+
+        def get_active_plan(self):
+            return {"plan_id": "PLAN", "note": "from the table"}
+
+        def get_plan_files(self):
+            return {"plan_files": ["PLAN.md"]}
+
+        def validate_plan_structure(self):
+            return {"struct": "checked"}
+
+        def extract_plan_steps(self, filename=None):
+            return {"filename": filename or "PLAN.md", "steps_count": 0}
+
+    def setUp(self):
+        super().setUp()
+        self.gateway = Gateway(service=self._Reads())
+
+    def _get(self, path, query=None):
+        return self.gateway.dispatch(Request(method="GET", path=path, query=query or {}))
+
+    def test_the_document_read_reaches_the_operation_not_the_plan_id_route(self):
+        response = self._get("/api/plan/document")
+        self.assertEqual(response.status, 200, response.body)
+        body = json.loads(response.body)
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(body["data"]["note"], "from the table")
+
+    def test_every_table_read_under_plan_is_served_by_the_table(self):
+        for path, field in (
+            ("/api/plan/files", "plan_files"),
+            ("/api/plan/steps", "steps_count"),
+            ("/api/plan/structure", "struct"),
+        ):
+            with self.subTest(path=path):
+                response = self._get(path)
+                self.assertEqual(response.status, 200, response.body)
+                self.assertIn(field, json.loads(response.body)["data"])
+
+    def test_a_real_plan_id_still_resolves_through_the_infrastructure_read(self):
+        self._seed_plan()
+        response = self._get("/api/plan/PLAN")
+        self.assertEqual(response.status, 200, response.body)
+        self.assertEqual(json.loads(response.body)["plan_id"], "PLAN")
+        self.assertEqual(self._get("/api/plan/NOPE").status, 404)
 
 
 class SteeringOperationTests(unittest.TestCase):

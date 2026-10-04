@@ -80,6 +80,12 @@ WHERE t.plan_id = ?
   -- retry, and the rejection past the budget blocks. ``<`` would make a budget of 1 refuse the very
   -- retry it names, and bending the constant to compensate would be an off-by-one hidden in config.
   AND t.rejection_attempts <= ?
+  -- The machine-failure budget, enforced by the same query that admits nodes (``system_failures``
+  -- is otherwise only checked by the handler whose write may have failed). ``<`` because the count
+  -- is a *count of failures already had*: at ``max_system_retries`` the budget is spent, and only
+  -- a crash between the count and the status flip can leave such a node ``pending`` -- where it
+  -- must not be re-dispatched.
+  AND t.system_failures < ?
   AND NOT EXISTS (
       SELECT 1
       FROM task_dependencies td
@@ -120,6 +126,7 @@ def get_executable_nodes(
     connection: sqlite3.Connection,
     plan_id: Optional[str] = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
+    max_system_retries: int = DEFAULT_MAX_SYSTEM_RETRIES,
 ) -> List[Dict[str, Any]]:
     """Every pending node whose blockers are all completed, in document order.
 
@@ -139,7 +146,10 @@ def get_executable_nodes(
     and the human approval gate still stands between a plan and its execution.
     """
     resolved = resolve_plan_id(plan_id)
-    rows = connection.execute(_EXECUTABLE_SQL, (resolved, int(max_retries))).fetchall()
+    rows = connection.execute(
+        _EXECUTABLE_SQL,
+        (resolved, int(max_retries), int(max_system_retries)),
+    ).fetchall()
 
     nodes: List[Dict[str, Any]] = []
     for row in rows:
@@ -169,9 +179,15 @@ def get_executable_node_ids(
     connection: sqlite3.Connection,
     plan_id: Optional[str] = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
+    max_system_retries: int = DEFAULT_MAX_SYSTEM_RETRIES,
 ) -> List[str]:
     """:func:`get_executable_nodes` reduced to the ids, for a caller that only dispatches."""
-    return [node["id"] for node in get_executable_nodes(connection, plan_id, max_retries)]
+    return [
+        node["id"]
+        for node in get_executable_nodes(
+            connection, plan_id, max_retries, max_system_retries
+        )
+    ]
 
 
 def is_executable(
@@ -179,10 +195,13 @@ def is_executable(
     task_id: str,
     plan_id: Optional[str] = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
+    max_system_retries: int = DEFAULT_MAX_SYSTEM_RETRIES,
 ) -> bool:
     """Whether one node is in the executable set right now.
 
     A convenience for a caller holding a node rather than the whole set; it asks the same query,
     so it cannot disagree with :func:`get_executable_nodes` about eligibility.
     """
-    return str(task_id) in set(get_executable_node_ids(connection, plan_id, max_retries))
+    return str(task_id) in set(
+        get_executable_node_ids(connection, plan_id, max_retries, max_system_retries)
+    )

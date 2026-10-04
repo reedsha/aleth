@@ -30,12 +30,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Optional, Tuple
 
 from tools import docker_sandbox
 
 # The declaration a human writes when the table guesses wrong. Read from the *plan* directory, which
 # is the user's repository -- so it travels with the project and is reviewable in a diff.
+#
+# It is **engine configuration**, not project content: it decides which container image a phase
+# runs in and which shell command it executes, with egress. It is therefore excluded from the
+# shadow and the delta (``tools.staging._engine_managed_files``), so a run can never author or
+# edit it -- a prompt-injected run used to be able to write one and have the *next* run execute it
+# with a network and an image of its choosing. Only a person editing their own repository sets it.
 DECLARATION_FILE = ".aleth_phases.json"
 
 # How long a phase may take. The setup phase is the one that matters: it runs with **egress**, so
@@ -59,6 +66,47 @@ PYTHON_RUNTIME = "python"
 NODE_RUNTIME = "node"
 PYTHON_IMAGE = docker_sandbox.DEFAULT_IMAGE
 NODE_IMAGE = "node:20-alpine"
+
+# What a declaration may name as ``"image"``.
+#
+# The declaration is engine configuration, but it travels in the repository and a run can reach the
+# repository's *next* state through a merge, so the image it names is pulled and **run** with the
+# workspace mounted and -- for setup -- with egress. An unvalidated name is therefore "execute this
+# stranger's container with my source tree and a network", which is the one thing an execution
+# perimeter must never become.
+#
+# Allowed without any operator action: the engine's own images and the two official runtime
+# libraries (which is what the table above resolves to anyway, so a polyglot project declaring one
+# of them loses nothing). Anything else -- a private registry, a pinned digest of a hardened base
+# -- is a deliberate human decision, so it goes in ``ALETH_PROJECT_IMAGE_ALLOWLIST``: comma
+# separated, an entry ending in ``*`` allowing a prefix and anything else requiring an exact match.
+ALLOWED_IMAGE_RE = re.compile(
+    r"""(?ix)
+    ^ (docker\.io/)?library/(python|node) : [^\s]+$      # docker.io/library/node:20-alpine
+    | ^ (python|node) : [^\s]+ $                          # python:3.12-slim, node:20-alpine
+    """
+)
+
+
+def _image_is_allowed(image: str) -> bool:
+    """Whether ``image`` is one of the engine's, an official runtime, or operator-allowed."""
+    name = str(image or "").strip()
+    if not name:
+        return False
+    if name in {PYTHON_IMAGE, NODE_IMAGE}:
+        return True
+    if ALLOWED_IMAGE_RE.match(name):
+        return True
+    for entry in os.environ.get("ALETH_PROJECT_IMAGE_ALLOWLIST", "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry.endswith("*"):
+            if name.startswith(entry[:-1]):
+                return True
+        elif name == entry:
+            return True
+    return False
 
 # ``(manifest, command)``, first match wins. The commands are the ecosystem's own conventional
 # install/verify, and each one is run with the workspace as the working directory.
@@ -100,11 +148,26 @@ def declared_image(project_dir: str) -> str:
 
     The escape hatch for a **polyglot** project: a repository with both a ``package.json`` and a
     ``requirements.txt`` has no single runtime this engine can pick for it, so it must say.
+
+    A name the perimeter does not know is a **refusal**, not a fallback: ``detect_image`` would
+    otherwise quietly verify the project in the wrong runtime, and the alternative -- honouring an
+    arbitrary name -- is running a stranger's container with the workspace mounted and (for setup)
+    a network attached. See :data:`ALLOWED_IMAGE_RE` for what is accepted and
+    ``ALETH_PROJECT_IMAGE_ALLOWLIST`` for the operator's own additions.
     """
     data = _read_json(os.path.join(project_dir, DECLARATION_FILE))
     if not isinstance(data, dict):
         return ""
-    return str(data.get("image") or "").strip()
+    image = str(data.get("image") or "").strip()
+    if not image:
+        return ""
+    if not _image_is_allowed(image):
+        raise ValueError(
+            f"{DECLARATION_FILE} declares image {image!r}, which is not one the engine will run. "
+            f"Allowed: the engine's own images and the official python/node images; anything else "
+            f"(a private registry or a pinned base) must be added to ALETH_PROJECT_IMAGE_ALLOWLIST."
+        )
+    return image
 
 
 def _runtimes(project_dir: str) -> Tuple[str, ...]:

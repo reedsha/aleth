@@ -120,6 +120,23 @@ COPY --from=ui /build/dist /app/dist
 # from ``/`` and the typed surface from ``/api``, from one socket, so there is no second server.
 EXPOSE 8765
 
+# The engine runs as a **user**, not as root.
+#
+# This container is handed the host's Docker socket, which is root-equivalent on the host: running
+# as root inside made the safest-looking ``docker run`` the most dangerous one. A bare invocation
+# now starts as ``aleth`` and the pre-flight refuses the missing socket access loudly instead of
+# silently holding host-root powers. The documented ``--user "$(id -u):$(id -g)"`` override is
+# still the normal way to run -- it maps the container onto your own uid so merged files are yours.
+RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin aleth
+USER aleth
+
+# Liveness that means liveness: ``/api/health`` is answered by the engine's own gateway, so this
+# distinguishes "listening" from "wedged mid-run" -- which a bare socket check cannot. The port is
+# overridable at run time (``ALETH_API_PORT``), so the probe reads it rather than hardcoding 8765.
+# Without this, an orchestrator has no way to tell a hung run from a healthy engine.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${ALETH_API_PORT:-8765}/api/health" || exit 1
+
 # ``serve`` is the headless daemon: pre-flight, process lock, migrations, the maintenance sweeper,
 # then the unified HTTP server -- in that order, before a single request is accepted.
 ENTRYPOINT ["aleth", "serve"]

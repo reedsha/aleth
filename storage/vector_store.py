@@ -172,11 +172,19 @@ class EntityVectorStore:
         return [str(row["uri"]) for row in rows]
 
     def existing_uris(self) -> set:
-        """Every URI the index holds. Used to reconcile it against the relational graph."""
+        """Every URI the index holds. Used to reconcile it against the relational graph.
+
+        Reads the **uri column alone**. ``to_arrow().to_pylist()`` used to materialise every row
+        in full -- text content and the float32 vector included -- into Python just to build a set
+        of strings, so each reconciliation pass cost the whole index in memory. The projection
+        costs one column instead of the table.
+        """
         table = self._table()
         if table is None:
             return set()
-        return {str(row["uri"]) for row in table.to_arrow().to_pylist()}
+        return {
+            str(row["uri"]) for row in table.search().select(["uri"]).to_list()
+        }
 
     def count(self) -> int:
         table = self._table()

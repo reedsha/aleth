@@ -90,6 +90,11 @@ class EngineService:
         self._window = None
         self._execution_thread = None
         self._tagging_thread = None
+        # The server-authoritative run lock. The check ("is a run live?") and the claim (launch
+        # one) must be one atomic act: two request threads passing the check together used to
+        # both launch, and two workflows then wrote the same plan and files concurrently. Held
+        # only across the decision and the thread spawn -- never across a run.
+        self._run_lock = threading.Lock()
         # The local API gateway. Built on demand by ``start_api`` -- the test suite constructs
         # this service constantly and must not bind a socket doing it.
         self._api = None
@@ -446,8 +451,18 @@ class EngineService:
 
     def extract_plan_steps(self, filename: str = None):
         """Forces extraction of plan steps from the active or specified plan file."""
-        target_file = filename or get_active_plan_filename()
-        clean_name = set_active_plan_filename(target_file)
+        with self._run_lock:
+            if self._execution_thread and self._execution_thread.is_alive():
+                # The same guard as ``set_active_plan`` (audit H5): the active-plan pointer
+                # resolves at *save* time, so moving it under a live run makes the run's next
+                # save serialize the old plan's state over the new plan's document.
+                return {
+                    "success": False,
+                    "reason": "busy",
+                    "error": "A run is in progress; switch plans after it finishes.",
+                }
+            target_file = filename or get_active_plan_filename()
+            clean_name = set_active_plan_filename(target_file)
         load_plan_state(force_sync=True)
         data = registry.get_current_plan_data()
         self.emit_event({
@@ -461,7 +476,16 @@ class EngineService:
 
     def create_plan_file(self, filename: str, project_idea: str):
         """Generates a structured plan file from user's idea and sets it active."""
-        res = registry.create_new_plan_file(filename, project_idea)
+        with self._run_lock:
+            if self._execution_thread and self._execution_thread.is_alive():
+                # Same guard as ``set_active_plan``: creating a plan switches the active-plan
+                # pointer, and a live run saves against the pointer it resolves at save time.
+                return {
+                    "success": False,
+                    "reason": "busy",
+                    "error": "A run is in progress; switch plans after it finishes.",
+                }
+            res = registry.create_new_plan_file(filename, project_idea)
         self.emit_event({
             "type": "plan_updated",
             "filename": res["filename"],
@@ -475,7 +499,7 @@ class EngineService:
     # Execution Lifecycle & Card Orchestration
     # -------------------------------------------------------------
     def _launch_run(self, user_message: str, action_type: str, action_params: dict, intent_id: str = "") -> None:
-        """Start a workflow run on a daemon thread. The caller owns the run lock.
+        """Start a workflow run on a daemon thread. The caller holds ``_run_lock``.
 
         Factored out of ``start_execution`` because approval launches a run too: an
         approved artifact is applied by re-issuing the request that proposed it, and that
@@ -484,31 +508,97 @@ class EngineService:
         ``intent_id`` is the execution identity the run's shadow is keyed to (Phase 21). A
         queued run passes its own; an approval passes the id of the run whose artifact it is
         releasing, so its writes land in that run's shadow rather than a new one.
+
+        A caller with **no** id (a desktop launch) used to run with every intent-ledger gate
+        inert -- no token budget, no cost ceiling, no liveness record. The id is now minted and
+        written to the ledger (recorded and claimed, exactly as the queue does) so those gates
+        bind on every run; when the bookkeeping itself cannot be written the run still proceeds
+        ungated, because a lost record is an observer's loss, never the run's.
         """
+        owned_intent = None
+        if not str(intent_id or "").strip():
+            intent_id, owned_intent = self._mint_run_intent(
+                user_message, action_type, action_params
+            )
         def target_runner():
             # Every run executes against a shadow of the workspace (Phase 20). A run launched
             # inside the autonomous loop finds the loop's shadow already active and reuses it; a
             # run launched on its own -- a manual approval -- reuses the shadow of the intent it
             # names, or gets one of its own. The `finally` tick runs while that shadow is still
             # the execution root, so a dispatch it triggers also lands in the shadow.
-            with self._staged_execution(intent_id):
-                try:
-                    registry.run_agent_workflow(
-                        (user_message or "").strip(),
-                        self.emit_event,
-                        action_type=action_type or "custom",
-                        action_params=action_params or {},
-                        # The correlation id, threaded all the way to the agent loop (Phase 27).
-                        intent_id=str(intent_id or ""),
-                    )
-                finally:
-                    # The run has ended, so whatever it completed has unblocked its children. The
-                    # tick is deliberately *outside* the run: the artifact was written to disk by
-                    # the pass, and no SQLite transaction is held across that I/O or this dispatch.
-                    self._tick_swarm()
+            try:
+                with self._staged_execution(intent_id):
+                    try:
+                        registry.run_agent_workflow(
+                            (user_message or "").strip(),
+                            self.emit_event,
+                            action_type=action_type or "custom",
+                            action_params=action_params or {},
+                            # The correlation id, threaded all the way to the agent loop (Phase 27).
+                            intent_id=str(intent_id or ""),
+                        )
+                    finally:
+                        # The run has ended, so whatever it completed has unblocked its children. The
+                        # tick is deliberately *outside* the run: the artifact was written to disk by
+                        # the pass, and no SQLite transaction is held across that I/O or this dispatch.
+                        self._tick_swarm()
+            finally:
+                if owned_intent is not None:
+                    self._settle_run_intent(owned_intent)
 
         self._execution_thread = threading.Thread(target=target_runner, daemon=True)
         self._execution_thread.start()
+
+    def _mint_run_intent(self, user_message: str, action_type: str, action_params: dict):
+        """A fresh intent row for a run no queue submitted. Returns ``(intent_id, intent_or_None)``.
+
+        The queue writes a ``running`` record before dispatching and settles it at the end; a
+        desktop launch had neither, which is why the ledger's budget, cost and liveness gates all
+        no-oped for it. When the record cannot be written, the run proceeds with a blank id --
+        exactly the ungated behaviour it had before -- rather than being taken down by its own
+        bookkeeping.
+        """
+        import time
+        import uuid
+
+        from api.intents import Intent
+
+        intent = Intent(
+            id=uuid.uuid4().hex,
+            action_type=str(action_type or "custom"),
+            message=str(user_message or ""),
+            action_params=dict(action_params or {}),
+            enqueued_at=time.time(),
+        )
+        try:
+            from storage.db import get_store
+            from storage.intents import IntentLedger
+
+            ledger = IntentLedger(get_store().path)
+            ledger.record(intent)
+            ledger.claim(intent)
+        except Exception as error:
+            print(
+                f"[app] the run ledger could not record {intent.id}: "
+                f"{type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
+            return "", None
+        return intent.id, intent
+
+    def _settle_run_intent(self, intent) -> None:
+        """Close the run's own ledger row. Never raises."""
+        try:
+            from storage.db import get_store
+            from storage.intents import IntentLedger
+
+            IntentLedger(get_store().path).settle(intent)
+        except Exception as error:
+            print(
+                f"[app] the run ledger could not settle {getattr(intent, 'id', '?')}: "
+                f"{type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
 
     def start_execution(self, user_message: str, action_type: str = "custom", action_params: dict = None,
                         intent_id: str = ""):
@@ -519,18 +609,19 @@ class EngineService:
         if not user_message or not user_message.strip():
             return {"success": False, "error": "Prompt cannot be empty"}
 
-        if self._execution_thread and self._execution_thread.is_alive():
-            # Server-authoritative run lock (audit H6/H10). The client lock can be defeated by
-            # a reload, a retry, or the normalize path; refusing here is what actually stops
-            # two runs from interleaving their plan writes. Previously the old run was asked
-            # to stop and joined for one second -- best-effort, and a second thread ran anyway.
-            #
-            # ``reason`` is machine-readable on purpose (Phase 25): the intent loop has to tell
-            # "the engine is busy, come back later" from a real refusal, because only the first
-            # is a reason to keep an intent queued rather than fail it.
-            return {"success": False, "reason": "busy", "error": "A run is already in progress."}
+        with self._run_lock:
+            if self._execution_thread and self._execution_thread.is_alive():
+                # Server-authoritative run lock (audit H6/H10). The client lock can be defeated by
+                # a reload, a retry, or the normalize path; refusing here is what actually stops
+                # two runs from interleaving their plan writes. Previously the old run was asked
+                # to stop and joined for one second -- best-effort, and a second thread ran anyway.
+                #
+                # ``reason`` is machine-readable on purpose (Phase 25): the intent loop has to tell
+                # "the engine is busy, come back later" from a real refusal, because only the first
+                # is a reason to keep an intent queued rather than fail it.
+                return {"success": False, "reason": "busy", "error": "A run is already in progress."}
 
-        self._launch_run(user_message, action_type, action_params or {}, intent_id)
+            self._launch_run(user_message, action_type, action_params or {}, intent_id)
 
         return {"success": True, "status": "started", "message": user_message, "action_type": action_type}
 
@@ -1227,17 +1318,18 @@ class EngineService:
         if not result.get("success"):
             return result
 
-        if self._execution_thread and self._execution_thread.is_alive():
-            result["dispatched"] = False
-            result["note"] = "Approved; a run is already in progress."
-            return result
+        with self._run_lock:
+            if self._execution_thread and self._execution_thread.is_alive():
+                result["dispatched"] = False
+                result["note"] = "Approved; a run is already in progress."
+                return result
 
-        self._launch_run(
-            "",
-            "execute_artifact",
-            {"taskId": str(task_id), "planId": resolved_plan},
-            intent_id=str(intent_id or ""),
-        )
+            self._launch_run(
+                "",
+                "execute_artifact",
+                {"taskId": str(task_id), "planId": resolved_plan},
+                intent_id=str(intent_id or ""),
+            )
         result["dispatched"] = True
         return result
 
@@ -1295,7 +1387,16 @@ class EngineService:
         try:
             yield shadow
         finally:
-            set_execution_dir(None)
+            # Clear only what this context set. The execution root is process-wide (workers read
+            # the published root), so an unconditional ``None`` here would clear the root out from
+            # under a *later* staged run that happens to be active -- its writes would then resolve
+            # to the live project tree instead of its shadow, and the containment boundary leaks.
+            # The run lock serialises runs, so this is a belt-and-braces guard on the one global
+            # that carries the sandbox scope.
+            from tools.workspace import get_execution_dir as _current_root
+
+            if _current_root() == os.path.abspath(shadow.path):
+                set_execution_dir(None)
 
     def workspace_diff(self, intent_id=None):
         """The staged delta for review: what a merge would change on the host, and nothing else.

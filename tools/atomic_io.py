@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import time
 import uuid
+from typing import Optional
 
 # The window a copy moves through. Bounded on purpose: a merge can carry a binary larger than
 # memory, and holding it whole in order to rename it would trade a torn file for a dead process.
@@ -60,6 +62,36 @@ def _prepare(target: str) -> str:
     return resolved
 
 
+# A rename over a file another process holds open fails on Windows with a sharing violation
+# (WinError 32) -- editors, indexers and antivirus hold files open routinely, and the merge path
+# renames over the *user's own* files. The compiled core retries its atomic rename for exactly this
+# reason (``crates/deepagents_core/src/state.rs``); the Python path used to give up on the first
+# attempt, which surfaced as an intermittent ``PermissionError`` in the merge. Same budget as the
+# Rust side: ten attempts, 15 ms apart.
+RENAME_ATTEMPTS = 10
+RENAME_RETRY_SECONDS = 0.015
+
+
+def _replace_retry(temporary: str, target: str) -> None:
+    """``os.replace``, riding out the transient sharing violations of a live filesystem."""
+    last: Optional[OSError] = None
+    for attempt in range(RENAME_ATTEMPTS):
+        try:
+            os.replace(temporary, target)
+            return
+        except OSError as error:
+            # Only the transient classes are retried: a missing directory or a permission
+            # policy will not heal in 150 ms, and retrying it just delays the honest error.
+            if getattr(error, "winerror", None) not in (5, 32, 33) and not isinstance(
+                error, (PermissionError, BlockingIOError)
+            ):
+                raise
+            last = error
+            time.sleep(RENAME_RETRY_SECONDS)
+    assert last is not None
+    raise last
+
+
 def write_bytes_atomic(path: str, payload: bytes) -> str:
     """Write ``payload`` to ``path`` through a temporary and a rename. Returns the absolute path.
 
@@ -74,7 +106,7 @@ def write_bytes_atomic(path: str, payload: bytes) -> str:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        _replace_retry(temporary, target)
     except BaseException:
         _discard(temporary)
         raise
@@ -103,7 +135,7 @@ def copy_file_atomic(source: str, destination: str) -> str:
             writer.flush()
             os.fsync(writer.fileno())
         shutil.copystat(source, temporary)
-        os.replace(temporary, target)
+        _replace_retry(temporary, target)
     except BaseException:
         _discard(temporary)
         raise

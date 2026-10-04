@@ -43,6 +43,11 @@ class AgentRegistry:
         self.coder_agents: Dict[str, Dict[str, Any]] = {}
         self.active_task_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
+        # Guards the catalogues and the current run's stop event. Both are written while request
+        # threads read: ``clear()``+``update()`` on a dict an iterator is walking raises "dictionary
+        # changed size during iteration", and a rebind of ``stop_event`` read unlocked can hand a
+        # stop signal to a *previous* run's event.
+        self._state_lock = threading.Lock()
         self.scan_agents()
 
     def resolve_prompt_variables(self, prompt: str) -> str:
@@ -52,21 +57,29 @@ class AgentRegistry:
     def scan_agents(self) -> Dict[str, Any]:
         """
         Dynamically inspects, tracks, and groups available agents into Main and Coder tiers.
+
+        The catalogues are published **copy-on-write**: the new mapping is built off to the side
+        and swapped in under the lock, so a reader iterating ``values()`` on another thread never
+        walks a dict mid-mutation.
         """
         main_agents, coder_agents = agent_catalog.build_catalog(self.resolve_prompt_variables)
 
-        self.main_agents.clear()
-        self.coder_agents.clear()
-        self.main_agents.update(main_agents)
-        self.coder_agents.update(coder_agents)
+        with self._state_lock:
+            # Rebound, not cleared and refilled: a reader iterating ``values()`` on another thread
+            # must never watch one mutate. Readers take their snapshot under the same lock.
+            self.main_agents = dict(main_agents)
+            self.coder_agents = dict(coder_agents)
 
         return self.get_agent_summary()
 
     def get_agent_summary(self) -> Dict[str, Any]:
         """Returns structured JSON-serializable list of all categorized agents."""
+        with self._state_lock:
+            main_agents = list(self.main_agents.values())
+            coder_agents = list(self.coder_agents.values())
         return {
-            "main_agents": list(self.main_agents.values()),
-            "coder_agents": list(self.coder_agents.values()),
+            "main_agents": main_agents,
+            "coder_agents": coder_agents,
             "workspace_dir": get_project_dir(),
             "active_plan": get_active_plan_filename(),
             "plan_files": list_plan_files()
@@ -74,10 +87,11 @@ class AgentRegistry:
 
     def get_agent(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Fetch details for a specific agent by ID."""
-        if agent_id in self.main_agents:
-            return self.main_agents[agent_id]
-        if agent_id in self.coder_agents:
-            return self.coder_agents[agent_id]
+        with self._state_lock:
+            if agent_id in self.main_agents:
+                return self.main_agents[agent_id]
+            if agent_id in self.coder_agents:
+                return self.coder_agents[agent_id]
         return None
 
     def save_system_prompt(self, agent_id: str, new_prompt: str, is_custom_only: bool = False) -> Dict[str, Any]:
@@ -122,7 +136,8 @@ class AgentRegistry:
         Sets the *current* run's stop event (see ``run_agent_workflow``), so a stop
         can never be re-interpreted as belonging to a later run.
         """
-        self.stop_event.set()
+        with self._state_lock:
+            self.stop_event.set()
 
     def run_agent_workflow(
         self,
@@ -148,7 +163,10 @@ class AgentRegistry:
         (Phase 27). It is not used for anything else here.
         """
         run_stop_event = threading.Event()
-        self.stop_event = run_stop_event
+        with self._state_lock:
+            # Under the lock: a concurrent ``stop_workflow`` must land on either this run's event
+            # or the previous one's -- never on a half-published binding.
+            self.stop_event = run_stop_event
         runner.run_agent_workflow(
             coder_agents=self.coder_agents,
             stop_event=run_stop_event,

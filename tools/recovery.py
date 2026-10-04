@@ -111,6 +111,48 @@ def revert_plan_revision() -> Dict[str, Any]:
 # content, so a diff view can never be handed a multi-megabyte blob.
 MAX_DIFF_SOURCE_CHARS = 200_000
 
+# What a task id or a deliverable name may look like before it becomes part of a filesystem path.
+#
+# ``task_id`` is a plan node's id and ``filename`` a deliverable -- both authored by the planner
+# LLM. They used to reach ``os.path.join`` unvalidated: a task id containing ``../`` walked the
+# backup directory out of ``.aleth_backups``, and a deliverable like ``../other-repo/.ssh/id_rsa``
+# (or an absolute path, which ``os.path.join`` simply obeys) made this module *copy an arbitrary
+# host file into the backup* -- where ``task_diff`` then rendered it into the UI. Refused, never
+# sanitized: a name that needs cleaning is a name the caller should not have produced.
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def _safe_segment(name: Any, *, kind: str) -> str:
+    """One path segment that is safe to join, or :class:`ValueError`."""
+    value = str(name or "").strip()
+    if (
+        not value
+        or value in (".", "..")
+        or not _SAFE_SEGMENT_RE.match(value)
+    ):
+        raise ValueError(
+            f"unsafe {kind} {name!r}: only letters, digits, '.', '_' and '-' (max 64) are allowed"
+        )
+    return value
+
+
+def _contained_file(base: str, filename: Any) -> str:
+    """``filename`` resolved inside ``base``, or :class:`ValueError``.
+
+    A deliverable may be nested (``src/app.py``) but never absolute, drive-qualified, or a
+    traversal -- each of which would make this module read a file the workspace does not own.
+    """
+    value = str(filename or "").strip()
+    if not value or os.path.splitdrive(value)[0] or os.path.isabs(value):
+        raise ValueError(f"unsafe deliverable path {filename!r}: must be workspace-relative")
+    if any(part in ("", ".", "..") for part in value.replace("\\", "/").split("/")):
+        raise ValueError(f"unsafe deliverable path {filename!r}: no '.' or '..' segments")
+    root = os.path.abspath(base)
+    resolved = os.path.abspath(os.path.join(root, value))
+    if resolved != root and not resolved.startswith(root + os.sep):
+        raise ValueError(f"unsafe deliverable path {filename!r}: resolves outside the workspace")
+    return resolved
+
 
 def _read_snapshot_text(path: Optional[str]) -> Optional[str]:
     """Read a text file, or return None when absent, oversized or not decodable."""
@@ -142,8 +184,12 @@ def backup_file_for_task(task_id: str, filename: str) -> Optional[str]:
     If the file doesn't exist yet, records that it was newly created.
     """
     base_dir = get_project_dir()
-    filepath = os.path.join(base_dir, filename)
-    task_backup_dir = os.path.join(get_backup_dir(), task_id)
+    # Both names come from the plan the LLM authored: the id becomes a directory under
+    # ``.aleth_backups`` and the deliverable becomes a file read from the workspace. Refuse a
+    # name that would walk either boundary (see ``_safe_segment``/``_contained_file``).
+    task_dir_name = _safe_segment(task_id, kind="task id")
+    filepath = _contained_file(base_dir, filename)
+    task_backup_dir = os.path.join(get_backup_dir(), task_dir_name)
     os.makedirs(task_backup_dir, exist_ok=True)
 
     backup_path = os.path.join(task_backup_dir, os.path.basename(filename))
@@ -185,6 +231,11 @@ def task_diff(task_id: str) -> Dict[str, Any]:
         return validated(TaskDiffResult, {"success": False, "error": "No task id given.", "task_id": task_id, **empty})
 
     base_dir = get_project_dir()
+    try:
+        task_key = _safe_segment(task_key, kind="task id")
+    except ValueError as error:
+        return validated(TaskDiffResult, {"success": False, "error": str(error),
+                "task_id": task_id, **empty})
     task_backup_dir = os.path.join(get_backup_dir(), task_key)
     meta_path = os.path.join(task_backup_dir, "_meta.json")
     if not os.path.isfile(meta_path):
@@ -205,8 +256,15 @@ def task_diff(task_id: str) -> Dict[str, Any]:
     for filename, info in meta.items():
         info = info if isinstance(info, dict) else {}
         action = info.get("action") or "modified"
+        # The names in ``_meta.json`` were validated when written, but the file is on disk and
+        # this is a read path into the UI: re-validate instead of trusting it (and instead of
+        # rendering whatever a hand-edited meta points at).
+        try:
+            after_path = _contained_file(base_dir, filename)
+        except ValueError:
+            continue
         before = _read_snapshot_text(info.get("backup")) if action == "modified" else None
-        after = _read_snapshot_text(os.path.join(base_dir, filename))
+        after = _read_snapshot_text(after_path)
 
         diff_lines = _unified_diff(filename, before, after)
         added = sum(1 for line in diff_lines if line.startswith("+") and not line.startswith("+++"))

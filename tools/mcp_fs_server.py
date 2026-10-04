@@ -117,10 +117,14 @@ class FilesystemServer:
         A whole 50 MB file handed to the model is not a long answer, it is an API token-limit error
         and a dead run. Over the cap the middle is dropped and the result says so, so the model
         reaches for ``list_symbols``/``grep`` or a smaller span instead of assuming it read the file.
+
+        The *server* never holds the whole file either: the cap is applied while reading, through
+        a bounded head/tail window (``result_budget.read_file_window``). ``handle.read()`` before
+        the cap used to mean a multi-gigabyte file OOMed this process before the truncation ever
+        ran.
         """
         target = self._resolve(path)
-        with open(target, "r", encoding="utf-8", errors="replace", newline="") as handle:
-            return result_budget.truncate_result(handle.read())
+        return result_budget.read_file_window(str(target))
 
     def write_file(self, path: str, content: str) -> str:
         """The engine's writer. Atomic: the target is replaced, never truncated in place.

@@ -23,6 +23,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
@@ -185,10 +186,12 @@ class MCPClient:
             self._next_id += 1
         self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}})
 
-        deadline = self.timeout
+        deadline = time.monotonic() + self.timeout
         while True:
             try:
-                message = self._responses.get(timeout=deadline)
+                message = self._responses.get(
+                    timeout=max(0.0, deadline - time.monotonic())
+                )
             except queue.Empty:
                 # Stalled: kill it, reap it, fail the call. Leaving the child alive would
                 # leak a process and a pipe, and a retry would queue behind it.

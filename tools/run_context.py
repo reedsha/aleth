@@ -66,6 +66,20 @@ def install_exception_logging() -> None:
             flush=True,
         )
         traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+        # The durable half: stderr dies with the container and nobody rotates it, so the crash
+        # also lands in the rotating JSON log with its traceback and the run's correlation id.
+        try:
+            from tools import engine_log
+
+            engine_log.get_logger("engine").error(
+                "unhandled %s%s: %s",
+                exc_type.__name__,
+                where,
+                exc,
+                exc_info=(exc_type, exc, tb),
+            )
+        except Exception:  # logging must never take the exception reporter down
+            pass
 
     sys.excepthook = lambda exc_type, exc, tb: _report(exc_type, exc, tb)
 

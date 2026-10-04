@@ -81,8 +81,10 @@ RESTRICTED_DISALLOWED_SUBCOMMANDS = {
 RESTRICTED_DISALLOWED_SEQUENCES = ("rm -rf", "rm -fr", "rm -r /", "del /f", "del /q", "del /s")
 # Sequential separators. The allow-list judges the *first* token, but the shell runs every
 # clause, so ``pytest ; pip install x`` clears a first-token check and then does what the
-# check forbids.
-RESTRICTED_DISALLOWED_SEPARATORS = (";", "&&", "||", "`", "$(")
+# check forbids. Redirections belong to the same class: ``echo benign > file`` and
+# ``cat x | tee file`` are writes smuggled through an allowed first token.
+RESTRICTED_DISALLOWED_SEPARATORS = (";", "&&", "||", "`", "$(", "|", ">", "<")
+RESTRICTED_REDIRECT_SEPARATORS = (">", "<", "|")
 # Python is handled separately: as an allowed prefix it let ``python -c "..."`` -- arbitrary
 # code with no file to inspect -- through the "restricted" shell.
 RESTRICTED_INTERPRETERS = {"python", "python3", "py"}
@@ -92,6 +94,30 @@ RESTRICTED_ALLOWED_PREFIXES = [
     "pytest", "dir", "ls", "cat", "type", "echo",
     "git status", "git log", "git diff", "curl",
 ]
+# Verification tools beyond the built-ins: checkers, not mutators. The *first* token decides,
+# so an unknown tool is refused rather than waved through on a substring.
+RESTRICTED_VERIFICATION_TOOLS = {
+    "mypy", "ruff", "flake8", "pyflakes", "pylint", "isort",
+    "node", "tsc", "vitest", "jest", "tox", "coverage", "npm",
+    # The JavaScript syntax fallback is spelled ``find ... -exec node --check {} +`` (batched on
+    # purpose: a shell glob of a compiled tree fails with E2BIG), so ``find`` is a verifier here --
+    # with ``-delete`` and a write-capable flag refused below.
+    "find",
+}
+# A flag that turns a checker into a writer or an inline interpreter. Matched on the flag *name*
+# (``--output=build`` is judged as ``--output``): the restricted shell runs checks and must never
+# rewrite the workspace or evaluate a string, whatever tool it is spelled through. ``sed -i`` and
+# ``tee`` used to reach the workspace by smuggling ``test``/``check``/``.py`` past a substring
+# fallback this table replaces.
+RESTRICTED_WRITE_FLAGS = {
+    "-i", "--in-place",
+    "-w", "--write", "--fix",
+    "-o", "--output", "--output-file", "--out-file", "--out",
+    "-e", "--eval", "-p", "--print",
+    "--exec", "--stdin", "-",
+    # ``find``'s mutation: a delete is not a check.
+    "-delete", "--delete",
+}
 
 
 def restricted_denial(command: str) -> Optional[str]:
@@ -128,6 +154,12 @@ def restricted_denial(command: str) -> Optional[str]:
         )
 
     chained = next((sep for sep in RESTRICTED_DISALLOWED_SEPARATORS if sep in command), None)
+    if chained in RESTRICTED_REDIRECT_SEPARATORS:
+        return (
+            f"Permission Denied: Command '{command}' redirects or pipes ({chained!r}). "
+            "The Architect's restricted shell reads and checks; it never routes output into a file "
+            "or another command."
+        )
     if chained:
         return (
             f"Permission Denied: Command '{command}' chains multiple shell commands ({chained!r}). "
@@ -143,22 +175,42 @@ def restricted_denial(command: str) -> Optional[str]:
             "never a string expression."
         )
 
-    is_allowed = any(cmd_clean.startswith(prefix) for prefix in RESTRICTED_ALLOWED_PREFIXES)
+    is_allowed = _matches_prefix(cmd_clean, RESTRICTED_ALLOWED_PREFIXES)
     if not is_allowed and first in RESTRICTED_INTERPRETERS:
         if effective is not tokens and eff_first in RESTRICTED_ALLOWED_PYTHON_MODULES:
             is_allowed = True
         else:
             script_args = [tok for tok in tokens[1:] if not tok.startswith("-")]
             is_allowed = bool(script_args) and script_args[0].lower().endswith(".py")
-    if not is_allowed and ("test" in cmd_clean or cmd_clean.endswith(".py") or "check" in cmd_clean):
-        is_allowed = True
+    if not is_allowed and first in RESTRICTED_VERIFICATION_TOOLS:
+        # A named checker is a verification action *unless* a flag turns it into a writer or an
+        # inline interpreter. This replaces a substring fallback (``"test" in command``, ``.py``
+        # suffix, ``"check" in command``) that any ``sed -i s/x/y/ test.py``, ``dd of=check.py``
+        # or ``tee test.py`` sailed through.
+        flags = {tok.split("=", 1)[0].lower() for tok in effective[1:] if tok.startswith("-")}
+        if not (flags & RESTRICTED_WRITE_FLAGS):
+            is_allowed = True
 
     if not is_allowed:
         return (
             f"Permission Denied: Command '{command}' is not in the Architect's approved verification whitelist. "
-            "Approved commands: pytest, python -m py_compile <file>, python <script.py>, ls, dir, cat, git diff/status."
+            "Approved commands: pytest, python -m py_compile <file>, python <script.py>, "
+            "node --check <file>, named type/trace checkers (mypy, ruff, flake8, ...), "
+            "ls, dir, cat, git diff/status -- without redirection, chaining or write flags."
         )
     return None
+
+
+def _matches_prefix(cmd_clean: str, prefixes: List[str]) -> bool:
+    """Whether the command is one of the allowed prefixes, as a *word* rather than a substring.
+
+    ``cmd_clean.startswith("cat")`` also matched ``catapult`` and ``cat>file``; a prefix is a
+    command boundary and must be matched at one.
+    """
+    return any(
+        cmd_clean == prefix or cmd_clean.startswith(prefix + " ") or cmd_clean.startswith(prefix + "\t")
+        for prefix in prefixes
+    )
 
 
 TOOLS: List[Dict[str, Any]] = [

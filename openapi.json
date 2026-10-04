@@ -1,0 +1,2863 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Aleth Engine",
+    "version": "0.1.0",
+    "summary": "The local AI execution engine: plan, gate, execute -- on one loopback port.",
+    "description": "The whole HTTP surface of the engine: the typed operation table (`api.operations.OPERATIONS`) plus the gateway's own infrastructure reads and event streams (`api.gateway.ROUTES`). One process, one port. Every request body is a strict model (`extra=\"forbid\"`) and every operation answer is the shared envelope; every non-2xx body is `ErrorResponse`. The server binds 127.0.0.1 and refuses any peer that is not loopback.",
+    "license": {
+      "name": "Proprietary"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8765",
+      "description": "The engine's single socket (ALETH_API_PORT overrides the port)."
+    }
+  ],
+  "tags": [
+    {
+      "name": "operations",
+      "description": "The typed capability surface: every engine action the UI may invoke, and nothing else."
+    },
+    {
+      "name": "infrastructure",
+      "description": "Health, plan projections, the telemetry ledger, and the event streams."
+    }
+  ],
+  "paths": {
+    "/api/agent/prompt": {
+      "post": {
+        "operationId": "save_system_prompt",
+        "summary": "Save system prompt.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentPromptRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/agents": {
+      "get": {
+        "operationId": "get_agents",
+        "summary": "Get agents.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/artifact/approve": {
+      "post": {
+        "operationId": "approve_artifact",
+        "summary": "Approve artifact.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactApproveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/artifact/reject": {
+      "post": {
+        "operationId": "reject_artifact",
+        "summary": "Reject artifact.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactRejectRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/artifact/span": {
+      "get": {
+        "operationId": "get_source_span",
+        "summary": "Get source span.",
+        "tags": [
+          "operations"
+        ],
+        "parameters": [
+          {
+            "name": "file_path",
+            "in": "query",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "default": 0,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "default": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/artifact/target": {
+      "post": {
+        "operationId": "update_artifact_target",
+        "summary": "Update artifact target.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactTargetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/audit": {
+      "get": {
+        "operationId": "audit_codebase_sync",
+        "summary": "Audit codebase sync.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/console/backlog": {
+      "get": {
+        "operationId": "get_console_backlog",
+        "summary": "Get console backlog.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/console/line": {
+      "post": {
+        "operationId": "push_console_line",
+        "summary": "Push console line.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsoleLineRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/console/open": {
+      "post": {
+        "operationId": "open_console_window",
+        "summary": "Open console window.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConsoleOpenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/env": {
+      "get": {
+        "operationId": "get_environment_variables",
+        "summary": "Get environment variables.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "operationId": "eventStream",
+        "summary": "The engine's event bus, as a server-sent event stream.",
+        "tags": [
+          "infrastructure"
+        ],
+        "description": "Frames of JSON events on the bus natively bound to the window and the console. Never terminates voluntarily: a heartbeat comment frame keeps the connection warm.",
+        "responses": {
+          "200": {
+            "description": "An open SSE stream (`text/event-stream`).",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "Liveness and posture: the engine's own view of itself.",
+        "tags": [
+          "infrastructure"
+        ],
+        "responses": {
+          "200": {
+            "description": "The engine is serving.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/intent/acknowledge": {
+      "post": {
+        "operationId": "acknowledge_intent",
+        "summary": "Acknowledge intent.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/intent/egress": {
+      "post": {
+        "operationId": "egress_intent",
+        "summary": "Egress intent.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceStagingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/intent/execute": {
+      "post": {
+        "operationId": "submit_intent",
+        "summary": "Submit intent.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/intent/interrupt": {
+      "post": {
+        "operationId": "interrupt_intent",
+        "summary": "Interrupt intent.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterruptRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/intent/resume": {
+      "post": {
+        "operationId": "resume_intent",
+        "summary": "Resume intent.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/intent/rollback": {
+      "post": {
+        "operationId": "rollback_intent",
+        "summary": "Rollback intent.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/intent/status": {
+      "get": {
+        "operationId": "get_intent_status",
+        "summary": "Get intent status.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/intent/steps": {
+      "get": {
+        "operationId": "get_intent_steps",
+        "summary": "Get intent steps.",
+        "tags": [
+          "operations"
+        ],
+        "parameters": [
+          {
+            "name": "intent_id",
+            "in": "query",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/intents/{intent_id}/stream": {
+      "get": {
+        "operationId": "intentStream",
+        "summary": "The same stream, narrowed to one run.",
+        "tags": [
+          "infrastructure"
+        ],
+        "description": "A `stream`, not an `operation`: it does not answer once. The frames are the hub's, filtered to the named intent, so a client sees exactly the run it asked about.",
+        "parameters": [
+          {
+            "name": "intent_id",
+            "in": "path",
+            "required": true,
+            "description": "The run's execution identity.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.\\-]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "An open SSE stream scoped to the intent.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plan": {
+      "get": {
+        "operationId": "activePlan",
+        "summary": "The active plan: its tasks in document order and its counters.",
+        "tags": [
+          "infrastructure"
+        ],
+        "responses": {
+          "200": {
+            "description": "The active plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plan/active": {
+      "post": {
+        "operationId": "set_active_plan",
+        "summary": "Set active plan.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetActivePlanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/plan/create": {
+      "post": {
+        "operationId": "create_plan_file",
+        "summary": "Create plan file.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePlanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/plan/dependency": {
+      "post": {
+        "operationId": "add_task_dependency",
+        "summary": "Add task dependency.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DependencyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/plan/document": {
+      "get": {
+        "operationId": "get_active_plan",
+        "summary": "Get active plan.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/plan/files": {
+      "get": {
+        "operationId": "get_plan_files",
+        "summary": "Get plan files.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/plan/normalize": {
+      "post": {
+        "operationId": "normalize_plan",
+        "summary": "Normalize plan.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/plan/retag": {
+      "post": {
+        "operationId": "retag_plan_with_laya",
+        "summary": "Retag plan with laya.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/plan/revert": {
+      "post": {
+        "operationId": "revert_plan_update",
+        "summary": "Revert plan update.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/plan/steps": {
+      "get": {
+        "operationId": "extract_plan_steps",
+        "summary": "Extract plan steps.",
+        "tags": [
+          "operations"
+        ],
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/plan/structure": {
+      "get": {
+        "operationId": "validate_plan_structure",
+        "summary": "Validate plan structure.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/plan/sync": {
+      "post": {
+        "operationId": "resolve_sync",
+        "summary": "Resolve sync.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveSyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/plan/task": {
+      "post": {
+        "operationId": "add_plan_task",
+        "summary": "Add plan task.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/plan/{plan_id}": {
+      "get": {
+        "operationId": "planById",
+        "summary": "One stored plan by id.",
+        "tags": [
+          "infrastructure"
+        ],
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "description": "The plan's stable id (the file's stem).",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.\\-]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/plans": {
+      "get": {
+        "operationId": "plans",
+        "summary": "Which plans exist: the store's and the workspace's.",
+        "tags": [
+          "infrastructure"
+        ],
+        "responses": {
+          "200": {
+            "description": "The stored plan ids plus the plan files on disk.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/preview": {
+      "get": {
+        "operationId": "get_preview_source",
+        "summary": "Get preview source.",
+        "tags": [
+          "operations"
+        ],
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "query",
+            "required": false,
+            "description": "",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/run": {
+      "get": {
+        "operationId": "get_run_state",
+        "summary": "Get run state.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/run/retry": {
+      "post": {
+        "operationId": "retry_execution",
+        "summary": "Retry execution.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RetryRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/run/stop": {
+      "post": {
+        "operationId": "stop_execution",
+        "summary": "Stop execution.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "operationId": "get_settings",
+        "summary": "Get settings.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      },
+      "post": {
+        "operationId": "save_settings",
+        "summary": "Save settings.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveSettingsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/task/diff": {
+      "get": {
+        "operationId": "get_task_diff",
+        "summary": "Get task diff.",
+        "tags": [
+          "operations"
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/task/rollback": {
+      "post": {
+        "operationId": "rollback_task",
+        "summary": "Rollback task.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskIdRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/task/tests": {
+      "post": {
+        "operationId": "run_task_tests",
+        "summary": "Run task tests.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskIdRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/telemetry": {
+      "get": {
+        "operationId": "telemetry",
+        "summary": "The newest execution receipts, bounded, with the ledger total.",
+        "tags": [
+          "infrastructure"
+        ],
+        "responses": {
+          "200": {
+            "description": "The receipts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/telemetry/{execution_id}": {
+      "get": {
+        "operationId": "telemetryReceipt",
+        "summary": "One append-only execution receipt.",
+        "tags": [
+          "infrastructure"
+        ],
+        "parameters": [
+          {
+            "name": "execution_id",
+            "in": "path",
+            "required": true,
+            "description": "The container execution's id.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.\\-]+$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The receipt.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TelemetryReceiptView"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown execution.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ui/ready": {
+      "post": {
+        "operationId": "ui_ready",
+        "summary": "Ui ready.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/workspace": {
+      "get": {
+        "operationId": "get_workspace_info",
+        "summary": "Get workspace info.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/workspace/diff": {
+      "get": {
+        "operationId": "workspace_diff",
+        "summary": "Workspace diff.",
+        "tags": [
+          "operations"
+        ],
+        "parameters": [
+          {
+            "name": "intent_id",
+            "in": "query",
+            "required": true,
+            "description": "",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/api/workspace/merge": {
+      "post": {
+        "operationId": "workspace_merge",
+        "summary": "Workspace merge.",
+        "tags": [
+          "operations"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceMergeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    },
+    "/api/workspace/select": {
+      "post": {
+        "operationId": "select_workspace",
+        "summary": "Select workspace.",
+        "tags": [
+          "operations"
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/OperationOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "OperationOk": {
+        "description": "The envelope. `ok: true` carries the service payload in `data`; `ok: false` carries the reason in `error`.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/OperationEnvelope"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Invalid request: the body did not validate against the strict model.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "Not loopback, or the engine is draining. The socket's only boundary.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "Conflict: another merge holds the workspace write lock.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "The operation failed, or its answer broke the envelope contract.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "ServiceUnavailable": {
+        "description": "The engine service is not attached to the gateway yet.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "AcknowledgeRequest": {
+        "additionalProperties": false,
+        "description": "Acknowledge a failed intent, or every unacknowledged one when no id is given.",
+        "properties": {
+          "intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "AcknowledgeResponse": {
+        "additionalProperties": false,
+        "description": "How many failures the user's acknowledgement cleared.",
+        "properties": {
+          "acknowledged": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "acknowledged"
+        ],
+        "type": "object"
+      },
+      "AddTaskRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "type": "object"
+      },
+      "AgentPromptRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "new_prompt": {
+            "type": "string"
+          },
+          "is_custom_only": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agent_id",
+          "new_prompt"
+        ],
+        "type": "object"
+      },
+      "ArtifactApproveRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "ArtifactRejectRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "feedback": {
+            "default": "",
+            "type": "string"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "ArtifactTargetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "content": {
+            "type": "string"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "task_id",
+          "index",
+          "content"
+        ],
+        "type": "object"
+      },
+      "ConsoleLineRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "default": "log",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ConsoleOpenRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "backlog": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "CreatePlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "project_idea": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "project_idea"
+        ],
+        "type": "object"
+      },
+      "DependencyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "parent_id": {
+            "type": "string"
+          },
+          "child_id": {
+            "type": "string"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "parent_id",
+          "child_id"
+        ],
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": false,
+        "description": "Every non-2xx body has this shape, so the frontend has one failure branch.",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "detail": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "HealthResponse": {
+        "additionalProperties": false,
+        "description": "What the gateway will say about itself.",
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "loopback_only": {
+            "type": "boolean"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "subscribers": {
+            "type": "integer"
+          },
+          "active_plan_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "version",
+          "loopback_only",
+          "read_only",
+          "subscribers",
+          "active_plan_id"
+        ],
+        "type": "object"
+      },
+      "IntentIdRequest": {
+        "additionalProperties": false,
+        "description": "An operation that names one intent and nothing else. A GET carries it in the query.",
+        "properties": {
+          "intent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent_id"
+        ],
+        "type": "object"
+      },
+      "IntentLedgerEntry": {
+        "additionalProperties": false,
+        "description": "One row of the durable intent ledger.",
+        "properties": {
+          "intent_id": {
+            "type": "string"
+          },
+          "action_type": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "error": {
+            "default": "",
+            "type": "string"
+          },
+          "created_at": {
+            "type": "number"
+          },
+          "updated_at": {
+            "type": "number"
+          },
+          "acknowledged_at": {
+            "default": 0.0,
+            "type": "number"
+          },
+          "prompt_tokens": {
+            "default": 0,
+            "type": "integer"
+          },
+          "completion_tokens": {
+            "default": 0,
+            "type": "integer"
+          },
+          "pending_input": {
+            "default": "[]",
+            "type": "string"
+          },
+          "rollback_step": {
+            "default": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "intent_id",
+          "action_type",
+          "message",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      },
+      "IntentQueueStatus": {
+        "additionalProperties": false,
+        "description": "The queue's own state, plus the ledger that outlives it.\n\nThe queue is in memory and dies with the process; the ledger is what a restart reconciles\nagainst. ``pending_failure`` is the gate the UI reads: while it is set, the user has not yet\nbeen told that their last run did not do what they asked.",
+        "properties": {
+          "depth": {
+            "type": "integer"
+          },
+          "capacity": {
+            "type": "integer"
+          },
+          "accepted": {
+            "type": "integer"
+          },
+          "completed": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IntentView"
+            },
+            "type": "array"
+          },
+          "ledger": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/IntentLedgerEntry"
+            },
+            "type": "array"
+          },
+          "pending_failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IntentLedgerEntry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "depth",
+          "capacity",
+          "accepted",
+          "completed",
+          "failed",
+          "items"
+        ],
+        "type": "object"
+      },
+      "IntentRequest": {
+        "additionalProperties": false,
+        "description": "One execution signal from the UI.\n\n``message`` is the directive text; ``action_type`` names the branch; ``action_params`` carries\nthe branch's own arguments (a target task id, an artifact key). Nothing here is trusted to\nexecute anything -- it is a *request*, and the queue is where it waits for the orchestrator.\n\n``validate_default`` is load-bearing: without it the blank-prompt check below only fires when a\ncaller *spells out* ``\"message\": \"\"``, and an omitted message sails through as the default --\nthe check has to be a property of the request, not of how the JSON was written.",
+        "properties": {
+          "action_type": {
+            "default": "custom",
+            "enum": [
+              "custom",
+              "fix_bug",
+              "next_step",
+              "update_plan",
+              "analyze",
+              "recommend",
+              "normalize",
+              "execute_artifact",
+              "execute_plan"
+            ],
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "type": "string"
+          },
+          "action_params": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "IntentView": {
+        "additionalProperties": false,
+        "description": "One intent as the queue reports it.",
+        "properties": {
+          "intent_id": {
+            "type": "string"
+          },
+          "action_type": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "error": {
+            "default": "",
+            "type": "string"
+          },
+          "enqueued_at": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "intent_id",
+          "action_type",
+          "message",
+          "status",
+          "enqueued_at"
+        ],
+        "type": "object"
+      },
+      "InterruptRequest": {
+        "additionalProperties": false,
+        "description": "Hold a running intent for the user (Phase 33).",
+        "properties": {
+          "intent_id": {
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent_id"
+        ],
+        "type": "object"
+      },
+      "MetricsView": {
+        "additionalProperties": false,
+        "description": "The progress counters, exactly as the engine computes them.",
+        "properties": {
+          "total_tasks": {
+            "type": "integer"
+          },
+          "completed_tasks": {
+            "type": "integer"
+          },
+          "in_progress_tasks": {
+            "type": "integer"
+          },
+          "failed_tasks": {
+            "type": "integer"
+          },
+          "pending_tasks": {
+            "type": "integer"
+          },
+          "progress_percent": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_tasks",
+          "completed_tasks",
+          "in_progress_tasks",
+          "failed_tasks",
+          "pending_tasks",
+          "progress_percent"
+        ],
+        "type": "object"
+      },
+      "OperationEnvelope": {
+        "additionalProperties": false,
+        "description": "The one answer shape for the typed operation surface (``api.operations``).\n\n``data`` carries the service's own payload -- the dictionaries the UI and the\ncharacterization suite already speak -- so moving the transport did not invent a second wire\nformat for the plan. The envelope is what makes a single client-side failure branch possible.",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "data": {
+            "default": null
+          },
+          "error": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "type": "object"
+      },
+      "PlanFileRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "PlanListResponse": {
+        "additionalProperties": false,
+        "description": "Which plans exist: what the store holds and what the workspace has on disk.",
+        "properties": {
+          "active_plan_id": {
+            "type": "string"
+          },
+          "active_plan_file": {
+            "type": "string"
+          },
+          "stored_plan_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "plan_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "active_plan_id",
+          "active_plan_file",
+          "stored_plan_ids",
+          "plan_files"
+        ],
+        "type": "object"
+      },
+      "PlanView": {
+        "additionalProperties": false,
+        "description": "The active plan: its tasks, in document order, and its counters.",
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          },
+          "plan_file": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "goal": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "number"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskView"
+            },
+            "type": "array"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/MetricsView"
+          }
+        },
+        "required": [
+          "plan_id",
+          "plan_file",
+          "title",
+          "goal",
+          "updated_at",
+          "tasks",
+          "metrics"
+        ],
+        "type": "object"
+      },
+      "PreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "ResolveSyncRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "resolution_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "resolution_type"
+        ],
+        "type": "object"
+      },
+      "ResumeRequest": {
+        "additionalProperties": false,
+        "description": "Release a paused intent, carrying the user's correction.\n\n``correction`` is what makes this the steering wheel rather than a resume button: it is injected\ninto the run's context window as a ``[user]`` message before the loop continues.",
+        "properties": {
+          "intent_id": {
+            "type": "string"
+          },
+          "correction": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent_id"
+        ],
+        "type": "object"
+      },
+      "RetryRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "user_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "RollbackRequest": {
+        "additionalProperties": false,
+        "description": "Rewind a held run to ``step`` (Phase 35).\n\nThe step is the run's own step number, not an index into a UI list: it is what the shadow's\nsnapshot tags and the per-step ledger rows are keyed on, so the files, the context window and\nthe bill all resolve to the same point.",
+        "properties": {
+          "intent_id": {
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "intent_id",
+          "step"
+        ],
+        "type": "object"
+      },
+      "SaveSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "type": "object"
+      },
+      "ServiceRefusal": {
+        "additionalProperties": true,
+        "description": "The only shape in which a service may report a failure.\n\nThe client's type guard keys on ``success is False``: that is what it turns into a thrown\n``ApiError``. A payload that carries an ``error`` without that flag is therefore delivered as\na *successful* answer and read as one -- the failure is swallowed, and the caller carries on\nwith state the backend just said was bad. The gateway validates every answer against this\nmodel (``api.gateway``), so the anomaly cannot be reintroduced by a future method.\n\n``extra`` is allowed on purpose: a refusal carries its own context -- a ``task_id``, an empty\n``variables`` list, the payload keys the caller was expecting -- and that shape differs per\noperation. What is *not* optional is the flag and the reason.",
+        "properties": {
+          "success": {
+            "const": false,
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "error"
+        ],
+        "type": "object"
+      },
+      "SetActivePlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "filename": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename"
+        ],
+        "type": "object"
+      },
+      "SpanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "start": {
+            "default": 0,
+            "type": "integer"
+          },
+          "end": {
+            "default": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "type": "object"
+      },
+      "TaskIdRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "TaskView": {
+        "additionalProperties": false,
+        "description": "One task's status and scheduling surface, and nothing else.\n\nDeliberately not the whole node: the DAG carries fields the UI has no use for, and a wire\ncontract that mirrors an internal model is one that changes whenever the model does.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "planned",
+              "in_progress",
+              "completed",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "section": {
+            "type": "string"
+          },
+          "tag": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "dependencies": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "required_capabilities": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "assigned_agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "files": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "section"
+        ],
+        "type": "object"
+      },
+      "TelemetryListResponse": {
+        "additionalProperties": false,
+        "description": "The newest receipts, bounded, with the ledger's own total for context.",
+        "properties": {
+          "count": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "receipts": {
+            "items": {
+              "$ref": "#/components/schemas/TelemetryReceiptView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "count",
+          "total",
+          "receipts"
+        ],
+        "type": "object"
+      },
+      "TelemetryReceiptView": {
+        "additionalProperties": false,
+        "description": "One append-only ledger row, as written by the exec server.",
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "target_tool": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "stdout_hash": {
+            "type": "string"
+          },
+          "stderr_hash": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string"
+          },
+          "recorded_at": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "execution_id",
+          "session_id",
+          "target_tool",
+          "exit_code",
+          "duration_ms",
+          "stdout_hash",
+          "stderr_hash",
+          "outcome",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
+      "WorkspaceMergeRequest": {
+        "additionalProperties": false,
+        "description": "Apply the shadow, or (``approve=False``) discard it and leave the host untouched.\n\n``intent_id`` is required for the same reason as the diff: a merge that cannot name the run\nthat produced the changes would have to guess, and guessing is how the wrong changes land.",
+        "properties": {
+          "intent_id": {
+            "type": "string"
+          },
+          "approve": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "intent_id"
+        ],
+        "type": "object"
+      },
+      "WorkspaceStagingRequest": {
+        "additionalProperties": false,
+        "description": "Which shadow to read the delta of. The intent id is required: a shadow maps 1:1 to an\nexecution, so a request that cannot name one is a request the engine must refuse.",
+        "properties": {
+          "intent_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent_id"
+        ],
+        "type": "object"
+      }
+    }
+  }
+}
